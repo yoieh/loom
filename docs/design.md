@@ -109,7 +109,10 @@ Rules, each checked by a packaging test:
   parent jumps ahead of the parent's other queued messages.
 - **Stop is intent first.** Stop is recorded and shown at once; the runner's interrupt and the
   final `stopped` state follow as events. Stop on a thread stops everything it started, all the
-  way down.
+  way down. An interrupted turn leaves its thread `idle`; when the turn has not ended 5 s after
+  the interrupt (`stop_grace`), or the runner can't interrupt, the process is closed and the
+  thread is `sleeping`, as is a thread stopped before it started. A stopped child's result is
+  not posted to its parent.
 - **Events.** Each change of state, each turn's text and tool lines, each request and each
   `result` is an event with a growing id, kept 30 days. The state tables are the truth; events
   are a log for clients to follow, not something state is rebuilt from.

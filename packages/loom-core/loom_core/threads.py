@@ -12,6 +12,7 @@ from .store import Store
 
 ENDED = frozenset({ThreadState.SETTLED, ThreadState.FAILED})
 LIVE = frozenset(ThreadState) - ENDED
+STOPPING = 'stopping'
 
 _MOVES = {
     ThreadState.QUEUED: {ThreadState.STARTING, ThreadState.SLEEPING},
@@ -34,7 +35,7 @@ MODE_ORDER = (
 COLUMNS = (
     'id', 'title', 'runner', 'project_id', 'workspace_strategy', 'workspace_path', 'branch',
     'base', 'model', 'permission_mode', 'requests', 'state', 'waiting', 'reason', 'parent_id',
-    'origin', 'has_session', 'created_at', 'updated_at',
+    'origin', 'has_session', 'stop_requested', 'created_at', 'updated_at',
 )
 
 
@@ -56,6 +57,31 @@ def select(tx: sqlite3.Connection, project_id: str | None = None) -> list[sqlite
         return _rows(tx, 'SELECT * FROM threads ORDER BY created_at, id')
     return _rows(tx, 'SELECT * FROM threads WHERE project_id = ? ORDER BY created_at, id',
                  (project_id,))
+
+
+def stop_targets(tx: sqlite3.Connection, thread_id: str) -> list[sqlite3.Row]:
+    return _rows(
+        tx,
+        'WITH RECURSIVE tree(id) AS ('
+        ' SELECT id FROM threads WHERE id = ?'
+        ' UNION SELECT threads.id FROM threads JOIN tree ON threads.parent_id = tree.id'
+        ') SELECT threads.* FROM threads JOIN tree ON threads.id = tree.id'
+        ' WHERE threads.state NOT IN (?, ?) ORDER BY threads.created_at, threads.id',
+        (thread_id, *sorted(ENDED)),
+    )
+
+
+def request_stop(store: Store, tx: sqlite3.Connection, thread_id: str) -> None:
+    row = fetch(tx, thread_id)
+    tx.execute('UPDATE threads SET stop_requested = 1 WHERE id = ?', (thread_id,))
+    transition(store, tx, thread_id, ThreadState(row['state']), STOPPING)
+
+
+def clear_stop(store: Store, tx: sqlite3.Connection, thread_id: str) -> None:
+    row = fetch(tx, thread_id)
+    tx.execute('UPDATE threads SET stop_requested = 0 WHERE id = ?', (thread_id,))
+    if row['state'] in LIVE and row['reason'] == STOPPING:
+        transition(store, tx, thread_id, ThreadState(row['state']))
 
 
 def narrower(first: PermissionMode, second: PermissionMode) -> PermissionMode:
@@ -98,8 +124,8 @@ def _state_data(state: ThreadState, waiting: bool, reason: str | None) -> dict[s
 def insert(store: Store, tx: sqlite3.Connection, fields: Mapping[str, object]) -> sqlite3.Row:
     now = iso(store.clock())
     values = {column: None for column in COLUMNS}
-    values.update(state=ThreadState.QUEUED, waiting=0, has_session=0, created_at=now,
-                  updated_at=now)
+    values.update(state=ThreadState.QUEUED, waiting=0, has_session=0, stop_requested=0,
+                  created_at=now, updated_at=now)
     values.update(fields)
     tx.execute(
         f'INSERT INTO threads ({", ".join(COLUMNS)}) VALUES ({", ".join("?" for _ in COLUMNS)})',
@@ -118,6 +144,8 @@ def transition(store: Store, tx: sqlite3.Connection, thread_id: str, state: Thre
     state = ThreadState(state)
     if current in ENDED or (state != current and state not in ALLOWED[current]):
         raise LoomError('conflict', f'thread {thread_id} cannot go from {current} to {state}')
+    if reason is None and row['stop_requested'] and state in LIVE:
+        reason = STOPPING
     if state is not ThreadState.RUNNING:
         waiting = False
     elif waiting is None:

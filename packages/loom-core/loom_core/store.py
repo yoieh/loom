@@ -62,6 +62,7 @@ SCHEMA: list[str] = [
         parent_id TEXT,
         origin TEXT,
         has_session INTEGER NOT NULL DEFAULT 0,
+        stop_requested INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )''',
