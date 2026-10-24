@@ -7,12 +7,28 @@ from .errors import LoomError
 
 GIT_ENV_KEYS = ('HOME', 'LANG', 'LC_ALL', 'PATH', 'TMPDIR')
 MAX_STDERR = 500
+KILL_GRACE = 2.0
 
 
 def git_env() -> dict[str, str]:
     env = {key: os.environ[key] for key in GIT_ENV_KEYS if key in os.environ}
     env['GIT_TERMINAL_PROMPT'] = '0'
     return env
+
+
+async def _stop(process: asyncio.subprocess.Process) -> None:
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.wait_for(process.wait(), KILL_GRACE)
+    except TimeoutError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        await process.wait()
 
 
 async def run_git(args: Sequence[str], cwd: Path) -> str:
@@ -27,7 +43,11 @@ async def run_git(args: Sequence[str], cwd: Path) -> str:
         )
     except (OSError, ValueError) as error:
         raise LoomError('failed', f'git could not start in {cwd}: {error}') from error
-    stdout, stderr = await process.communicate()
+    try:
+        stdout, stderr = await process.communicate()
+    except asyncio.CancelledError:
+        await _stop(process)
+        raise
     if process.returncode != 0:
         message = stderr.decode('utf-8', 'replace').strip()
         if not message:
