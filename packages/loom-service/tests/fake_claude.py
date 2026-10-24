@@ -2,6 +2,8 @@ import json
 import os
 import sys
 
+ENDLESS = 'Never end this turn.'
+
 
 def write_private(path: str, data: bytes) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -66,6 +68,8 @@ def main() -> None:
         except ValueError:
             continue
         if isinstance(data, dict) and data.get('type') == 'user':
+            if message_text(data) == ENDLESS:
+                continue
             number += 1
             turn(out, session, number, message_text(data))
 

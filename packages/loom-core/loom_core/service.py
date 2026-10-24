@@ -9,6 +9,7 @@ from . import keys
 from .errors import LoomError
 from .orchestrator import Orchestrator
 from .projects import Projects
+from .slots import StartSource
 from .store import MAX_EVENT_ID, MAX_EVENTS, Store
 
 SERVED: tuple[str, ...] = (
@@ -22,6 +23,7 @@ SERVED: tuple[str, ...] = (
 class Caller:
     thread_id: str | None = None
     verified: bool = True
+    scheduled: bool = False
     schedule_id: str | None = None
 
 
@@ -51,6 +53,14 @@ def _is_person(caller: Caller) -> bool:
     if caller.schedule_id is not None:
         return False
     return caller.thread_id is None and caller.verified is True
+
+
+def _source(caller: Caller) -> StartSource:
+    if caller.scheduled:
+        return StartSource.SCHEDULE
+    if caller.thread_id is not None or caller.verified is not True:
+        return StartSource.AGENT
+    return StartSource.PERSON
 
 
 def _events_params(params: object) -> tuple[int, str | None, bool]:
@@ -137,13 +147,13 @@ class Service:
             remove()
 
     async def _launch(self, params: object, caller: Caller) -> ThreadInfo:
-        return await self.orchestrator.launch(params)
+        return await self.orchestrator.launch(params, source=_source(caller))
 
     async def _delegate(self, params: object, caller: Caller) -> ThreadInfo:
-        return await self.orchestrator.delegate(params)
+        return await self.orchestrator.delegate(params, source=StartSource.AGENT)
 
     async def _send(self, params: object, caller: Caller) -> ThreadInfo:
-        return await self.orchestrator.send(params)
+        return await self.orchestrator.send(params, source=_source(caller))
 
     async def _list_threads(self, params: object, caller: Caller) -> list[ThreadInfo]:
         params = _params(params)

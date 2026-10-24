@@ -15,6 +15,7 @@ from loom_service.config import Config
 from loom_service.serve import Serving, start
 
 TIMEOUT = 5.0
+PLENTY = 64 * 2**30
 FAKE_CLAUDE = Path(__file__).resolve().parent / 'fake_claude.py'
 SETUP_ENV = {**os.environ, 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}
 
@@ -181,6 +182,7 @@ class ServerCase(unittest.IsolatedAsyncioTestCase):
 
     async def serve(self, config: Config | None = None, socket: Path | None = None,
                     data_dir: Path | None = None, **options: object) -> Serving:
+        options.setdefault('memory', lambda: PLENTY)
         serving = await start(socket or self.socket, data_dir or self.data_dir,
                               config or self.config(), environ=self.environ, log=self.log,
                               **options)

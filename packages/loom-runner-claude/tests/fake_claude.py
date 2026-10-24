@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -48,10 +49,24 @@ def fail(code: int) -> None:
     sys.exit(code)
 
 
+def start_grandchild(cwd: str) -> None:
+    child = subprocess.Popen(['sleep', '60'], stdin=subprocess.DEVNULL)
+    write_private(os.path.join(cwd, 'grandchild.pid'), str(child.pid).encode())
+
+
 def main() -> None:
     cwd = os.getcwd()
-    spawned = {'argv': sys.argv, 'cwd': cwd, 'env': dict(os.environ)}
+    spawned = {
+        'argv': sys.argv,
+        'cwd': cwd,
+        'env': dict(os.environ),
+        'pid': os.getpid(),
+        'pgid': os.getpgrp(),
+    }
     write_private(os.path.join(cwd, 'spawned.json'), json.dumps(spawned).encode())
+    if os.path.exists(os.path.join(cwd, 'grandchild')):
+        start_grandchild(cwd)
+    exit_after_turn = os.path.exists(os.path.join(cwd, 'exit-after-turn'))
     code = fail_code(cwd)
     turns = [] if code is not None else replay_turns(os.path.join(cwd, 'replay.jsonl'))
     out = sys.stdout.buffer
@@ -63,6 +78,8 @@ def main() -> None:
             for reply in turns.pop(0):
                 out.write(reply + b'\n')
             out.flush()
+            if exit_after_turn:
+                return
     if os.path.exists(os.path.join(cwd, 'ignore-eof')):
         while True:
             time.sleep(60)

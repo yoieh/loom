@@ -4,13 +4,14 @@ import os
 import signal
 import sqlite3
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TextIO
 
 from loom_core.orchestrator import Orchestrator
 from loom_core.projects import Projects
 from loom_core.service import Service
+from loom_core.slots import available_memory, default_agents_max
 from loom_core.store import Store
 from loom_runner_claude import ClaudeRunner
 from loom_scheduler import Scheduler
@@ -48,10 +49,19 @@ class Serving:
 
 async def start(socket: Path, data_dir: Path, config: Config, *,
                 environ: Mapping[str, str] | None = None, log: TextIO | None = None,
-                max_line: int = MAX_LINE, proc: str | Path = PROC) -> Serving:
+                max_line: int = MAX_LINE, proc: str | Path = PROC,
+                memory: Callable[[], int | None] = available_memory) -> Serving:
     log = sys.stderr if log is None else log
     server = Server(socket, max_line=max_line, log=log, proc=proc)
     server.bind()
+    agents_max = config.agents_max
+    if agents_max is None:
+        available = memory()
+        if available is None:
+            await server.close()
+            server.unlink()
+            raise StartError('cannot read the available memory; set agents_max in the config')
+        agents_max = default_agents_max(available)
     try:
         store = Store.open(data_dir)
     except (OSError, sqlite3.Error) as error:
@@ -60,7 +70,9 @@ async def start(socket: Path, data_dir: Path, config: Config, *,
         raise StartError(f'cannot open the store in {data_dir}: {error}') from None
     projects = Projects(store, default_mode=config.permission_mode)
     host = Host(data_dir, socket, config, environ, log)
-    orchestrator = Orchestrator(store, projects, {'claude': ClaudeRunner()}, host)
+    orchestrator = Orchestrator(store, projects, {'claude': ClaudeRunner()}, host,
+                                agents_max=agents_max, idle_after=config.idle_after)
+    await orchestrator.recover()
     service = Service(store, projects, orchestrator)
     scheduler = Scheduler(ServiceHost(store, service), clock=store.clock)
     try:
@@ -73,6 +85,7 @@ async def start(socket: Path, data_dir: Path, config: Config, *,
     serve_schedules(service, scheduler)
     await server.start(service)
     await scheduler.start()
+    log.write(f'loom: agents_max {agents_max}\n')
     log.write(f'loom: serving on {socket}\n')
     log.flush()
     return Serving(server, service, log, scheduler=scheduler)

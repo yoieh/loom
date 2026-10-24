@@ -2,6 +2,7 @@ import asyncio
 import sqlite3
 import uuid
 from collections.abc import Mapping
+from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
@@ -19,12 +20,14 @@ from .clock import iso
 from .errors import LoomError
 from .lanes import Lanes
 from .projects import Projects
+from .slots import StartSource
 from .store import Store
-from .threads import ENDED, fetch, thread_info, transition
+from .threads import ENDED, LIVE, fetch, thread_info, transition
 from .workspaces import WorkspacePlan, make_workspace, plan_workspace
 
 REQUESTS = ('caller', 'any')
 DEFAULT_WORKSPACE = {'strategy': WorkspaceStrategy.WORKTREE.value}
+RECOVERED = frozenset({ThreadState.STARTING, ThreadState.RUNNING, ThreadState.IDLE})
 
 
 def _params(params: object) -> dict:
@@ -85,20 +88,30 @@ def _reason(error: BaseException) -> str:
 
 class Orchestrator:
     def __init__(self, store: Store, projects: Projects, runners: Mapping[str, Runner],
-                 host: RunnerHost, *, stop_grace: float = 5.0) -> None:
+                 host: RunnerHost, *, stop_grace: float = 5.0, agents_max: int = 1000,
+                 idle_after: int = 1200, idle_check: float = 30.0) -> None:
         self.store = store
         self.projects = projects
         self.runners = runners
         self.host = host
         self.stop_grace = stop_grace
+        self.agents_max = agents_max
+        self.idle_after = idle_after
+        self.idle_check = idle_check
         self.lanes = Lanes()
         self._sessions: dict[str, RunnerSession] = {}
         self._pumps: dict[RunnerSession, asyncio.Task] = {}
         self._turn_ends: dict[str, asyncio.Future] = {}
         self._stop_waits: dict[str, asyncio.Task] = {}
         self._closing = False
+        self._slots: set[str] = set()
+        self._starting: set[str] = set()
+        self._sleepers: set[str] = set()
+        self._idle_since: dict[str, datetime] = {}
+        self._idle_task: asyncio.Task | None = None
 
-    async def launch(self, params: object) -> ThreadInfo:
+    async def launch(self, params: object, *,
+                     source: StartSource = StartSource.PERSON) -> ThreadInfo:
         params = _params(params)
         title = _text(_required(params, 'title'), 'title')
         message = _text(_required(params, 'message'), 'message')
@@ -145,16 +158,17 @@ class Orchestrator:
                 'requests': requests,
                 'origin': origin,
             })
+            threads.add_start(tx, thread_id, source, row['created_at'])
             self._add_message(tx, thread_id, f'{command_id}:message', message, DispatchMode.STEER)
             return thread_info(row)
 
         receipt = self.store.command(command_id, CallName.THREADS_LAUNCH, change)
         if not receipt.replayed:
-            thread_id = receipt.answer['id']
-            self.lanes.submit(thread_id, lambda: self._start(thread_id))
+            self._submit_start(receipt.answer['id'])
         return receipt.answer
 
-    async def delegate(self, params: object) -> ThreadInfo:
+    async def delegate(self, params: object, *,
+                       source: StartSource = StartSource.PERSON) -> ThreadInfo:
         params = _params(params)
         parent_id = _string(_required(params, keys.PARENT_KEY), keys.PARENT_KEY)
         task = _text(_required(params, 'task'), 'task')
@@ -200,16 +214,17 @@ class Orchestrator:
                 'requests': parent['requests'],
                 'parent_id': parent_id,
             })
+            threads.add_start(tx, thread_id, source, row['created_at'])
             self._add_message(tx, thread_id, f'{command_id}:message', task, DispatchMode.STEER)
             return thread_info(row)
 
         receipt = self.store.command(command_id, CallName.THREADS_DELEGATE, change)
         if not receipt.replayed:
-            thread_id = receipt.answer['id']
-            self.lanes.submit(thread_id, lambda: self._start(thread_id))
+            self._submit_start(receipt.answer['id'])
         return receipt.answer
 
-    async def send(self, params: object) -> ThreadInfo:
+    async def send(self, params: object, *,
+                   source: StartSource = StartSource.PERSON) -> ThreadInfo:
         params = _params(params)
         thread_id = _string(_required(params, 'thread_id'), 'thread_id')
         message = _text(_required(params, 'message'), 'message')
@@ -229,7 +244,7 @@ class Orchestrator:
 
         receipt = self.store.command(command_id, CallName.THREADS_SEND, change)
         if not receipt.replayed:
-            self.lanes.submit(thread_id, lambda: self._deliver(thread_id, seq))
+            self.lanes.submit(thread_id, lambda: self._deliver(thread_id, seq, source))
         return receipt.answer
 
     async def settle(self, params: object) -> ThreadInfo:
@@ -245,6 +260,7 @@ class Orchestrator:
                 reason = row['reason'] if before is ThreadState.FAILED else None
                 transition(self.store, tx, thread_id, ThreadState.SETTLED, reason)
                 tx.execute('DELETE FROM messages WHERE thread_id = ?', (thread_id,))
+                tx.execute('DELETE FROM continuations WHERE thread_id = ?', (thread_id,))
             return thread_info(fetch(tx, thread_id))
 
         receipt = self.store.command(params.get('id'), CallName.THREADS_SETTLE, change)
@@ -284,6 +300,10 @@ class Orchestrator:
 
     async def close(self) -> None:
         self._closing = True
+        if self._idle_task is not None:
+            self._idle_task.cancel()
+            await asyncio.gather(self._idle_task, return_exceptions=True)
+            self._idle_task = None
         waits = list(self._stop_waits.values())
         for wait in waits:
             wait.cancel()
@@ -292,12 +312,75 @@ class Orchestrator:
         await self.lanes.drain()
         sessions = list(self._sessions.values())
         self._sessions.clear()
-        for session in sessions:
-            await self._close_session(session)
+        await asyncio.gather(*(self._close_session(session) for session in sessions))
         pumps = list(self._pumps.values())
         for pump in pumps:
             pump.cancel()
         await asyncio.gather(*pumps, return_exceptions=True)
+
+    async def recover(self) -> None:
+        for row in threads.select(self.store.connection):
+            if row['state'] in RECOVERED or (row['stop_requested'] and row['state'] in LIVE):
+                with self.store.transaction() as tx:
+                    self._recover(tx, fetch(tx, row['id']))
+        starts: list[tuple[int, str, str, int | None]] = [
+            (rank, at, thread_id, None)
+            for rank, at, thread_id in threads.start_queue(self.store.connection)]
+        now = iso(self.store.clock())
+        for row in threads.select(self.store.connection):
+            found = self.store.connection.execute(
+                'SELECT seq FROM messages WHERE thread_id = ? '
+                'ORDER BY priority DESC, seq LIMIT 1', (row['id'],),
+            ).fetchone()
+            if (row['state'] in LIVE and row['state'] != ThreadState.QUEUED
+                    and found is not None):
+                starts.append((StartSource.AGENT, now, row['id'], found[0]))
+        for _, _, thread_id, seq in sorted(starts):
+            if seq is None:
+                self._submit_start(thread_id)
+            else:
+                self.lanes.submit(thread_id, lambda thread_id=thread_id, seq=seq:
+                                  self._deliver(thread_id, seq, StartSource.AGENT))
+        if self._idle_task is None and not self._closing:
+            self._idle_task = asyncio.get_running_loop().create_task(
+                self._check_idle(), name='loom-idle')
+
+    async def sleep_idle(self) -> None:
+        cutoff = self.store.clock() - timedelta(seconds=self.idle_after)
+        due = [thread_id for thread_id, since in self._idle_since.items()
+               if since <= cutoff and self._sleepable(thread_id)]
+        waits = []
+        for thread_id in due:
+            self._sleepers.add(thread_id)
+            waits.append(self.lanes.submit(
+                thread_id, lambda thread_id=thread_id: self._put_to_sleep(thread_id)))
+        if waits:
+            await asyncio.wait(waits)
+
+    async def _check_idle(self) -> None:
+        while True:
+            await asyncio.sleep(self.idle_check)
+            try:
+                await self.sleep_idle()
+            except Exception:
+                pass
+
+    def _recover(self, tx: sqlite3.Connection, row: sqlite3.Row) -> None:
+        thread_id = row['id']
+        state = ThreadState(row['state'])
+        stopping = bool(row['stop_requested'])
+        if state is ThreadState.RUNNING and not stopping:
+            self.store.append_event(tx, EventType.TURN_RESULT, thread_id,
+                                    {'state': TurnState.FAILED, 'reason': 'restart'})
+            self._crash(tx, row)
+            return
+        if state is ThreadState.RUNNING:
+            self.store.append_event(tx, EventType.TURN_RESULT, thread_id,
+                                    {'state': TurnState.STOPPED, 'reason': 'stop'})
+        if state in RECOVERED or (stopping and state is ThreadState.QUEUED):
+            transition(self.store, tx, thread_id, ThreadState.SLEEPING)
+        if stopping:
+            threads.clear_stop(self.store, tx, thread_id)
 
     def _add_message(self, tx: sqlite3.Connection, thread_id: str, command_id: str,
                      text: str, mode: DispatchMode, priority: int = 0) -> int:
@@ -327,6 +410,7 @@ class Orchestrator:
         session = self._sessions.pop(thread_id, None)
         if session is not None:
             await self._close_session(session)
+        self._give_back(thread_id)
 
     async def _close_session(self, session: RunnerSession) -> None:
         try:
@@ -334,16 +418,110 @@ class Orchestrator:
         except Exception:
             pass
 
+    def _submit_start(self, thread_id: str) -> None:
+        self._starting.add(thread_id)
+        self.lanes.submit(thread_id, lambda: self._start(thread_id))
+
     async def _start(self, thread_id: str) -> None:
+        try:
+            row = self._row(thread_id)
+            if row['state'] != ThreadState.QUEUED:
+                return
+            if row['stop_requested']:
+                self._move(thread_id, ThreadState.SLEEPING)
+                return
+            await self._admit(thread_id, None)
+        finally:
+            self._starting.discard(thread_id)
+            self._check_slot(thread_id)
+
+    async def _admit(self, thread_id: str, source: StartSource | None) -> None:
+        while thread_id not in self._slots:
+            if self._closing:
+                return
+            if len(self._slots) < self.agents_max:
+                self._slots.add(thread_id)
+                break
+            victim = self._longest_idle(thread_id)
+            if victim is None:
+                if source is not None:
+                    self._enqueue(thread_id, source)
+                return
+            freed = asyncio.get_running_loop().create_future()
+            self._sleepers.add(victim)
+            self.lanes.submit(victim, lambda victim=victim, freed=freed:
+                              self._put_to_sleep(victim, (thread_id, freed)))
+            await freed
+        await self._boot(thread_id, resume=bool(self._row(thread_id)['has_session']))
+        self._check_slot(thread_id)
+
+    def _enqueue(self, thread_id: str, source: StartSource) -> None:
+        with self.store.transaction() as tx:
+            if fetch(tx, thread_id)['state'] == ThreadState.SLEEPING:
+                transition(self.store, tx, thread_id, ThreadState.QUEUED)
+                threads.add_start(tx, thread_id, source, iso(self.store.clock()))
+
+    def _queue(self) -> list[str]:
+        return [thread_id for _, _, thread_id in threads.start_queue(self.store.connection)
+                if thread_id not in self._slots and thread_id not in self._starting]
+
+    def _sleepable(self, thread_id: str) -> bool:
+        if thread_id not in self._sessions or thread_id in self._sleepers:
+            return False
         row = self._row(thread_id)
-        if row['state'] != ThreadState.QUEUED:
+        return row['state'] == ThreadState.IDLE and not row['stop_requested']
+
+    def _longest_idle(self, other_than: str | None = None) -> str | None:
+        found = sorted((since, thread_id) for thread_id, since in self._idle_since.items()
+                       if thread_id != other_than and self._sleepable(thread_id))
+        return found[0][1] if found else None
+
+    def _check_slot(self, thread_id: str) -> None:
+        if thread_id in self._slots and thread_id not in self._sessions:
+            self._give_back(thread_id)
+
+    def _give_back(self, thread_id: str) -> None:
+        self._idle_since.pop(thread_id, None)
+        if thread_id not in self._slots:
             return
-        if row['stop_requested']:
+        self._slots.discard(thread_id)
+        if self._closing:
+            return
+        for head in self._queue()[:max(0, self.agents_max - len(self._slots))]:
+            self._slots.add(head)
+            self._submit_start(head)
+
+    def _hand_over(self, thread_id: str) -> None:
+        if self._closing or self._row(thread_id)['state'] != ThreadState.IDLE:
+            return
+        queue = self._queue()
+        if queue and self._longest_idle(queue[0]) is not None:
+            self._submit_start(queue[0])
+
+    async def _put_to_sleep(self, thread_id: str,
+                            waiter: tuple[str, asyncio.Future] | None = None) -> None:
+        self._sleepers.discard(thread_id)
+        try:
+            session = self._sessions.get(thread_id)
+            row = self._row(thread_id)
+            if session is None or row['state'] != ThreadState.IDLE or row['stop_requested']:
+                return
+            del self._sessions[thread_id]
+            await self._close_session(session)
             self._move(thread_id, ThreadState.SLEEPING)
-            return
-        await self._boot(thread_id, resume=False)
+            if waiter is None:
+                self._give_back(thread_id)
+            else:
+                self._idle_since.pop(thread_id, None)
+                self._slots.discard(thread_id)
+                self._slots.add(waiter[0])
+        finally:
+            if waiter is not None and not waiter[1].done():
+                waiter[1].set_result(None)
 
     async def _boot(self, thread_id: str, resume: bool) -> None:
+        if self._closing:
+            return
         row = self._row(thread_id)
         plan = WorkspacePlan(WorkspaceStrategy(row['workspace_strategy']), row['workspace_path'],
                              row['branch'], row['base'])
@@ -413,6 +591,7 @@ class Orchestrator:
                 self._sessions.pop(thread_id, None)
                 await self._close_session(session)
                 self._move(thread_id, ThreadState.SLEEPING)
+                self._give_back(thread_id)
             return
         try:
             await session.send(found[1], DispatchMode.QUEUE)
@@ -425,7 +604,7 @@ class Orchestrator:
             tx.execute('DELETE FROM messages WHERE seq = ?', (found[0],))
             transition(self.store, tx, thread_id, ThreadState.RUNNING)
 
-    async def _deliver(self, thread_id: str, seq: int) -> None:
+    async def _deliver(self, thread_id: str, seq: int, source: StartSource) -> None:
         row = self._row(thread_id)
         if row['stop_requested']:
             return
@@ -434,7 +613,10 @@ class Orchestrator:
             if row['has_session'] and not self._capable(row, Capability.RESUME):
                 await self._fail(thread_id, 'runner cannot resume')
                 return
-            await self._boot(thread_id, resume=bool(row['has_session']))
+            await self._admit(thread_id, source)
+        elif state is ThreadState.QUEUED:
+            with self.store.transaction() as tx:
+                threads.rank_start(tx, thread_id, source)
         elif state is ThreadState.IDLE:
             await self._dispatch_next(thread_id)
         elif state is ThreadState.RUNNING:
@@ -470,6 +652,7 @@ class Orchestrator:
             except Exception:
                 pass
         await self._close_session(session)
+        self._give_back(thread_id)
 
     async def _stop_turn(self, thread_id: str) -> None:
         row = self._row(thread_id)
@@ -514,6 +697,7 @@ class Orchestrator:
     async def _cut_turn(self, thread_id: str, session: RunnerSession) -> None:
         self._sessions.pop(thread_id, None)
         await self._close_session(session)
+        self._give_back(thread_id)
         with self.store.transaction() as tx:
             if fetch(tx, thread_id)['state'] in ENDED:
                 return
@@ -530,7 +714,9 @@ class Orchestrator:
                 'ORDER BY priority DESC, seq LIMIT 1', (thread_id,),
             ).fetchone()
         if live and found is not None:
-            await self._deliver(thread_id, found[0])
+            await self._deliver(thread_id, found[0], StartSource.AGENT)
+        if live:
+            self._hand_over(thread_id)
 
     async def _pump(self, thread_id: str, session: RunnerSession) -> None:
         try:
@@ -557,7 +743,10 @@ class Orchestrator:
             state = ThreadState(row['state'])
             live = current and state not in ENDED
             self._log(tx, thread_id, event, state if live else None)
-            if live:
+            if live and (isinstance(event, Exited) and state is ThreadState.RUNNING
+                         and not row['stop_requested']):
+                posted = self._crash(tx, row)
+            elif live:
                 posted = self._post_result(tx, row, event)
                 turn_over = self._apply(tx, row, event)
         if current and isinstance(event, (TurnResult, Exited)):
@@ -566,28 +755,47 @@ class Orchestrator:
                 ended.set_result(None)
         if posted is not None:
             parent_id, seq = posted
-            self.lanes.submit(parent_id, lambda: self._deliver(parent_id, seq))
+            self.lanes.submit(parent_id, lambda: self._deliver(parent_id, seq,
+                                                               StartSource.AGENT))
         if not live:
             return
         if isinstance(event, Exited):
             self._sessions.pop(thread_id, None)
             await self._close_session(session)
+            self._give_back(thread_id)
         elif turn_over and not row['stop_requested']:
             await self._dispatch_next(thread_id)
+            self._hand_over(thread_id)
 
     def _post_result(self, tx: sqlite3.Connection, row: sqlite3.Row,
                      event: RunnerEvent) -> tuple[str, int] | None:
         if (not isinstance(event, TurnResult) or event.state not in delegation.POSTED
-                or row['state'] != ThreadState.RUNNING or row['parent_id'] is None
-                or row['stop_requested']):
+                or row['state'] != ThreadState.RUNNING):
+            return None
+        return self._post(tx, row, event)
+
+    def _post(self, tx: sqlite3.Connection, row: sqlite3.Row,
+              result: TurnResult) -> tuple[str, int] | None:
+        if row['parent_id'] is None or row['stop_requested']:
             return None
         parent = fetch(tx, row['parent_id'])
         if parent['state'] in ENDED or parent['stop_requested']:
             return None
         seq = self._add_message(tx, parent['id'], f'{row["id"]}:result',
-                                delegation.result_text(row, event), DispatchMode.QUEUE,
+                                delegation.result_text(row, result), DispatchMode.QUEUE,
                                 priority=1)
         return parent['id'], seq
+
+    def _crash(self, tx: sqlite3.Connection, row: sqlite3.Row) -> tuple[str, int] | None:
+        thread_id = row['id']
+        count = threads.add_continuation(self.store, tx, thread_id)
+        if count is None:
+            transition(self.store, tx, thread_id, ThreadState.FAILED, threads.CRASHED)
+            return self._post(tx, row, TurnResult(TurnState.FAILED, None, threads.CRASHED))
+        seq = self._add_message(tx, thread_id, f'{thread_id}:continuation:{count}',
+                                threads.CONTINUATION, DispatchMode.QUEUE, priority=2)
+        transition(self.store, tx, thread_id, ThreadState.SLEEPING)
+        return thread_id, seq
 
     def _log(self, tx: sqlite3.Connection, thread_id: str, event: RunnerEvent,
              state: ThreadState | None) -> None:
@@ -623,6 +831,7 @@ class Orchestrator:
             transition(self.store, tx, thread_id, state, row['reason'], waiting=True)
         elif isinstance(event, TurnResult) and state is ThreadState.RUNNING:
             transition(self.store, tx, thread_id, ThreadState.IDLE)
+            self._idle_since[thread_id] = self.store.clock()
             return True
         elif isinstance(event, Exited) and state in (ThreadState.RUNNING, ThreadState.IDLE):
             transition(self.store, tx, thread_id, ThreadState.SLEEPING)
