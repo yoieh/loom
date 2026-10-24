@@ -398,7 +398,8 @@ resumed first. Resuming takes a slot as a start does under [`threads.launch`](#t
 with none free, the longest-idle thread is put to sleep, or the thread waits `queued` until a
 slot is free. The send is never refused for that. A message from an agent's thread ranks as an
 agent's start, and a second message to a `queued` thread keeps its place in the queue and takes
-the better rank.
+the better rank. A message sent while its thread is being stopped is kept until the stop is
+done; then, and after a restart, it ranks by its sender.
 
 Loom keeps a message until it has handed it to the agent. When the agent process exits during a
 turn, without the turn's result, the turn fails (`turn.result` with reason `exited`) and Loom
