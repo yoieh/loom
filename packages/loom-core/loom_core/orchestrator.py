@@ -3,8 +3,9 @@ import sqlite3
 import uuid
 from collections.abc import Mapping
 from enum import StrEnum
+from pathlib import Path
 
-from loom_contracts.calls import CallName, ThreadInfo
+from loom_contracts.calls import CallName, ProjectInfo, ThreadInfo
 from loom_contracts.events import EventType
 from loom_contracts.runners import (
     Capability, DispatchMode, Exited, PermissionMode, PermissionRequest, Runner, RunnerEvent,
@@ -67,6 +68,15 @@ def _choice[E: StrEnum](value: object, field: str, kind: type[E]) -> E:
     raise LoomError('invalid', f'{field} must be one of {", ".join(item for item in kind)}')
 
 
+def _plan(tx: sqlite3.Connection, workspace: object, project: ProjectInfo, project_id: str,
+          thread_id: str, data_dir: Path) -> WorkspacePlan:
+    plan = plan_workspace(workspace, project, thread_id, data_dir)
+    if (plan.strategy is WorkspaceStrategy.EXISTING_WORKTREE
+            and not threads.uses_workspace(tx, project_id, plan.path)):
+        raise LoomError('invalid', 'path is not the workspace of a thread of this project')
+    return plan
+
+
 def _reason(error: BaseException) -> str:
     if isinstance(error, LoomError):
         return error.message
@@ -120,7 +130,7 @@ class Orchestrator:
             project = self.projects.get(project_id)
             mode = self.projects.effective_mode(project_id)
             thread_id = str(uuid.uuid4())
-            plan = plan_workspace(workspace, project, thread_id, self.store.data_dir)
+            plan = _plan(tx, workspace, project, project_id, thread_id, self.store.data_dir)
             row = threads.insert(self.store, tx, {
                 'id': thread_id,
                 'title': title,
@@ -175,7 +185,7 @@ class Orchestrator:
             project = self.projects.get(project_id)
             thread_id = str(uuid.uuid4())
             chosen = workspace if workspace is not None else delegation.parent_workspace(parent)
-            plan = plan_workspace(chosen, project, thread_id, self.store.data_dir)
+            plan = _plan(tx, chosen, project, project_id, thread_id, self.store.data_dir)
             row = threads.insert(self.store, tx, {
                 'id': thread_id,
                 'title': delegation.child_title(task),
