@@ -31,7 +31,7 @@ class ThreadsLaunchParams(TypedDict):
     id: str
     title: str
     message: str
-    project: str
+    project_id: str
     workspace: NotRequired[Workspace]
     runner: NotRequired[RunnerName]
     model: NotRequired[str]
@@ -41,7 +41,7 @@ class ThreadsLaunchParams(TypedDict):
 
 class ThreadsDelegateParams(TypedDict):
     id: str
-    parent: str
+    parent_id: str
     task: str
     workspace: NotRequired[Workspace]
     runner: NotRequired[RunnerName]
@@ -56,7 +56,7 @@ class ThreadsSendParams(TypedDict):
 
 
 class ThreadsListParams(TypedDict):
-    project: NotRequired[str]
+    project_id: NotRequired[str]
 
 
 class ThreadsGetParams(TypedDict):
@@ -91,13 +91,13 @@ class SchedulesAddParams(TypedDict):
     text: str
     action: NotRequired[ScheduleAction]
     thread_id: NotRequired[str]
-    project: NotRequired[str]
+    project_id: NotRequired[str]
     title: NotRequired[str]
 
 
 class SchedulesListParams(TypedDict):
     thread_id: NotRequired[str]
-    project: NotRequired[str]
+    project_id: NotRequired[str]
 
 
 class SchedulesPauseParams(TypedDict):
