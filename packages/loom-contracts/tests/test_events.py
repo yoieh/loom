@@ -12,7 +12,7 @@ DATA: dict[str, tuple[set[str], set[str]]] = {
     'thread.failed': ({'reason'}, set()),
     'turn.started': (set(), set()),
     'turn.text': ({'text'}, set()),
-    'turn.tool': ({'name', 'input'}, set()),
+    'turn.tool': ({'tool_use_id', 'name', 'input'}, set()),
     'turn.result': ({'state'}, {'text', 'reason'}),
     'request.opened': ({'request_id', 'tool_name', 'input'}, {'description'}),
     'request.closed': ({'request_id', 'decision'}, set()),

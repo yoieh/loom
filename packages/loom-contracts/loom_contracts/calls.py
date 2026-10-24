@@ -76,6 +76,7 @@ class ThreadsSettleParams(TypedDict):
 class ThreadsEventsParams(TypedDict):
     after: NotRequired[int]
     thread_id: NotRequired[str]
+    follow: NotRequired[bool]
 
 
 class RequestsRespondParams(TypedDict):

@@ -343,7 +343,8 @@ class EventsTest(OrchestratorTest):
         self.assertEqual(logged, [
             (EventType.TURN_STARTED, {}),
             (EventType.TURN_TEXT, {'text': 'Working on it'}),
-            (EventType.TURN_TOOL, {'name': 'Bash', 'input': {'command': 'ls'}}),
+            (EventType.TURN_TOOL, {'tool_use_id': 't1', 'name': 'Bash',
+                                    'input': {'command': 'ls'}}),
             (EventType.REQUEST_OPENED, {'request_id': 'r1', 'tool_name': 'Bash',
                                         'input': {'command': 'rm x'},
                                         'description': 'Remove x'}),

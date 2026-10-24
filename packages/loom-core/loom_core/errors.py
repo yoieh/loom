@@ -1,6 +1,6 @@
 from loom_contracts.calls import ApiError
 
-CODES = frozenset({'invalid', 'not_found', 'conflict', 'failed'})
+CODES = frozenset({'invalid', 'not_found', 'conflict', 'failed', 'forbidden'})
 
 
 class LoomError(Exception):

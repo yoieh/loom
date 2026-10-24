@@ -35,7 +35,7 @@ PARAMS: dict[str, tuple[set[str], set[str]]] = {
     'threads.get': ({'thread_id'}, set()),
     'threads.stop': ({'id', 'thread_id'}, set()),
     'threads.settle': ({'id', 'thread_id'}, set()),
-    'threads.events': (set(), {'after', 'thread_id'}),
+    'threads.events': (set(), {'after', 'thread_id', 'follow'}),
     'requests.respond': ({'id', 'request_id', 'decision'}, {'message'}),
     'schedules.add': (
         {'id', 'trigger', 'text'}, {'action', 'thread_id', 'project_id', 'title'},
