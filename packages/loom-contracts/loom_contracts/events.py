@@ -37,6 +37,7 @@ class TurnTextData(TypedDict):
 
 
 class TurnToolData(TypedDict):
+    tool_use_id: str
     name: str
     input: dict[str, object]
 

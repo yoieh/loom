@@ -586,7 +586,8 @@ class Orchestrator:
         elif isinstance(event, TextOut):
             append(tx, EventType.TURN_TEXT, thread_id, {'text': event.text})
         elif isinstance(event, ToolUse):
-            append(tx, EventType.TURN_TOOL, thread_id, {'name': event.name, 'input': event.input})
+            append(tx, EventType.TURN_TOOL, thread_id, {'tool_use_id': event.tool_use_id,
+                                                        'name': event.name, 'input': event.input})
         elif isinstance(event, PermissionRequest):
             data = {'request_id': event.request_id, 'tool_name': event.tool_name,
                     'input': event.input}

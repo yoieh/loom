@@ -115,6 +115,8 @@ class Store:
         self.connection = connection
         self.clock = clock
         self.data_dir = data_dir
+        self.listeners: set[Callable[[], None]] = set()
+        self._wrote_events = False
 
     @classmethod
     def open(cls, data_dir: Path, clock: Clock = utc_now) -> 'Store':
@@ -138,13 +140,26 @@ class Store:
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         self.connection.execute('BEGIN IMMEDIATE')
+        self._wrote_events = False
         try:
             yield self.connection
             self.connection.execute('COMMIT')
         except BaseException:
+            self._wrote_events = False
             if self.connection.in_transaction:
                 self.connection.execute('ROLLBACK')
             raise
+        if self._wrote_events:
+            self._wrote_events = False
+            self._notify()
+
+    def listen(self, listener: Callable[[], None]) -> Callable[[], None]:
+        self.listeners.add(listener)
+        return lambda: self.listeners.discard(listener)
+
+    def _notify(self) -> None:
+        for listener in tuple(self.listeners):
+            listener()
 
     def command(
         self,
@@ -179,6 +194,10 @@ class Store:
             'INSERT INTO events (type, at, thread_id, data) VALUES (?, ?, ?, ?)',
             (str(EventType(type)), iso(self.clock()), thread_id, json.dumps(dict(data))),
         )
+        if tx.in_transaction:
+            self._wrote_events = True
+        else:
+            self._notify()
         return cursor.lastrowid
 
     def events(

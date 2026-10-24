@@ -9,4 +9,17 @@ Loom runs agent sessions, called threads, on your own machine, and schedules wor
 - Everything goes through one small API on a Unix socket, so Thread Voice, the software
   factory and the `loom` CLI are just clients.
 
-Status: design only. See `docs/design.md`.
+Status: `loom serve` and the `loom` CLI run Claude threads from a terminal. The API, the CLI and
+the Python client are documented in [`docs/api.md`](docs/api.md); the design is in
+`docs/design.md`.
+
+Try it, with the server in one terminal and the rest in another (the project is a git checkout):
+
+```sh
+uv sync --all-packages
+uv run loom serve
+uv run loom projects add "My project" ~/src/my-project
+```
+
+Then `uv run loom threads launch my-project "First task" "Say hello."` starts a thread, and
+`uv run loom threads events --follow` shows what it does.
