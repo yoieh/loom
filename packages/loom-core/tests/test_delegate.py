@@ -93,6 +93,12 @@ class ChildTest(DelegateTest):
         self.assertEqual(info['title'], 'Check the tests')
         self.assertEqual(child_title('One line'), 'One line')
 
+    async def test_title_skips_leading_blank_lines(self) -> None:
+        parent_id, _ = await self.running()
+        info = await self.delegate(parent_id, '\n  \nCheck the tests\nThen the docs')
+        self.assertEqual(info['title'], 'Check the tests')
+        self.assertEqual(self.orchestrator.get(info['id'])['title'], 'Check the tests')
+
     async def test_mode_is_the_projects_effective_mode(self) -> None:
         self.projects.set_mode({'id': self.next_id(), 'project_id': 'loom',
                                 'permission_mode': 'full-access'})
@@ -284,6 +290,23 @@ class DelegateParamsTest(DelegateTest):
         await self.assert_error('invalid', self.orchestrator.delegate,
                                 self.params(workspace={'strategy': 'clone'}), 'strategy')
         self.assertEqual(len(self.runner.starts), 1)
+
+
+class ChildTitleTest(unittest.TestCase):
+    def test_leading_blank_and_whitespace_lines_are_skipped(self) -> None:
+        self.assertEqual(child_title('\n\nCheck the tests\nThen the docs'), 'Check the tests')
+        self.assertEqual(child_title(' \n\t\nCheck the tests'), 'Check the tests')
+
+    def test_the_chosen_line_is_stripped(self) -> None:
+        self.assertEqual(child_title('\n  Check the tests  '), 'Check the tests')
+
+    def test_the_chosen_line_is_cut_to_the_title_length(self) -> None:
+        self.assertEqual(child_title('\n' + 'x' * 100), 'x' * 80)
+        self.assertEqual(child_title('\n' + 'y' * 80), 'y' * 80)
+
+    def test_a_task_with_no_non_blank_line_keeps_the_fallback(self) -> None:
+        self.assertEqual(child_title(' \n\t'), ' \n\t')
+        self.assertEqual(child_title(''), '')
 
 
 if __name__ == '__main__':
