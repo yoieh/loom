@@ -11,6 +11,8 @@ STREAMS = Path(__file__).resolve().parent / 'streams'
 
 THREAD_ID = '77f465be-2f52-4311-84a5-e19e6d1e339b'
 
+FAKE_PID = 4_194_404
+
 
 def make_thread(**changes: object) -> ThreadSpec:
     thread = ThreadSpec(
@@ -70,6 +72,7 @@ class FakeStdin:
     def __init__(self, process: 'FakeProcess') -> None:
         self.lines: list[bytes] = []
         self.error: BaseException | None = None
+        self.drain_error: BaseException | None = None
         self.closed = False
         self._process = process
 
@@ -80,6 +83,8 @@ class FakeStdin:
 
     async def drain(self) -> None:
         await asyncio.sleep(0)
+        if self.drain_error is not None:
+            raise self.drain_error
 
     def is_closing(self) -> bool:
         return self.closed
@@ -96,14 +101,24 @@ class FakeProcess:
         exit_code: int = 0,
         ignore_eof: bool = False,
         ignore_terminate: bool = False,
+        grandchild: bool = False,
+        pid: int = FAKE_PID,
+        group: int | None = None,
+        group_error: OSError | None = None,
     ) -> None:
         self.stdin = FakeStdin(self)
         self.stdout = asyncio.StreamReader()
+        self.pid = pid
+        self.group = pid if group is None else group
+        self.group_error = group_error
         self.returncode: int | None = None
         self.exit_code = exit_code
         self.ignore_eof = ignore_eof
         self.ignore_terminate = ignore_terminate
+        self.grandchild = grandchild
         self.signals: list[str] = []
+        self.group_lookups: list[int] = []
+        self.group_signals: list[tuple[int, int]] = []
         self._exited = asyncio.Event()
 
     def feed(self, *lines: bytes) -> None:
@@ -113,8 +128,31 @@ class FakeProcess:
     def exit(self, code: int) -> None:
         if self.returncode is None:
             self.returncode = code
-            self.stdout.feed_eof()
+            if not self.grandchild:
+                self.stdout.feed_eof()
             self._exited.set()
+
+    def getpgid(self, pid: int) -> int:
+        self.group_lookups.append(pid)
+        if self.group_error is not None:
+            raise self.group_error
+        if pid != self.pid:
+            raise ProcessLookupError(pid)
+        return self.group
+
+    def killpg(self, group: int, signum: int) -> None:
+        self.group_signals.append((group, signum))
+        if group != self.group or (self.returncode is not None and not self.grandchild):
+            raise ProcessLookupError(group)
+        if signum == 0 or (signum == signal.SIGTERM and self.ignore_terminate):
+            return
+        self.exit(-signum)
+        if self.grandchild:
+            self.grandchild = False
+            self.stdout.feed_eof()
+
+    def group_sent(self) -> list[int]:
+        return [signum for _, signum in self.group_signals if signum != 0]
 
     async def wait(self) -> int:
         await self._exited.wait()
