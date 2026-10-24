@@ -20,7 +20,7 @@ EXPECTED = {
     S.IDLE: {S.RUNNING, S.SLEEPING, S.SETTLED, S.FAILED},
     S.SLEEPING: {S.STARTING, S.SETTLED, S.FAILED},
     S.SETTLED: set(),
-    S.FAILED: set(),
+    S.FAILED: {S.SETTLED},
 }
 
 
@@ -95,7 +95,8 @@ class AllowedTest(ThreadsTest):
 
     def test_named_moves_are_conflict(self) -> None:
         for start, state in ((S.SETTLED, S.RUNNING), (S.SLEEPING, S.RUNNING),
-                             (S.FAILED, S.IDLE), (S.SETTLED, S.SETTLED), (S.QUEUED, S.RUNNING)):
+                             (S.FAILED, S.IDLE), (S.SETTLED, S.SETTLED), (S.QUEUED, S.RUNNING),
+                             (S.FAILED, S.FAILED), (S.SETTLED, S.FAILED)):
             with self.subTest(start=start, state=state):
                 thread_id = self.insert(start)
                 with self.assertRaises(LoomError) as caught:

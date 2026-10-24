@@ -696,6 +696,36 @@ class SettleTest(OrchestratorTest):
         self.assertEqual(session.interrupts, 1)
         self.assertEqual(self.states(thread_id).count('settled'), 1)
 
+    async def test_settle_of_a_failed_thread_keeps_its_reason(self) -> None:
+        await self.use(FakeRunner(fail_start=RuntimeError('claude is not installed')))
+        thread_id = (await self.launch())['id']
+        await self.orchestrator.drain()
+        failed = self.orchestrator.get(thread_id)
+        self.assertEqual((failed['state'], failed['reason']),
+                         ('failed', 'claude is not installed'))
+        starts = len(self.runner.starts)
+        before = len(self.events(thread_id))
+        info = await self.orchestrator.settle({'id': 'z1', 'thread_id': thread_id})
+        await self.orchestrator.drain()
+        self.assertEqual((info['state'], info['reason']), ('settled', 'claude is not installed'))
+        self.assertEqual(self.orchestrator.get(thread_id), info)
+        appended = self.events(thread_id)[before:]
+        self.assertEqual([(event['type'], event['data']) for event in appended],
+                         [(EventType.THREAD_STATE, {'state': 'settled', 'waiting': False,
+                                                    'reason': 'claude is not installed'})])
+        self.assertEqual(len(self.events(thread_id, EventType.THREAD_FAILED)), 1)
+        self.assertEqual(self.states(thread_id)[-2:], ['failed', 'settled'])
+        self.assertEqual(len(self.runner.starts), starts)
+        self.assertEqual(await self.orchestrator.settle({'id': 'z2', 'thread_id': thread_id}),
+                         info)
+        self.assertEqual(await self.orchestrator.settle({'id': 'z1', 'thread_id': thread_id}),
+                         info)
+        await self.orchestrator.drain()
+        self.assertEqual(self.states(thread_id).count('settled'), 1)
+        self.assertEqual(len(self.runner.starts), starts)
+        await self.assert_error('conflict', self.orchestrator.send,
+                                {'id': 'z3', 'thread_id': thread_id, 'message': 'Hi'})
+
     async def test_bad_params(self) -> None:
         thread_id, _ = await self.running()
         for value in (None, 5, 'missing'):
