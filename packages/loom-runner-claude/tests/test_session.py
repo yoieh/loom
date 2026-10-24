@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import errno
 import json
 import os
 import signal
@@ -29,6 +31,7 @@ from loom_runner_claude.command import claude_argv, claude_env
 from loom_runner_claude.stream import allow_line, deny_line, interrupt_line, user_line
 
 from .replay import (
+    FAKE_PID,
     STREAMS,
     THREAD_ID,
     FakeHost,
@@ -106,6 +109,14 @@ def is_interrupt(line: bytes) -> bool:
     return line == interrupt_line(data.get('request_id'))
 
 
+def is_gone(pid: int) -> bool:
+    try:
+        text = Path(f'/proc/{pid}/stat').read_text()
+    except FileNotFoundError:
+        return True
+    return text[text.rindex(')') + 2] == 'Z'
+
+
 class SessionTest(unittest.IsolatedAsyncioTestCase):
     async def start(
         self,
@@ -116,7 +127,14 @@ class SessionTest(unittest.IsolatedAsyncioTestCase):
     ) -> RunnerSession:
         self.process = process or FakeProcess()
         self.spawn = FakeSpawn(self.process)
-        options = {'close_timeout': 0.05, 'interrupt_timeout': 0.2, **options}
+        options = {
+            'close_timeout': 0.05,
+            'interrupt_timeout': 0.2,
+            'exit_grace': 0.05,
+            'getpgid': self.process.getpgid,
+            'killpg': self.process.killpg,
+            **options,
+        }
         runner = ClaudeRunner(spawn=self.spawn, **options)
         session = await runner.start(thread or make_thread(), host or FakeHost())
         self.addAsyncCleanup(self.finish, session, self.process)
@@ -383,6 +401,35 @@ class SendTest(SessionTest):
         self.assertTrue(self.process.stdin.closed)
         self.assertEqual(await remaining(session), [Exited(0)])
 
+    async def test_any_os_error_on_write_raises_session_closed(self) -> None:
+        for where in ('write', 'drain'):
+            for code in (errno.EIO, errno.EBADF):
+                with self.subTest(where=where, errno=errno.errorcode[code]):
+                    session = await self.start()
+                    error = OSError(code, os.strerror(code))
+                    if where == 'write':
+                        self.process.stdin.error = error
+                    else:
+                        self.process.stdin.drain_error = error
+                    with self.assertRaises(SessionClosed) as caught:
+                        await session.send('hi', DispatchMode.STEER)
+                    self.assertIs(caught.exception.__cause__, error)
+
+    async def test_reader_goes_on_after_an_os_error_on_its_own_write(self) -> None:
+        turn = stream_turns('perm-tool')[0]
+        bad = changed(turn[2], lambda data: data['request'].pop('tool_name'))
+        session = await self.start()
+        await session.send('Run it', DispatchMode.STEER)
+        self.process.stdin.drain_error = OSError(errno.EIO, os.strerror(errno.EIO))
+        self.process.feed(turn[0], bad, turn[4])
+        events = await events_until(session, TextOut)
+        self.assertEqual([type(event) for event in events], [TurnStarted, TextOut])
+        self.assertEqual(self.written, [user_line('Run it'), deny_line(A_TXT_ID, UNREADABLE)])
+        self.process.feed(result_line('done'))
+        self.assertEqual(await next_event(session), completed('done'))
+        self.process.exit(0)
+        self.assertEqual(await remaining(session), [Exited(0)])
+
 
 class RespondTest(SessionTest):
     async def open_request(self, session: RunnerSession, turn: list[bytes]) -> PermissionRequest:
@@ -547,7 +594,8 @@ class CloseTest(SessionTest):
         self.assertEqual(self.process.signals, [])
         self.assertFalse(closing.done())
         await asyncio.wait_for(closing, 1)
-        self.assertEqual(self.process.signals, ['terminate'])
+        self.assertEqual(self.process.signals, [])
+        self.assertEqual(self.process.group_sent(), [signal.SIGTERM])
         self.assertEqual(await remaining(session), [Exited(-signal.SIGTERM)])
 
     async def test_close_kills_after_a_second_timeout(self) -> None:
@@ -557,15 +605,85 @@ class CloseTest(SessionTest):
         began = loop.time()
         await asyncio.wait_for(session.close(), 1)
         self.assertGreaterEqual(loop.time() - began, 0.09)
-        self.assertEqual(self.process.signals, ['terminate', 'kill'])
+        self.assertEqual(self.process.signals, [])
+        self.assertEqual(self.process.group_sent(), [signal.SIGTERM, signal.SIGKILL])
         self.assertEqual(await remaining(session), [Exited(-signal.SIGKILL)])
 
     async def test_a_second_close_sends_nothing_new(self) -> None:
         session = await self.start(FakeProcess(ignore_eof=True))
         await asyncio.wait_for(asyncio.gather(session.close(), session.close()), 1)
-        self.assertEqual(self.process.signals, ['terminate'])
+        self.assertEqual(self.process.group_sent(), [signal.SIGTERM])
+        sent = list(self.process.group_signals)
         await asyncio.wait_for(session.close(), 1)
-        self.assertEqual(self.process.signals, ['terminate'])
+        self.assertEqual(self.process.group_signals, sent)
+        self.assertEqual(self.process.signals, [])
+
+    def timed_killpg(self, process: FakeProcess) -> tuple[list[tuple[int, float]], object]:
+        loop = asyncio.get_running_loop()
+        times: list[tuple[int, float]] = []
+
+        def killpg(group: int, signum: int) -> None:
+            if signum != 0:
+                times.append((signum, loop.time()))
+            process.killpg(group, signum)
+
+        return times, killpg
+
+    async def test_close_signals_the_group_term_then_kill_after_each_timeout(self) -> None:
+        process = FakeProcess(ignore_eof=True, ignore_terminate=True)
+        times, killpg = self.timed_killpg(process)
+        session = await self.start(process, close_timeout=0.05, killpg=killpg)
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        await asyncio.wait_for(session.close(), 1)
+        self.assertEqual(process.group_lookups, [FAKE_PID])
+        self.assertEqual(
+            process.group_signals, [(FAKE_PID, signal.SIGTERM), (FAKE_PID, signal.SIGKILL)],
+        )
+        (_, term_at), (_, kill_at) = times
+        self.assertGreaterEqual(term_at - began, 0.04)
+        self.assertGreaterEqual(kill_at - term_at, 0.04)
+        self.assertEqual(process.signals, [])
+        self.assertEqual(await remaining(session), [Exited(-signal.SIGKILL)])
+
+    async def test_own_or_unknown_group_falls_back_to_the_process(self) -> None:
+        cases = {
+            'own group': {'group': os.getpgrp()},
+            'init group': {'group': 1},
+            'group 0': {'group': 0},
+            'negative group': {'group': -FAKE_PID},
+            'lookup fails': {'group_error': ProcessLookupError()},
+        }
+        for name, options in cases.items():
+            with self.subTest(case=name):
+                process = FakeProcess(ignore_eof=True, ignore_terminate=True, **options)
+                session = await self.start(process)
+                await asyncio.wait_for(session.close(), 1)
+                self.assertEqual(process.group_lookups, [FAKE_PID])
+                self.assertEqual(process.group_signals, [])
+                self.assertEqual(process.signals, ['terminate', 'kill'])
+                self.assertEqual(await remaining(session), [Exited(-signal.SIGKILL)])
+
+    async def test_close_ends_what_is_left_of_the_group_after_claude_exits(self) -> None:
+        cases = [
+            ('no member left', False, False, []),
+            ('member ends on sigterm', True, False, [signal.SIGTERM]),
+            ('member ignores sigterm', True, True, [signal.SIGTERM, signal.SIGKILL]),
+        ]
+        for name, grandchild, ignore_terminate, expected in cases:
+            with self.subTest(case=name):
+                process = FakeProcess(grandchild=grandchild, ignore_terminate=ignore_terminate)
+                times, killpg = self.timed_killpg(process)
+                session = await self.start(process, close_timeout=0.05, killpg=killpg)
+                await asyncio.wait_for(session.close(), 1)
+                self.assertEqual(process.returncode, 0)
+                self.assertEqual(process.group_sent(), expected)
+                self.assertEqual(process.group_signals[0], (FAKE_PID, 0))
+                self.assertFalse(process.grandchild)
+                self.assertEqual(process.signals, [])
+                if len(times) == 2:
+                    self.assertGreaterEqual(times[1][1] - times[0][1], 0.04)
+                self.assertEqual(await remaining(session), [Exited(0)])
 
 
 class ExitTest(SessionTest):
@@ -608,6 +726,22 @@ class ExitTest(SessionTest):
                 self.process.stdin.error = error()
                 with self.assertRaises(SessionClosed):
                     await session.send('hi', DispatchMode.STEER)
+
+    async def test_exit_without_stdout_eof_gives_exited_within_the_grace(self) -> None:
+        init, text, _ = stream_turns('turns')[0]
+        session = await self.start(FakeProcess(grandchild=True), exit_grace=0.05)
+        await session.send('Reply with OK', DispatchMode.STEER)
+        loop = asyncio.get_running_loop()
+        self.process.feed(init, text)
+        self.process.exit(1)
+        exited_at = loop.time()
+        events = await remaining(session, timeout=1)
+        self.assertLess(loop.time() - exited_at, 0.3)
+        self.assertEqual(events, [TurnStarted(), TextOut('OK'), Exited(1)])
+        self.assertTrue(self.process.grandchild)
+        await asyncio.wait_for(session.close(), 1)
+        self.assertEqual(self.process.group_sent(), [signal.SIGTERM])
+        self.assertFalse(self.process.grandchild)
 
 
 class FailureReasonTest(SessionTest):
@@ -706,6 +840,14 @@ class RealProcessTest(unittest.IsolatedAsyncioTestCase):
             settings={'claude_bin': str(self.claude_bin), 'agent_base_url': 'http://127.0.0.1:9'},
             secrets={'agent-token': 'agent-token-value'},
         )
+        self.addCleanup(self.kill_grandchild)
+
+    def kill_grandchild(self) -> None:
+        with contextlib.suppress(FileNotFoundError, ValueError, ProcessLookupError):
+            os.kill(self.grandchild_pid(), signal.SIGKILL)
+
+    def grandchild_pid(self) -> int:
+        return int((self.workspace / 'grandchild.pid').read_text())
 
     async def test_child_sees_argv_cwd_env_and_replays(self) -> None:
         session = await ClaudeRunner(close_timeout=5.0).start(self.thread, self.host)
@@ -730,6 +872,41 @@ class RealProcessTest(unittest.IsolatedAsyncioTestCase):
         await events_until(session, TurnResult, timeout=10)
         await asyncio.wait_for(session.close(), 10)
         self.assertEqual(await remaining(session), [Exited(-signal.SIGTERM)])
+
+    async def test_claude_leads_its_own_process_group(self) -> None:
+        session = await ClaudeRunner(close_timeout=5.0).start(self.thread, self.host)
+        await session.send('Reply with OK', DispatchMode.STEER)
+        await events_until(session, TurnResult, timeout=10)
+        await asyncio.wait_for(session.close(), 10)
+        self.assertEqual(await remaining(session), [Exited(0)])
+        spawned = json.loads((self.workspace / 'spawned.json').read_text())
+        self.assertEqual(spawned['pgid'], spawned['pid'])
+        self.assertNotEqual(spawned['pgid'], os.getpgrp())
+
+    async def test_close_ends_a_grandchild(self) -> None:
+        (self.workspace / 'grandchild').touch()
+        runner = ClaudeRunner(close_timeout=0.2, exit_grace=0.2)
+        session = await runner.start(self.thread, self.host)
+        await session.send('Reply with OK', DispatchMode.STEER)
+        await events_until(session, TurnResult, timeout=10)
+        pid = self.grandchild_pid()
+        self.assertFalse(is_gone(pid))
+        await asyncio.wait_for(session.close(), 10)
+        self.assertTrue(is_gone(pid))
+        self.assertEqual(await remaining(session), [Exited(0)])
+
+    async def test_exited_is_not_held_up_by_a_grandchild_on_stdout(self) -> None:
+        (self.workspace / 'grandchild').touch()
+        (self.workspace / 'exit-after-turn').touch()
+        runner = ClaudeRunner(close_timeout=0.2, exit_grace=0.2)
+        session = await runner.start(self.thread, self.host)
+        await session.send('Reply with OK', DispatchMode.STEER)
+        self.assertEqual(await events_until(session, TurnResult, timeout=10), ok_turn('OK'))
+        self.assertEqual(await next_event(session, timeout=5), Exited(0))
+        pid = self.grandchild_pid()
+        self.assertFalse(is_gone(pid))
+        await asyncio.wait_for(session.close(), 10)
+        self.assertTrue(is_gone(pid))
 
     async def test_missing_binary_raises_runner_start_error(self) -> None:
         missing = str(self.workspace.parent / 'bin' / 'missing')

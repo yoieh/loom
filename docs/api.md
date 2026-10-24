@@ -309,6 +309,13 @@ Starts a new top-level thread in a project with a first message.
 **Result:** the new thread, in state `queued`. Loom starts it after it answers; follow
 `threads.events` to see the turn.
 
+A start is never refused for lack of room. At most `agents_max` agent processes are live at once
+(see [`config.toml`](#configtoml)). A start that finds no free slot first puts the thread that
+has been `idle` longest to sleep (its process is closed and it goes to `sleeping`), then starts.
+Only when every live process is in a turn does the start wait, `queued`, in §4's order: a
+person's own words first, then agents' starts, then schedules, and the oldest first within each.
+A thread `idle` for `idle_after` seconds goes to `sleeping` too; the next message resumes it.
+
 **Errors:** `not_found` when the project does not exist; `invalid` for a missing or wrong
 parameter.
 
@@ -336,7 +343,9 @@ Nothing is posted while the child or the parent is being stopped, or once the pa
 The child's title is the first line of `task`, cut at 80 characters. It runs in the parent's
 project with the project's mode, and it inherits the parent's `requests`.
 
-**Result:** the child thread, in state `queued`.
+**Result:** the child thread, in state `queued`. It starts as under
+[`threads.launch`](#threadslaunch), as an agent's start: it may sleep the longest-idle thread or
+wait `queued`, and is never refused.
 
 **Errors:** `not_found` when the parent does not exist; `conflict` when the parent is settled,
 failed or being stopped.
@@ -349,7 +358,20 @@ failed or being stopped.
 ### `threads.send`
 
 Sends a message to a thread. An `idle` thread starts a turn with it, and a `sleeping` one is
-resumed first.
+resumed first. Resuming takes a slot as a start does under [`threads.launch`](#threadslaunch):
+with none free, the longest-idle thread is put to sleep, or the thread waits `queued` until a
+slot is free. The send is never refused for that. A message from an agent's thread ranks as an
+agent's start, and a second message to a `queued` thread keeps its place in the queue and takes
+the better rank.
+
+Loom keeps a message until it has handed it to the agent. When the agent process exits during a
+turn, without the turn's result, the turn fails (`turn.result` with reason `exited`) and Loom
+resumes the thread with the message `Your last turn was cut off; continue where you were.`,
+ahead of its other messages, which follow in their usual order. That happens at most 3 times in
+5 minutes; the next such exit makes the thread `failed` with the reason
+`exited mid-turn after 3 continuations in 5 minutes`, and a delegated thread's parent gets that
+failed result. An exit after the turn's result is not a crash: the thread only goes to
+`sleeping`.
 
 | Param | Type | |
 |---|---|---|
@@ -663,7 +685,9 @@ The thread's state changed, or its `waiting` flag or `reason` did.
 
 ### `thread.failed`
 
-The thread failed; it comes right after the `thread.state` event with state `failed`.
+The thread failed; it comes right after the `thread.state` event with state `failed`. A thread
+whose agent process keeps exiting mid-turn fails with the reason
+`exited mid-turn after 3 continuations in 5 minutes` (see [`threads.send`](#threadssend)).
 
 | Field | Type | |
 |---|---|---|
@@ -715,7 +739,7 @@ The turn ended.
 |---|---|---|
 | `state` | string | `completed`, `failed` or `stopped`. |
 | `text` | string | The agent's final text, when it gave one. |
-| `reason` | string | When there is one: `exited` when the agent process ended during the turn, `stop` when a stop cut the turn. |
+| `reason` | string | When there is one: `exited` when the agent process ended during the turn, `restart` when `loom serve` stopped during the turn, `stop` when a stop cut the turn. |
 
 ```json
 {"id": 7, "type": "turn.result", "at": "2026-10-24T18:47:13.017+00:00", "thread_id": "3f2a…", "data": {"state": "completed", "text": "Make the login test pass."}}
@@ -789,7 +813,8 @@ The data dir holds the store `loom.db` (mode 0600), the `worktrees/` Loom makes,
 
 ### `config.toml`
 
-Every key is optional and every value is a string.
+Every key is optional. `agents_max` and `idle_after` are whole numbers of 1 or more; every
+other value is a string.
 
 | Key | Default | |
 |---|---|---|
@@ -797,14 +822,20 @@ Every key is optional and every value is a string.
 | `claude_config_dir` | none | Given to the agent as `CLAUDE_CONFIG_DIR`. |
 | `agent_base_url` | none | Given to the agent as `ANTHROPIC_BASE_URL`. |
 | `permission_mode` | `auto` | The mode for projects with none; one of the [permission modes](#permission-modes). |
+| `agents_max` | The available memory at start, less 2 GiB, divided by 350 MiB, at least 1 | How many agent processes may be live at once (§4). |
+| `idle_after` | `1200` | Seconds a thread may stay `idle` before it goes to `sleeping`. Loom checks every 30 s. |
 
 ```toml
 claude_bin = "/usr/local/bin/claude"
 permission_mode = "auto-accept-edits"
+agents_max = 8
+idle_after = 1800
 ```
 
-An unknown key, a value that is not a string, a bad mode or a TOML error stops the server with
-exit 2, naming the file and the problem.
+An unknown key, a string key whose value is not a string, a bad mode or a TOML error stops the
+server with exit 2, naming the file and the problem. So does an `agents_max` or `idle_after`
+that is not a whole number of 1 or more (a string, a float, `true`, 0 or less):
+`<path>: agents_max must be a whole number of 1 or more`.
 
 ### `agent-token`
 
@@ -828,20 +859,27 @@ the server's environment, those that are set, plus:
 
 ### Output and exit codes
 
-- When it listens, it writes `loom: serving on <socket path>` to stderr.
+- When it listens, it writes `loom: agents_max <n>` (the configured value, or the one it
+  computed from the available memory) and then `loom: serving on <socket path>` to stderr.
 - On SIGINT or SIGTERM (Ctrl-C) it stops taking connections, ends follow streams, closes every
-  agent, removes the socket file, writes `loom: stopped` and exits 0.
+  agent, removes the socket file, writes `loom: stopped` and exits 0. Threads keep their state
+  in the store. On the next start, threads that were `running` or `idle` are `sleeping`; a turn
+  that was cut off fails (`turn.result` with reason `restart`) and resumes with the continuation
+  message, as under [`threads.send`](#threadssend); queued starts stay queued and then start.
+  These starts, the resumes included, take slots in the queue's order, and only as many run at
+  once as `agents_max` allows. A stop that was in progress ends there.
 - A failure to start exits 2 with one line `loom: <reason>` on stderr: no socket path, a bad
   config, another server already answering on the socket, or a path that exists and is not a
   socket. A socket file nobody answers on is left over from an earlier run, and is replaced.
+  With no `agents_max` in the config and no way to read the available memory (`MemAvailable`
+  in `/proc/meminfo`, else `sysconf`), it exits 2 with
+  `loom: cannot read the available memory; set agents_max in the config` and leaves no socket
+  file.
 
 ```text
 $ loom serve
 loom: no socket path: XDG_RUNTIME_DIR is not set, so pass --socket
 ```
-
-Threads that were `running` or `idle` when the server stopped are not resumed on the next start
-yet; that comes with LM-5.
 
 ## The `loom` CLI
 

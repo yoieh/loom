@@ -1,6 +1,8 @@
 import asyncio
 import contextlib
 import dataclasses
+import os
+import signal
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -41,6 +43,8 @@ UNREADABLE_REQUEST = 'Loom could not read this permission request.'
 
 _CHUNK = 65_536
 
+_GROUP_POLL = 0.02
+
 
 class SessionClosed(Exception):
     pass
@@ -51,6 +55,7 @@ class RunnerStartError(Exception):
 
 
 class Process(Protocol):
+    pid: int
     stdin: asyncio.StreamWriter | None
     stdout: asyncio.StreamReader | None
     returncode: int | None
@@ -64,17 +69,50 @@ class Process(Protocol):
 
 Spawn = Callable[[list[str], str, dict[str, str], int], Awaitable[Process]]
 
+GetGroup = Callable[[int], int]
+
+SignalGroup = Callable[[int, int], None]
+
+
+class _ExitProtocol(asyncio.subprocess.SubprocessStreamProtocol):
+    def __init__(self, limit: int, loop: asyncio.AbstractEventLoop) -> None:
+        super().__init__(limit=limit, loop=loop)
+        self.exited: asyncio.Future[None] = loop.create_future()
+
+    def process_exited(self) -> None:
+        super().process_exited()
+        if not self.exited.done():
+            self.exited.set_result(None)
+
+
+class _ClaudeProcess(asyncio.subprocess.Process):
+    def __init__(
+        self,
+        transport: asyncio.SubprocessTransport,
+        protocol: _ExitProtocol,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        super().__init__(transport, protocol, loop)
+        self._exit = protocol.exited
+
+    async def wait(self) -> int:
+        await asyncio.shield(self._exit)
+        return self.returncode
+
 
 async def spawn_process(argv: list[str], cwd: str, env: dict[str, str], limit: int) -> Process:
-    return await asyncio.create_subprocess_exec(
+    loop = asyncio.get_running_loop()
+    transport, protocol = await loop.subprocess_exec(
+        lambda: _ExitProtocol(limit + 2, loop),
         *argv,
         cwd=cwd,
         env=env,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
-        limit=limit + 2,
+        start_new_session=True,
     )
+    return _ClaudeProcess(transport, protocol, loop)
 
 
 def _start_text(claude_bin: str, error: OSError) -> str:
@@ -102,11 +140,17 @@ class ClaudeRunner:
         close_timeout: float = 5.0,
         interrupt_timeout: float = 5.0,
         line_limit: int = 8_388_608,
+        exit_grace: float = 1.0,
+        getpgid: GetGroup = os.getpgid,
+        killpg: SignalGroup = os.killpg,
     ) -> None:
         self._spawn = spawn
         self._close_timeout = close_timeout
         self._interrupt_timeout = interrupt_timeout
         self._line_limit = line_limit
+        self._exit_grace = exit_grace
+        self._getpgid = getpgid
+        self._killpg = killpg
 
     async def start(self, thread: ThreadSpec, host: RunnerHost) -> 'ClaudeSession':
         claude_bin = host.setting('claude_bin')
@@ -127,6 +171,9 @@ class ClaudeRunner:
             interrupt_timeout=self._interrupt_timeout,
             line_limit=self._line_limit,
             secrets=secrets,
+            exit_grace=self._exit_grace,
+            getpgid=self._getpgid,
+            killpg=self._killpg,
         )
 
 
@@ -139,12 +186,18 @@ class ClaudeSession:
         line_limit: int,
         *,
         secrets: tuple[str, ...] = (),
+        exit_grace: float = 1.0,
+        getpgid: GetGroup = os.getpgid,
+        killpg: SignalGroup = os.killpg,
     ) -> None:
         self._process = process
         self._secrets = secrets
         self._close_timeout = close_timeout
         self._interrupt_timeout = interrupt_timeout
         self._line_limit = line_limit
+        self._exit_grace = exit_grace
+        self._killpg = killpg
+        self._group = _child_group(process, getpgid)
         self._loop = asyncio.get_running_loop()
         self._queue: asyncio.Queue[RunnerEvent] = asyncio.Queue()
         self._write_lock = asyncio.Lock()
@@ -277,14 +330,19 @@ class ClaudeSession:
             try:
                 stdin.write(line)
                 await stdin.drain()
-            except (BrokenPipeError, ConnectionResetError) as error:
+            except OSError as error:
                 raise SessionClosed('stdin is broken') from error
 
     async def _run(self) -> None:
+        reading = self._loop.create_task(self._read_lines())
+        exit_wait = self._loop.create_task(self._process.wait())
         try:
-            await self._read_lines()
+            await asyncio.wait({reading, exit_wait}, return_when=asyncio.FIRST_COMPLETED)
+            if not reading.done():
+                await asyncio.wait({reading}, timeout=self._exit_grace)
         finally:
-            code = await self._process.wait()
+            reading.cancel()
+            code = await exit_wait
             self._ended = True
             self._end_turn(None)
             self._emit(Exited(code))
@@ -349,10 +407,47 @@ class ClaudeSession:
         if stdin is not None and not stdin.is_closing():
             stdin.close()
         exit_wait = self._loop.create_task(process.wait())
-        for signal in (process.terminate, process.kill):
+        for signum in (signal.SIGTERM, signal.SIGKILL):
             done, _ = await asyncio.wait({exit_wait}, timeout=self._close_timeout)
             if done:
+                await self._end_group()
                 return
-            with contextlib.suppress(ProcessLookupError):
-                signal()
+            self._signal(signum)
         await exit_wait
+
+    def _signal(self, signum: int) -> None:
+        if self._group is not None:
+            self._signal_group(signum)
+            return
+        stop = self._process.terminate if signum == signal.SIGTERM else self._process.kill
+        with contextlib.suppress(ProcessLookupError):
+            stop()
+
+    def _signal_group(self, signum: int) -> bool:
+        if self._group is None:
+            return False
+        try:
+            self._killpg(self._group, signum)
+        except ProcessLookupError:
+            return False
+        return True
+
+    async def _end_group(self) -> None:
+        if not self._signal_group(0) or not self._signal_group(signal.SIGTERM):
+            return
+        deadline = self._loop.time() + self._close_timeout
+        while self._loop.time() < deadline:
+            await asyncio.sleep(_GROUP_POLL)
+            if not self._signal_group(0):
+                return
+        self._signal_group(signal.SIGKILL)
+
+
+def _child_group(process: Process, getpgid: GetGroup) -> int | None:
+    try:
+        group = getpgid(process.pid)
+    except OSError:
+        return None
+    if group <= 1 or group == os.getpgrp():
+        return None
+    return group

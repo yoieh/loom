@@ -93,7 +93,8 @@ Rules, each checked by a packaging test:
   and the thread `sleeping`. Loom resumes it and posts "Your last turn was cut off; continue
   where you were." At most 3 such continuations in 5 minutes (as T3's
   `RestartContinuation.ts`); then the thread is `failed` and a `thread.failed` event tells the
-  clients. No restart loops.
+  clients. No restart loops. An exit after the turn's `result` (the thread is `idle`), or after
+  Loom closed the process itself, is not a crash; the thread only goes to `sleeping`.
 - **Restart.** On shutdown every local process is ended (close stdin, SIGTERM after 5 s). On
   start, every thread that was `running` or `idle` is `sleeping`; a turn that was cut off is
   resumed as under Crashes. Queued starts stay queued. Restarting a client touches no agent.

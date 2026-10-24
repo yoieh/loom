@@ -376,12 +376,14 @@ class EventsTest(OrchestratorTest):
         self.assertEqual(result, {'state': 'failed', 'reason': 'boom'})
         self.assertEqual(self.state(thread_id), 'idle')
 
-    async def test_exited_during_a_turn_fails_the_turn_and_sleeps(self) -> None:
+    async def test_exited_during_a_turn_fails_the_turn_sleeps_and_resumes(self) -> None:
         thread_id, session = await self.running()
         session.emit(Exited(1))
-        await wait_for(lambda: self.state(thread_id) == 'sleeping')
+        await wait_for(lambda: len(self.runner.starts) == 2)
+        await self.orchestrator.drain()
         self.assertEqual(self.events(thread_id, EventType.TURN_RESULT)[-1]['data'],
                          {'state': 'failed', 'reason': 'exited'})
+        self.assertEqual(self.states(thread_id)[-3:], ['sleeping', 'starting', 'running'])
         self.assertTrue(session.closed)
 
     async def test_exited_while_idle_sleeps(self) -> None:
@@ -390,10 +392,11 @@ class EventsTest(OrchestratorTest):
         await wait_for(lambda: self.state(thread_id) == 'sleeping')
         self.assertEqual(len(self.events(thread_id, EventType.TURN_RESULT)), 1)
 
-    async def test_a_stream_that_ends_without_exited_sleeps(self) -> None:
+    async def test_a_stream_that_ends_without_exited_is_an_exit(self) -> None:
         thread_id, session = await self.running()
         await session.close()
-        await wait_for(lambda: self.state(thread_id) == 'sleeping')
+        await wait_for(lambda: len(self.runner.starts) == 2)
+        await self.orchestrator.drain()
         self.assertEqual(self.events(thread_id, EventType.TURN_RESULT)[-1]['data'],
                          {'state': 'failed', 'reason': 'exited'})
 

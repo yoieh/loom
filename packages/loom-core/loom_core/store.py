@@ -78,6 +78,13 @@ SCHEMA: list[str] = [
         created_at TEXT NOT NULL
     )''',
     'CREATE INDEX IF NOT EXISTS messages_next ON messages (thread_id, priority DESC, seq)',
+    'CREATE TABLE IF NOT EXISTS continuations (thread_id TEXT NOT NULL, at TEXT NOT NULL)',
+    'CREATE INDEX IF NOT EXISTS continuations_thread ON continuations (thread_id, at)',
+    '''CREATE TABLE IF NOT EXISTS starts (
+        thread_id TEXT PRIMARY KEY,
+        rank INTEGER NOT NULL,
+        queued_at TEXT NOT NULL
+    )''',
 ]
 
 
