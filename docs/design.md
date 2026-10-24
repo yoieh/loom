@@ -121,6 +121,9 @@ Rules, each checked by a packaging test:
   Modes are T3's four (`approval-required`, `auto-accept-edits`, `auto`, `full-access`),
   mapped to each agent's own flags as §73.13 rows 9 and 15 say. A project with no mode uses
   the config's `permission_mode`, default `auto`; the unset case never becomes `full-access`.
+  A project's id is the slug of its title: NFKD-normalised, cut to ASCII and lowercased, each
+  run of other characters than `a-z0-9` turned into `-`, `-` stripped from both ends, at most 40
+  characters, and `-2`, `-3`, … added (within the 40) when the id is taken.
 - **Workspaces**, the way T3's `workspaceStrategy` names them:
   - `root`: the project's main checkout;
   - `worktree`: a new worktree on a new branch (`loom/<thread-id>` by default) under
