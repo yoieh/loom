@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
 from loom_contracts.calls import CallName, ProjectInfo, ThreadInfo
@@ -22,6 +22,7 @@ SERVED: tuple[str, ...] = (
 class Caller:
     thread_id: str | None = None
     verified: bool = True
+    schedule_id: str | None = None
 
 
 Method = Callable[[object, Caller], Awaitable[object]]
@@ -47,6 +48,8 @@ def _string(value: object, field: str) -> str:
 
 
 def _is_person(caller: Caller) -> bool:
+    if caller.schedule_id is not None:
+        return False
     return caller.thread_id is None and caller.verified is True
 
 
@@ -97,6 +100,18 @@ class Service:
         if call not in self._methods:
             raise LoomError('invalid', f'{call} is not served yet')
         return self._methods[call]
+
+    def serve(self, methods: Mapping[str, Method]) -> None:
+        names = []
+        for call in methods:
+            try:
+                name = str(CallName(call))
+            except ValueError:
+                raise ValueError(f'unknown call: {call!r}') from None
+            if name in self._methods:
+                raise ValueError(f'{name} is already served')
+            names.append(name)
+        self._methods.update(zip(names, methods.values()))
 
     def follow(self, params: object, caller: Caller) -> AsyncIterator[Event]:
         after, thread_id, _ = _events_params(params)

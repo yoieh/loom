@@ -262,8 +262,9 @@ class ApiTest(LiveCase):
         self.assertEqual(client.projects_remove('other'), other)
         self.assertEqual(client.projects_list(), [changed])
 
+        self.assertEqual(client.schedules_list(), [])
         with self.assertRaises(LoomApiError) as caught:
-            client.schedules_list()
+            client.requests_respond('r1', 'allow')
         self.assertEqual(caught.exception.code, 'invalid')
         with self.assertRaises(LoomApiError) as caught:
             client.threads_get('nope')
