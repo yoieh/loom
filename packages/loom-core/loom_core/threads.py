@@ -95,6 +95,13 @@ def has_live(tx: sqlite3.Connection, project_id: str) -> bool:
     ).fetchone() is not None
 
 
+def uses_workspace(tx: sqlite3.Connection, project_id: str, path: str) -> bool:
+    return tx.execute(
+        'SELECT 1 FROM threads WHERE project_id = ? AND workspace_path = ? LIMIT 1',
+        (project_id, path),
+    ).fetchone() is not None
+
+
 def thread_info(row: sqlite3.Row) -> ThreadInfo:
     return {
         'id': row['id'],

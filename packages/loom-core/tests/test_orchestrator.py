@@ -2,6 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
@@ -25,6 +26,7 @@ from .test_workspaces import git, make_repo
 QUEUE = DispatchMode.QUEUE
 STEER = DispatchMode.STEER
 ROOT = {'strategy': 'root'}
+WORKTREE = {'strategy': 'worktree'}
 START = datetime(2026, 10, 24, 15, 8, 27, tzinfo=UTC)
 BARE = {'project', 'parent'}
 
@@ -41,6 +43,17 @@ class SteppingClock:
 def done(state: TurnState = TurnState.COMPLETED, text: str | None = 'ok',
          reason: str | None = None) -> TurnResult:
     return TurnResult(state, text, reason)
+
+
+def existing(path: str | Path, branch: str) -> dict:
+    return {'strategy': 'existing_worktree', 'path': str(path), 'branch': branch}
+
+
+def unrecorded_worktree(root: Path, data_dir: Path) -> tuple[Path, str]:
+    branch = 'side'
+    path = data_dir.resolve() / 'worktrees' / 'loom' / str(uuid.uuid4())
+    git(root, 'worktree', 'add', '-q', '-b', branch, str(path), 'HEAD')
+    return path, branch
 
 
 class OrchestratorTest(unittest.IsolatedAsyncioTestCase):
@@ -746,6 +759,60 @@ class CloseTest(OrchestratorTest):
         self.assertTrue(session.closed)
         self.assertEqual(self.state(thread_id), 'running')
         self.assertEqual(self.orchestrator._pumps, {})
+
+
+class ExistingWorktreeLaunchTest(OrchestratorTest):
+    async def test_an_unrecorded_worktree_of_the_project_is_invalid(self) -> None:
+        await self.running(workspace=WORKTREE)
+        path, branch = unrecorded_worktree(self.root, self.data_dir)
+        self.assertEqual(git(path, 'symbolic-ref', '--short', 'HEAD'), branch)
+        await self.assert_error('invalid', self.orchestrator.launch,
+                                self.launch_params(workspace=existing(path, branch)), 'path')
+        self.assertEqual(len(self.runner.starts), 1)
+
+    async def test_another_threads_worktree_is_accepted(self) -> None:
+        other_id, _ = await self.running(workspace=WORKTREE)
+        other = self.orchestrator.get(other_id)
+        info = await self.launch(workspace=existing(other['workspace_path'], other['branch']))
+        await self.orchestrator.drain()
+        self.assertEqual(self.state(info['id']), 'running')
+        self.assertEqual((info['workspace_path'], info['branch']),
+                         (other['workspace_path'], other['branch']))
+        self.assertEqual(threads.fetch(self.store.connection, info['id'])['workspace_strategy'],
+                         'existing_worktree')
+        self.assertEqual(self.runner.starts[-1].workspace_path, other['workspace_path'])
+
+    async def test_a_settled_threads_worktree_stays_accepted(self) -> None:
+        other_id, _ = await self.running(workspace=WORKTREE)
+        other = self.orchestrator.get(other_id)
+        await self.orchestrator.settle({'id': self.next_id(), 'thread_id': other_id})
+        await self.orchestrator.drain()
+        self.assertEqual(self.state(other_id), 'settled')
+        info = await self.launch(workspace=existing(other['workspace_path'], other['branch']))
+        await self.orchestrator.drain()
+        self.assertEqual(self.state(info['id']), 'running')
+        self.assertEqual(self.runner.starts[-1].workspace_path, other['workspace_path'])
+
+    async def test_the_root_needs_a_root_thread_on_record(self) -> None:
+        await self.running(workspace=WORKTREE)
+        params = self.launch_params(workspace=existing(self.root, 'main'))
+        await self.assert_error('invalid', self.orchestrator.launch, params, 'path')
+        await self.running()
+        info = await self.launch(workspace=existing(self.root, 'main'))
+        await self.orchestrator.drain()
+        self.assertEqual(self.state(info['id']), 'running')
+        self.assertEqual(self.runner.starts[-1].workspace_path, str(self.root))
+
+    async def test_a_path_on_record_for_another_project_is_invalid(self) -> None:
+        await self.running(workspace=WORKTREE)
+        path, branch = unrecorded_worktree(self.root, self.data_dir)
+        self.projects.add({'id': 'p2', 'title': 'Other', 'path': str(path)})
+        await self.running(project_id='other')
+        await self.assert_error('invalid', self.orchestrator.launch,
+                                self.launch_params(workspace=existing(path, branch)), 'path')
+        info = await self.launch(project_id='other', workspace=existing(path, branch))
+        await self.orchestrator.drain()
+        self.assertEqual(self.state(info['id']), 'running')
 
 
 if __name__ == '__main__':

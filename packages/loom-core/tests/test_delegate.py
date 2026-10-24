@@ -9,7 +9,7 @@ from loom_core import threads
 from loom_core.delegation import child_title, result_text
 
 from .fakes import FakeRunner, wait_for
-from .test_orchestrator import BARE, OrchestratorTest, done
+from .test_orchestrator import BARE, OrchestratorTest, done, existing, unrecorded_worktree
 from .test_workspaces import git
 
 QUEUE = DispatchMode.QUEUE
@@ -53,6 +53,16 @@ class ChildTest(DelegateTest):
                          (info['id'], parent['workspace_path'], parent_id, 'opus'))
         self.assertEqual(session.sent, [('Review the diff', QUEUE)])
         self.assertEqual(self.states(info['id']), ['queued', 'starting', 'running'])
+
+    async def test_an_explicit_parent_worktree_is_accepted(self) -> None:
+        parent_id, _ = await self.running(workspace=WORKTREE)
+        parent = self.orchestrator.get(parent_id)
+        info, _ = await self.child(
+            parent_id, workspace=existing(parent['workspace_path'], parent['branch']))
+        self.assertEqual((info['workspace_path'], info['branch']),
+                         (parent['workspace_path'], parent['branch']))
+        self.assertEqual(self.row(info['id'])['workspace_strategy'], 'existing_worktree')
+        self.assertEqual(self.runner.starts[-1].workspace_path, parent['workspace_path'])
 
     async def test_runner_and_model_default_to_the_parents(self) -> None:
         codex = FakeRunner('codex')
@@ -233,6 +243,14 @@ class DelegateErrorsTest(DelegateTest):
         await self.orchestrator.drain()
         await self.assert_error('conflict', self.orchestrator.delegate,
                                 self.delegate_params(failed))
+
+    async def test_an_unrecorded_worktree_is_invalid(self) -> None:
+        parent_id, _ = await self.running(workspace=WORKTREE)
+        path, branch = unrecorded_worktree(self.root, self.data_dir)
+        await self.assert_error('invalid', self.orchestrator.delegate,
+                                self.delegate_params(parent_id, workspace=existing(path, branch)),
+                                'path')
+        self.assertEqual([spec.id for spec in self.runner.starts], [parent_id])
 
     async def test_retry_returns_the_first_child_and_starts_once(self) -> None:
         parent_id, _ = await self.running()
