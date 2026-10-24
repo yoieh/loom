@@ -1,0 +1,88 @@
+import dataclasses
+import os
+import tomllib
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+
+MODES = ('approval-required', 'auto-accept-edits', 'auto', 'full-access')
+DEFAULT_MODE = 'auto'
+SOCKET_NAME = 'api.sock'
+CONFIG_NAME = 'config.toml'
+
+
+class StartError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class Config:
+    claude_bin: str | None = None
+    claude_config_dir: str | None = None
+    agent_base_url: str | None = None
+    permission_mode: str = DEFAULT_MODE
+
+
+KEYS = tuple(field.name for field in dataclasses.fields(Config))
+
+
+def _option(value: str | None, name: str) -> Path | None:
+    if value is None:
+        return None
+    if not value:
+        raise StartError(f'{name} must not be empty')
+    return Path(os.path.abspath(value))
+
+
+def _home(environ: Mapping[str, str]) -> Path:
+    home = environ.get('HOME')
+    return Path(home) if home else Path.home()
+
+
+def _xdg(environ: Mapping[str, str], name: str, fallback: str) -> Path:
+    value = environ.get(name)
+    base = Path(os.path.abspath(value)) if value else _home(environ) / fallback
+    return base / 'loom'
+
+
+def socket_path(option: str | None, environ: Mapping[str, str]) -> Path:
+    path = _option(option, '--socket')
+    if path is not None:
+        return path
+    runtime = environ.get('XDG_RUNTIME_DIR')
+    if not runtime:
+        raise StartError('no socket path: XDG_RUNTIME_DIR is not set, so pass --socket')
+    return Path(os.path.abspath(runtime)) / 'loom' / SOCKET_NAME
+
+
+def data_dir_path(option: str | None, environ: Mapping[str, str]) -> Path:
+    path = _option(option, '--data-dir')
+    return path if path is not None else _xdg(environ, 'XDG_DATA_HOME', '.local/share')
+
+
+def config_path(option: str | None, environ: Mapping[str, str]) -> Path:
+    path = _option(option, '--config')
+    if path is not None:
+        return path
+    return _xdg(environ, 'XDG_CONFIG_HOME', '.config') / CONFIG_NAME
+
+
+def load_config(path: Path) -> Config:
+    try:
+        data = Path(path).read_bytes()
+    except FileNotFoundError:
+        return Config()
+    except OSError as error:
+        raise StartError(f'cannot read {path}: {error.strerror or error}') from None
+    try:
+        values = tomllib.loads(data.decode('utf-8'))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise StartError(f'{path}: {error}') from None
+    for key, value in values.items():
+        if key not in KEYS:
+            raise StartError(f'{path}: unknown key {key!r}')
+        if not isinstance(value, str):
+            raise StartError(f'{path}: {key} must be a string')
+    if values.get('permission_mode', DEFAULT_MODE) not in MODES:
+        raise StartError(f'{path}: permission_mode must be one of {", ".join(MODES)}')
+    return Config(**values)

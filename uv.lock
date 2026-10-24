@@ -7,6 +7,7 @@ members = [
     "loom-contracts",
     "loom-core",
     "loom-runner-claude",
+    "loom-service",
 ]
 
 [[package]]
@@ -35,3 +36,18 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "loom-contracts", editable = "packages/loom-contracts" }]
+
+[[package]]
+name = "loom-service"
+version = "0.1.0"
+source = { editable = "packages/loom-service" }
+dependencies = [
+    { name = "loom-core" },
+    { name = "loom-runner-claude" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "loom-core", editable = "packages/loom-core" },
+    { name = "loom-runner-claude", editable = "packages/loom-runner-claude" },
+]
