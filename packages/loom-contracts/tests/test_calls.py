@@ -125,10 +125,12 @@ class RecordTest(unittest.TestCase):
             ThreadInfo.__required_keys__,
             frozenset({
                 'id', 'title', 'runner', 'project_id', 'workspace_path', 'branch', 'model',
-                'state', 'waiting', 'reason', 'parent_id', 'origin', 'created_at',
+                'permission_mode', 'state', 'waiting', 'reason', 'parent_id', 'origin',
+                'created_at',
             }),
         )
         self.assertEqual(ThreadInfo.__optional_keys__, frozenset())
+        self.assertIs(get_type_hints(ThreadInfo)['permission_mode'], PermissionMode)
 
     def test_schedule_info_keys(self) -> None:
         self.assertEqual(

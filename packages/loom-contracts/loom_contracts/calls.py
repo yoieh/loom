@@ -162,6 +162,7 @@ class ThreadInfo(TypedDict):
     workspace_path: str
     branch: str | None
     model: str | None
+    permission_mode: PermissionMode
     state: ThreadState
     waiting: bool
     reason: str | None
