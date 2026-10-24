@@ -1,5 +1,7 @@
 import asyncio
 import os
+import shlex
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -22,6 +24,23 @@ def make_repo(path: Path) -> None:
 
 def parse_env(text: str) -> dict[str, str]:
     return dict(line.split('=', 1) for line in text.splitlines() if '=' in line)
+
+
+async def wait_for_pid(path: Path) -> int:
+    async with asyncio.timeout(10):
+        while True:
+            text = path.read_text() if path.exists() else ''
+            if text.endswith('\n'):
+                return int(text)
+            await asyncio.sleep(0.01)
+
+
+def kill_if_running(process: asyncio.subprocess.Process, pid: int) -> None:
+    if process.returncode is None:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 class RunGitTest(unittest.IsolatedAsyncioTestCase):
@@ -111,6 +130,51 @@ class RunGitTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(LoomError) as caught:
             await run_git(['status'], self.root / 'gone')
         self.assertEqual(caught.exception.code, 'failed')
+
+    def fake_git(self, ignore_term: bool) -> Path:
+        bin_dir = self.root / 'bin'
+        bin_dir.mkdir()
+        pid_file = self.root / 'git.pid'
+        trap = "trap '' TERM\n" if ignore_term else ''
+        script = bin_dir / 'git'
+        script.write_text(
+            f'#!/bin/sh\n{trap}echo $$ > {shlex.quote(str(pid_file))}\nexec sleep 30\n')
+        script.chmod(0o700)
+        os.environ['PATH'] = f'{bin_dir}{os.pathsep}{os.environ["PATH"]}'
+        return pid_file
+
+    async def cancel_slow_git(self, ignore_term: bool) -> tuple[asyncio.subprocess.Process, int]:
+        pid_file = self.fake_git(ignore_term)
+        real = asyncio.create_subprocess_exec
+        processes: list[asyncio.subprocess.Process] = []
+
+        async def spy(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
+            process = await real(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        with mock.patch('asyncio.create_subprocess_exec', spy):
+            task = asyncio.create_task(run_git(['status'], self.repo))
+            pid = await wait_for_pid(pid_file)
+            (process,) = processes
+            self.addCleanup(kill_if_running, process, pid)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        return process, pid
+
+    async def test_cancel_terminates_git(self) -> None:
+        process, pid = await self.cancel_slow_git(ignore_term=False)
+        self.assertEqual(process.returncode, -signal.SIGTERM)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    async def test_cancel_kills_git_that_ignores_terminate(self) -> None:
+        with mock.patch('loom_core.git.KILL_GRACE', 0.2):
+            process, pid = await self.cancel_slow_git(ignore_term=True)
+        self.assertEqual(process.returncode, -signal.SIGKILL)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 if __name__ == '__main__':
