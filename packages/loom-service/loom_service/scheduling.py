@@ -30,7 +30,7 @@ class ServiceHost:
 
     async def call(self, call: str, params: dict, maker: Maker) -> object:
         caller = Caller(thread_id=maker.by, verified=maker.verified,
-                        schedule_id=maker.schedule_id)
+                        scheduled=maker.schedule_id is not None, schedule_id=maker.schedule_id)
         try:
             return await self.service.method(call)(params, caller)
         except LoomError as error:
