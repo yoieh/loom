@@ -163,11 +163,11 @@ class NarrowerTest(unittest.TestCase):
 
 
 class ThreadInfoTest(ThreadsTest):
-    def test_info_has_the_contract_keys_and_the_mode(self) -> None:
+    def test_info_has_the_contract_keys(self) -> None:
         thread_id = self.insert(S.RUNNING, waiting=1, parent_id='p', origin='voice',
                                 model='opus', reason='r')
         info = thread_info(self.row(thread_id))
-        self.assertEqual(set(info), set(ThreadInfo.__annotations__) | {'permission_mode'})
+        self.assertEqual(set(info), set(ThreadInfo.__annotations__))
         self.assertNotIn('project', info)
         self.assertNotIn('parent', info)
         self.assertEqual(info['id'], thread_id)
