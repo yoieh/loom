@@ -232,7 +232,8 @@ class Orchestrator:
             row = fetch(tx, thread_id)
             if row['state'] != ThreadState.SETTLED:
                 before = ThreadState(row['state'])
-                transition(self.store, tx, thread_id, ThreadState.SETTLED)
+                reason = row['reason'] if before is ThreadState.FAILED else None
+                transition(self.store, tx, thread_id, ThreadState.SETTLED, reason)
                 tx.execute('DELETE FROM messages WHERE thread_id = ?', (thread_id,))
             return thread_info(fetch(tx, thread_id))
 

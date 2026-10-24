@@ -20,10 +20,12 @@ _MOVES = {
     ThreadState.RUNNING: {ThreadState.IDLE, ThreadState.SLEEPING},
     ThreadState.IDLE: {ThreadState.RUNNING, ThreadState.SLEEPING},
     ThreadState.SLEEPING: {ThreadState.STARTING},
+    ThreadState.SETTLED: set(),
+    ThreadState.FAILED: {ThreadState.SETTLED},
 }
 
 ALLOWED: dict[ThreadState, frozenset[ThreadState]] = {
-    state: frozenset(_MOVES[state]) | ENDED if state in LIVE else frozenset()
+    state: frozenset(_MOVES[state] | ENDED if state in LIVE else _MOVES[state])
     for state in ThreadState
 }
 
@@ -142,7 +144,7 @@ def transition(store: Store, tx: sqlite3.Connection, thread_id: str, state: Thre
     row = fetch(tx, thread_id)
     current = ThreadState(row['state'])
     state = ThreadState(state)
-    if current in ENDED or (state != current and state not in ALLOWED[current]):
+    if state not in ALLOWED[current] and (state != current or current in ENDED):
         raise LoomError('conflict', f'thread {thread_id} cannot go from {current} to {state}')
     if reason is None and row['stop_requested'] and state in LIVE:
         reason = STOPPING

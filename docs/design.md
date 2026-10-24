@@ -75,8 +75,9 @@ Rules, each checked by a packaging test:
 
 - **States.** `queued` (waiting for a slot) → `starting` → `running` (a turn is on) → `idle`
   (process alive, no turn) → `sleeping` (process ended, resumable) → `settled`. Any state can
-  go to `failed`, with the reason. `waiting` (a request is open, §8) is a sub-state of
-  `running`. A T3 thread maps T3's states onto the same names.
+  go to `failed`, with the reason. A `failed` thread can only be settled (`threads.settle`),
+  which keeps the reason; it is never resumed or restarted. `waiting` (a request is open, §8)
+  is a sub-state of `running`. A T3 thread maps T3's states onto the same names.
 - **No limit on threads.** Any number of threads and tasks can exist, at any depth. The only
   thing rationed is memory: each live local process takes about 275 MiB (§73.13 item 7).
   `agents_max` defaults to the machine's available memory at start, less 2 GiB, divided by
