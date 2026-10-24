@@ -1,3 +1,4 @@
+import dataclasses
 import unittest
 from enum import StrEnum
 from types import ModuleType
@@ -12,27 +13,34 @@ from loom_contracts.calls import (
     ScheduleInfo,
     ThreadInfo,
 )
-from loom_contracts.runners import Decision, DispatchMode, PermissionMode, RunnerName
+from loom_contracts.events import EVENT_DATA, Event
+from loom_contracts.runners import (
+    Decision,
+    DispatchMode,
+    PermissionMode,
+    RunnerName,
+    ThreadSpec,
+)
 from loom_contracts.triggers import ScheduleAction, Trigger
 from loom_contracts.workspaces import Workspace
 
 PARAMS: dict[str, tuple[set[str], set[str]]] = {
     'threads.launch': (
-        {'id', 'title', 'message', 'project'},
+        {'id', 'title', 'message', 'project_id'},
         {'workspace', 'runner', 'model', 'requests', 'origin'},
     ),
-    'threads.delegate': ({'id', 'parent', 'task'}, {'workspace', 'runner', 'model'}),
+    'threads.delegate': ({'id', 'parent_id', 'task'}, {'workspace', 'runner', 'model'}),
     'threads.send': ({'id', 'thread_id', 'message'}, {'mode'}),
-    'threads.list': (set(), {'project'}),
+    'threads.list': (set(), {'project_id'}),
     'threads.get': ({'thread_id'}, set()),
     'threads.stop': ({'id', 'thread_id'}, set()),
     'threads.settle': ({'id', 'thread_id'}, set()),
     'threads.events': (set(), {'after', 'thread_id'}),
     'requests.respond': ({'id', 'request_id', 'decision'}, {'message'}),
     'schedules.add': (
-        {'id', 'trigger', 'text'}, {'action', 'thread_id', 'project', 'title'},
+        {'id', 'trigger', 'text'}, {'action', 'thread_id', 'project_id', 'title'},
     ),
-    'schedules.list': (set(), {'thread_id', 'project'}),
+    'schedules.list': (set(), {'thread_id', 'project_id'}),
     'schedules.pause': ({'id', 'schedule_id'}, set()),
     'schedules.remove': ({'id', 'schedule_id'}, set()),
     'projects.add': ({'id', 'title', 'path'}, {'permission_mode'}),
@@ -71,15 +79,20 @@ class CallParamsTest(unittest.TestCase):
 
     def test_field_types(self) -> None:
         expected = {
+            ('threads.launch', 'project_id'): str,
             ('threads.launch', 'workspace'): Workspace,
             ('threads.launch', 'runner'): RunnerName,
+            ('threads.delegate', 'parent_id'): str,
             ('threads.delegate', 'workspace'): Workspace,
             ('threads.delegate', 'runner'): RunnerName,
             ('threads.send', 'mode'): DispatchMode,
+            ('threads.list', 'project_id'): str,
             ('threads.events', 'after'): int,
             ('requests.respond', 'decision'): Decision,
             ('schedules.add', 'trigger'): Trigger,
             ('schedules.add', 'action'): ScheduleAction,
+            ('schedules.add', 'project_id'): str,
+            ('schedules.list', 'project_id'): str,
             ('projects.add', 'permission_mode'): PermissionMode,
             ('projects.set_mode', 'permission_mode'): PermissionMode,
         }
@@ -142,6 +155,21 @@ class ApiVersionTest(unittest.TestCase):
             if not name.startswith('_') and not isinstance(value, ModuleType)
         }
         self.assertEqual(public, {'API_VERSION'})
+
+
+class ReferenceNamesTest(unittest.TestCase):
+    def test_no_bare_project_or_parent_key(self) -> None:
+        shapes: dict[str, set[str]] = {}
+        typed_dicts = [
+            *CALL_PARAMS.values(), ThreadInfo, ProjectInfo, ScheduleInfo, ApiError, Event,
+            *EVENT_DATA.values(),
+        ]
+        for shape in typed_dicts:
+            shapes[shape.__name__] = set(shape.__required_keys__ | shape.__optional_keys__)
+        shapes[ThreadSpec.__name__] = {field.name for field in dataclasses.fields(ThreadSpec)}
+        for name, keys in shapes.items():
+            with self.subTest(shape=name):
+                self.assertFalse(keys & {'project', 'parent'})
 
 
 if __name__ == '__main__':
