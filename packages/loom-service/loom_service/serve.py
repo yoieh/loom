@@ -14,18 +14,22 @@ from loom_core.service import Service
 from loom_core.slots import available_memory, default_agents_max
 from loom_core.store import Store
 from loom_runner_claude import ClaudeRunner
+from loom_scheduler import Scheduler
 
 from .config import Config, StartError, config_path, data_dir_path, load_config, socket_path
 from .host import Host
 from .peer import PROC
+from .scheduling import ServiceHost, serve_schedules
 from .server import MAX_LINE, Server
 
 
 class Serving:
-    def __init__(self, server: Server, service: Service, log: TextIO) -> None:
+    def __init__(self, server: Server, service: Service, log: TextIO, *,
+                 scheduler: Scheduler | None = None) -> None:
         self.server = server
         self.service = service
         self.log = log
+        self.scheduler = scheduler
         self._closed = False
 
     async def close(self) -> None:
@@ -34,6 +38,8 @@ class Serving:
         self._closed = True
         try:
             await self.server.close()
+            if self.scheduler is not None:
+                await self.scheduler.close()
             await self.service.close()
         finally:
             self.server.unlink()
@@ -68,11 +74,21 @@ async def start(socket: Path, data_dir: Path, config: Config, *,
                                 agents_max=agents_max, idle_after=config.idle_after)
     await orchestrator.recover()
     service = Service(store, projects, orchestrator)
+    scheduler = Scheduler(ServiceHost(store, service), clock=store.clock)
+    try:
+        scheduler.open()
+    except sqlite3.Error as error:
+        await server.close()
+        server.unlink()
+        await service.close()
+        raise StartError(f'cannot open the schedules in {data_dir}: {error}') from None
+    serve_schedules(service, scheduler)
     await server.start(service)
+    await scheduler.start()
     log.write(f'loom: agents_max {agents_max}\n')
     log.write(f'loom: serving on {socket}\n')
     log.flush()
-    return Serving(server, service, log)
+    return Serving(server, service, log, scheduler=scheduler)
 
 
 async def _serve(socket: Path, data_dir: Path, config: Config) -> int:

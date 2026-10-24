@@ -17,6 +17,11 @@ from .test_workspaces import make_repo
 PERSON = Caller()
 AGENT = Caller(thread_id='t1')
 UNKNOWN = Caller(verified=False)
+SCHEDULED = (
+    Caller(schedule_id='s1'),
+    Caller(thread_id='t1', schedule_id='s1'),
+    Caller(verified=False, schedule_id='s1'),
+)
 
 ALL_CALLS = (
     'threads.launch', 'threads.delegate', 'threads.send', 'threads.list', 'threads.get',
@@ -99,6 +104,36 @@ class MethodTest(ServiceTest):
                 self.service.method(call)
             self.assertEqual((caught.exception.code, caught.exception.message),
                              ('invalid', f'{call} is not served yet'))
+
+    async def test_serve_adds_methods_for_v1_calls(self) -> None:
+        async def listed(params: object, caller: Caller) -> object:
+            return ['listed', caller]
+
+        self.service.serve({'schedules.list': listed})
+        self.assertIs(self.service.method('schedules.list'), listed)
+        self.assertEqual(await self.call('schedules.list', {}), ['listed', PERSON])
+        self.assertEqual(SERVED, ALL_CALLS)
+        with self.assertRaises(LoomError) as caught:
+            self.service.method('schedules.add')
+        self.assertEqual((caught.exception.code, caught.exception.message),
+                         ('invalid', 'schedules.add is not served yet'))
+
+    async def test_serve_refuses_a_served_or_unknown_call(self) -> None:
+        async def other(params: object, caller: Caller) -> object:
+            return 'other'
+
+        own = self.service.method('threads.list')
+        for name in ('threads.list', 'threads.nope', 5):
+            with self.subTest(call=name), self.assertRaises(ValueError):
+                self.service.serve({name: other})
+        self.service.serve({'schedules.list': other})
+        with self.assertRaises(ValueError):
+            self.service.serve({'schedules.list': other})
+        with self.assertRaises(ValueError):
+            self.service.serve({'schedules.add': other, 'threads.nope': other})
+        self.assertIs(self.service.method('threads.list'), own)
+        with self.assertRaises(LoomError):
+            self.service.method('schedules.add')
 
     async def test_forbidden_is_an_error_code(self) -> None:
         self.assertIn('forbidden', CODES)
@@ -220,6 +255,45 @@ class CallerTest(ServiceTest):
                 self.assertEqual(self.receipts('m1'), 0)
         changed = await self.call('projects.set_mode', params)
         self.assertEqual(changed['permission_mode'], 'full-access')
+
+    async def test_caller_without_a_schedule_is_unchanged(self) -> None:
+        self.assertEqual(PERSON, Caller(None, True))
+        self.assertEqual(AGENT, Caller('t1', True))
+        self.assertEqual(UNKNOWN, Caller(None, False))
+        for caller in (PERSON, AGENT, UNKNOWN):
+            self.assertIsNone(caller.schedule_id)
+
+    async def test_scheduled_callers_may_not_add_projects(self) -> None:
+        before = self.projects.list()
+        for number, caller in enumerate(SCHEDULED):
+            with self.subTest(caller=caller):
+                command_id = f's{number}'
+                message = await self.refused('projects.add', self.project_params(
+                    command_id, f'repo-{number}'), 'forbidden', caller)
+                self.assertEqual(message, 'agent threads may not add projects')
+                self.assertEqual(self.projects.list(), before)
+                self.assertEqual(self.receipts(command_id), 0)
+
+    async def test_scheduled_callers_may_not_change_a_mode(self) -> None:
+        params = {'id': 'm1', 'project_id': 'loom', 'permission_mode': 'full-access'}
+        for caller in SCHEDULED:
+            with self.subTest(caller=caller):
+                message = await self.refused('projects.set_mode', params, 'forbidden', caller)
+                self.assertEqual(message, "agent threads may not change a project's mode")
+                self.assertIsNone(self.projects.get('loom')['permission_mode'])
+                self.assertEqual(self.receipts('m1'), 0)
+
+    async def test_scheduled_callers_launch_and_send_as_people_do(self) -> None:
+        for number, caller in enumerate(SCHEDULED):
+            with self.subTest(caller=caller):
+                launched = await self.call('threads.launch', self.launch_params(), caller)
+                self.assertEqual(launched['state'], 'queued')
+                await self.orchestrator.drain()
+                sent = await self.call('threads.send', {
+                    'id': f'send-{number}', 'thread_id': launched['id'], 'message': 'More',
+                }, caller)
+                self.assertEqual(sent['id'], launched['id'])
+                self.assertEqual(self.receipts(f'send-{number}'), 1)
 
     async def test_people_manage_projects(self) -> None:
         added = await self.call('projects.add', self.project_params('a1'))

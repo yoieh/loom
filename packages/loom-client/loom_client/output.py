@@ -2,6 +2,7 @@ import json
 
 from loom_contracts.calls import CallName
 from loom_contracts.events import EventType
+from loom_contracts.triggers import TriggerType
 
 MAX_TEXT = 2000
 CUT_MARK = '…'
@@ -73,6 +74,57 @@ def project_line(project: object) -> str:
                       entry(project.get('workspace_root')), entry(project.get('title'))])
 
 
+def _whole(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _schedule_state(schedule: dict) -> str | None:
+    paused = schedule.get('paused')
+    if paused is True:
+        return 'paused'
+    if paused is not False or 'next_run' not in schedule:
+        return None
+    next_run = schedule['next_run']
+    if next_run is None:
+        return 'done'
+    return next_run if isinstance(next_run, str) else None
+
+
+def _trigger_text(trigger: object) -> str | None:
+    kind = _field(trigger, 'type')
+    if kind == TriggerType.AT:
+        at = trigger.get('at')
+        return f'at {at}' if isinstance(at, str) else None
+    if kind == TriggerType.INTERVAL:
+        every = trigger.get('everyMs')
+        if not _whole(every):
+            return None
+        seconds = every // 1000 if every % 1000 == 0 else every / 1000
+        return f'every {seconds}s'
+    if kind == TriggerType.FIXED_TIME:
+        time = trigger.get('timeOfDay')
+        weekdays = trigger.get('weekdays')
+        if not isinstance(time, str):
+            return None
+        if weekdays is None or weekdays == []:
+            return time
+        if not isinstance(weekdays, list) or not all(_whole(day) for day in weekdays):
+            return None
+        return f'{time} on {",".join(str(day) for day in weekdays)}'
+    return None
+
+
+def schedule_line(schedule: object) -> str:
+    if not isinstance(schedule, dict):
+        return entry(schedule)
+    target = schedule.get('thread_id')
+    if target is None:
+        target = schedule.get('project_id')
+    return '  '.join([entry(schedule.get('id')), entry(_schedule_state(schedule)),
+                      entry(schedule.get('action')), entry(_trigger_text(schedule.get('trigger'))),
+                      entry(target), entry(schedule.get('title') or schedule.get('text'))])
+
+
 def event_line(event: object) -> str:
     kind = _field(event, 'type')
     data = _field(event, 'data')
@@ -97,4 +149,6 @@ def human(call: str, result: object) -> list[str]:
         return thread_detail(result)
     if call.startswith('projects.'):
         return [project_line(item) for item in _items(result)]
+    if call.startswith('schedules.'):
+        return [schedule_line(item) for item in _items(result)]
     return [thread_line(item) for item in _items(result)]

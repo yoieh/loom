@@ -179,9 +179,12 @@ class RunnerSession(Protocol):
 
 - **Triggers**, in the shape of T3's `schedule_task`:
   - `{"type":"at","at":"2026-10-24T09:00"}`: once;
-  - `{"type":"interval","everyMs":3600000}`: at least 60 s;
+  - `{"type":"interval","everyMs":3600000}`: at least 60 s. The first run is due `everyMs`
+    after the schedule is added, and each next one `everyMs` after the last run or skip, as
+    T3's `Schedule.ts`;
   - `{"type":"fixed_time","timeOfDay":"09:07","weekdays":[1,2,3,4,5]}`: wall-clock, in the
-    machine's local time zone;
+    machine's local time zone. `weekdays` are 0 to 6 with 0 Sunday, as T3's, and missing or
+    empty means every day;
   - `{"type":"webhook"}`: later, once Loom can be reached from outside (with Thread Voice's
     relay, its §74). It then needs a per-schedule secret.
 - **Actions**: `post` (into a thread, which wakes it), `launch` (a new thread with the prompt,
@@ -190,13 +193,17 @@ class RunnerSession(Protocol):
   thread that made it. A reminder is `notify`.
 - **The loop.** A generic tick (T3's `Scheduler.ts`) that sources register on; the schedules
   source keeps a heap by next run and wakes at the first one due, but at least every 30 s, so
-  a clock jump (WSL after sleep, a laptop lid) is noticed. Each run is a row with its time and
-  outcome.
+  a clock jump (WSL after sleep, a laptop lid) is noticed. The schedules are rows in a
+  `schedules` table, and each run is a row in `schedule_runs` with its time and outcome.
 - **Missed runs**, as T3's `Schedule.ts`, except for reminders: a missed `at` runs once on start
   however late, and says it is late; a missed `interval` runs once; a `fixed_time` run more
-  than 10 minutes late is skipped and logged. Never a burst of catch-up runs.
+  than 10 minutes late is skipped and logged. Never a burst of catch-up runs. A run is late
+  when it starts more than 60 s after it was due: a late `post` or `launch` begins with
+  `This run is late: it was due at <due>.`, and `schedule.fired` carries `late`.
 - **Overlap.** A `post` or `launch` run whose previous run's turn is still going is skipped and
-  logged, not queued.
+  logged, not queued. "Still going" means the thread the schedule's last fired run posted into
+  or launched is `queued`, `starting` or `running`, so a turn someone else started in a posted
+  thread counts too. Posts use dispatch mode `queue`.
 
 ## §8 The API
 

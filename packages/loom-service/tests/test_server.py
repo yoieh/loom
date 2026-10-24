@@ -187,7 +187,6 @@ class BadRequestTest(ServerCase):
             b'{"call": "projects.list", "params": null}': 'params must be an object',
             b'{"call": "projects.list", "params": []}': 'params must be an object',
             b'{"call": "threads.nope"}': 'unknown call: threads.nope',
-            b'{"call": "schedules.add"}': 'schedules.add is not served yet',
             b'{"call": "requests.respond"}': 'requests.respond is not served yet',
         }
         for line, message in bad.items():

@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from loom_contracts.calls import ProjectInfo, ThreadInfo
@@ -177,10 +178,11 @@ class LiveCase(unittest.TestCase):
 class ScriptTest(LiveCase):
     def test_the_loom_script_lists_its_commands(self) -> None:
         for argv, names in (
-            (['--help'], ['serve', 'threads', 'projects']),
+            (['--help'], ['serve', 'threads', 'projects', 'schedules']),
             (['threads', '--help'],
              ['launch', 'delegate', 'send', 'list', 'get', 'stop', 'settle', 'events']),
             (['projects', '--help'], ['add', 'set-mode', 'remove', 'list']),
+            (['schedules', '--help'], ['add', 'list', 'pause', 'remove']),
         ):
             with self.subTest(argv=argv):
                 done = subprocess.run([str(LOOM), *argv], env=self.env, capture_output=True,
@@ -262,8 +264,9 @@ class ApiTest(LiveCase):
         self.assertEqual(client.projects_remove('other'), other)
         self.assertEqual(client.projects_list(), [changed])
 
+        self.assertEqual(client.schedules_list(), [])
         with self.assertRaises(LoomApiError) as caught:
-            client.schedules_list()
+            client.requests_respond('r1', 'allow')
         self.assertEqual(caught.exception.code, 'invalid')
         with self.assertRaises(LoomApiError) as caught:
             client.threads_get('nope')
@@ -340,6 +343,42 @@ class CliTest(LiveCase):
         done = self.cli('--json', 'threads', 'get', 'nope')
         self.assertEqual(done.returncode, 1)
         self.assertEqual(json.loads(done.stdout)['error']['code'], 'not_found')
+
+    def test_the_schedules_commands_run_through_a_real_server(self) -> None:
+        past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat(timespec='seconds')
+        done = self.cli('schedules', 'add', 'Ping', '--at', past, '--action', 'notify')
+        self.assertEqual((done.returncode, done.stderr), (0, ''))
+        ping = done.stdout.split()[0]
+
+        def fired() -> list[str]:
+            done = self.cli('threads', 'events')
+            return [text for text in done.stdout.splitlines() if ' schedule.fired ' in text]
+
+        self.assertEqual(len(wait_for(fired, 'schedule.fired')), 1)
+        self.assertTrue(fired()[0].endswith(f' - schedule.fired {ping} notify late Ping'),
+                        fired())
+        done_line = f'{ping}  done  notify  at {past}  -  Ping'
+        self.assertEqual(self.cli('schedules', 'list').stdout, done_line + '\n')
+
+        done = self.cli('schedules', 'add', 'Every minute', '--every', '60', '--action', 'notify')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        minute = done.stdout.split()[0]
+        listed = self.cli('schedules', 'list').stdout.splitlines()
+        self.assertEqual(listed[0], done_line)
+        self.assertTrue(listed[1].startswith(f'{minute}  '), listed)
+        self.assertTrue(listed[1].endswith('  notify  every 60s  -  Every minute'), listed)
+        self.assertEqual(self.cli_json('schedules', 'list'), self.client.schedules_list())
+
+        paused = f'{minute}  paused  notify  every 60s  -  Every minute\n'
+        self.assertEqual(self.cli('schedules', 'pause', minute).stdout, paused)
+        self.assertEqual(self.cli('schedules', 'remove', minute).stdout, paused)
+        self.assertEqual(self.cli('schedules', 'remove', ping).stdout, done_line + '\n')
+        self.assertEqual(self.cli('schedules', 'list').stdout, '')
+        self.assertEqual(self.client.schedules_list(), [])
+
+        done = self.cli('schedules', 'add', 'Too often', '--every', '30', '--action', 'notify')
+        self.assertEqual((done.returncode, done.stdout), (1, ''))
+        self.assertTrue(done.stderr.startswith('loom: invalid: '), done.stderr)
 
     def test_projects_add_from_an_agent_thread_is_forbidden(self) -> None:
         done = self.cli('projects', 'add', 'Repo', str(self.repo), LOOM_THREAD='anything')

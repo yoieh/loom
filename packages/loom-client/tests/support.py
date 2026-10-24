@@ -50,6 +50,13 @@ def project_info(project_id: str = 'demo', **values: object) -> dict:
             'permission_mode': None, 'created_at': AT, **values}
 
 
+def schedule_info(schedule_id: str = 's1', **values: object) -> dict:
+    return {'id': schedule_id, 'trigger': {'type': 'at', 'at': '2026-10-25T09:00'},
+            'action': 'notify', 'text': 'Stand-up', 'thread_id': None, 'project_id': None,
+            'title': None, 'by': None, 'paused': False, 'next_run': AT, 'created_at': AT,
+            **values}
+
+
 class _Handler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
         fake: FakeServer = self.server.fake
