@@ -135,8 +135,9 @@ class Client:
         with self._connect() as sock, sock.makefile('rb') as file:
             return parse_answer(self._send(sock, file, name, params))
 
-    def follow_events(self, after: int = 0, thread_id: str | None = None) -> Iterator[Event]:
-        params = _params(after=after, thread_id=thread_id, follow=True)
+    def follow_events(self, after: int = 0, thread_id: str | None = None, *,
+                      audience: str | None = None) -> Iterator[Event]:
+        params = _params(after=after, thread_id=thread_id, audience=audience, follow=True)
         last = after
         with self._connect() as sock, sock.makefile('rb') as file:
             try:
@@ -160,10 +161,12 @@ class Client:
     def threads_launch(self, project_id: str, title: str, message: str, *,
                        workspace: dict | None = None, runner: str | None = None,
                        model: str | None = None, requests: str | None = None,
-                       origin: str | None = None, id: str | None = None) -> ThreadInfo:
+                       origin: str | None = None, audience: str | None = None,
+                       id: str | None = None) -> ThreadInfo:
         return self.call(CallName.THREADS_LAUNCH, _params(
             id=_command_id(id), project_id=project_id, title=title, message=message,
-            workspace=workspace, runner=runner, model=model, requests=requests, origin=origin))
+            workspace=workspace, runner=runner, model=model, requests=requests, origin=origin,
+            audience=audience))
 
     def threads_delegate(self, parent_id: str, task: str, *, workspace: dict | None = None,
                          runner: str | None = None, model: str | None = None,
@@ -177,8 +180,9 @@ class Client:
         return self.call(CallName.THREADS_SEND, _params(
             id=_command_id(id), thread_id=thread_id, message=message, mode=mode))
 
-    def threads_list(self, project_id: str | None = None) -> list[ThreadInfo]:
-        return self.call(CallName.THREADS_LIST, _params(project_id=project_id))
+    def threads_list(self, project_id: str | None = None, *,
+                     audience: str | None = None) -> list[ThreadInfo]:
+        return self.call(CallName.THREADS_LIST, _params(project_id=project_id, audience=audience))
 
     def threads_get(self, thread_id: str) -> ThreadInfo:
         return self.call(CallName.THREADS_GET, _params(thread_id=thread_id))
@@ -190,8 +194,15 @@ class Client:
         return self.call(CallName.THREADS_SETTLE,
                          _params(id=_command_id(id), thread_id=thread_id))
 
-    def threads_events(self, after: int = 0, thread_id: str | None = None) -> list[Event]:
-        page = self.call(CallName.THREADS_EVENTS, _params(after=after, thread_id=thread_id))
+    def threads_update(self, thread_id: str, audience: str, *,
+                       id: str | None = None) -> ThreadInfo:
+        return self.call(CallName.THREADS_UPDATE,
+                         _params(id=_command_id(id), thread_id=thread_id, audience=audience))
+
+    def threads_events(self, after: int = 0, thread_id: str | None = None, *,
+                       audience: str | None = None) -> list[Event]:
+        page = self.call(CallName.THREADS_EVENTS,
+                         _params(after=after, thread_id=thread_id, audience=audience))
         if not isinstance(page, list):
             raise LoomProtocolError('the events answer is not a list')
         for event in page:

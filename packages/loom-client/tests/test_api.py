@@ -25,6 +25,8 @@ CALLS = [
       'origin': 'cli'}, 'threads.launch',
      {'project_id': 'demo', 'title': 'First', 'message': 'hello', 'workspace': WORKSPACE,
       'runner': 'claude', 'model': 'm', 'requests': 'caller', 'origin': 'cli'}),
+    ('threads_launch', ('demo', 'First', 'hello'), {'audience': 'person'}, 'threads.launch',
+     {'project_id': 'demo', 'title': 'First', 'message': 'hello', 'audience': 'person'}),
     ('threads_delegate', ('t1', 'check it'), {}, 'threads.delegate',
      {'parent_id': 't1', 'task': 'check it'}),
     ('threads_delegate', ('t1', 'check it'),
@@ -36,11 +38,20 @@ CALLS = [
      {'thread_id': 't1', 'message': 'again', 'mode': 'queue'}),
     ('threads_list', (), {}, 'threads.list', {}),
     ('threads_list', ('demo',), {}, 'threads.list', {'project_id': 'demo'}),
+    ('threads_list', (), {'audience': 'person'}, 'threads.list', {'audience': 'person'}),
+    ('threads_list', ('demo',), {'audience': 'agent'}, 'threads.list',
+     {'project_id': 'demo', 'audience': 'agent'}),
     ('threads_get', ('t1',), {}, 'threads.get', {'thread_id': 't1'}),
     ('threads_stop', ('t1',), {}, 'threads.stop', {'thread_id': 't1'}),
     ('threads_settle', ('t1',), {}, 'threads.settle', {'thread_id': 't1'}),
+    ('threads_update', ('t1', 'person'), {}, 'threads.update',
+     {'thread_id': 't1', 'audience': 'person'}),
     ('threads_events', (), {}, 'threads.events', {'after': 0}),
     ('threads_events', (5, 't1'), {}, 'threads.events', {'after': 5, 'thread_id': 't1'}),
+    ('threads_events', (), {'audience': 'person'}, 'threads.events',
+     {'after': 0, 'audience': 'person'}),
+    ('threads_events', (5, 't1'), {'audience': 'agent'}, 'threads.events',
+     {'after': 5, 'thread_id': 't1', 'audience': 'agent'}),
     ('requests_respond', ('r1', 'allow'), {}, 'requests.respond',
      {'request_id': 'r1', 'decision': 'allow'}),
     ('requests_respond', ('r1', 'deny'), {'message': 'no'}, 'requests.respond',
@@ -69,8 +80,8 @@ CALLS = [
 
 WRITES = {
     'threads.launch', 'threads.delegate', 'threads.send', 'threads.stop', 'threads.settle',
-    'requests.respond', 'schedules.add', 'schedules.pause', 'schedules.remove', 'projects.add',
-    'projects.set_mode', 'projects.remove',
+    'threads.update', 'requests.respond', 'schedules.add', 'schedules.pause', 'schedules.remove',
+    'projects.add', 'projects.set_mode', 'projects.remove',
 }
 
 BAD_ANSWERS = {
@@ -246,6 +257,17 @@ class FollowTest(FakeServerCase):
         })
         with self.assertRaises(LoomConnectionError):
             next(follow)
+
+    def test_follow_sends_audience_when_given(self) -> None:
+        for kwargs, params in (({'audience': 'person'}, {'after': 0, 'audience': 'person',
+                                                         'follow': True}),
+                               ({'audience': None}, {'after': 0, 'follow': True})):
+            with self.subTest(kwargs=kwargs):
+                self.answer(stream(event(1)))
+                follow = Client(str(self.socket)).follow_events(**kwargs)
+                self.assertEqual(next(follow), event(1))
+                follow.close()
+                self.assertEqual(self.server.requests[-1]['params'], params)
 
     def test_a_lost_stream_names_the_last_yielded_event(self) -> None:
         self.answer(stream(event(8), event(9)))

@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
-from loom_contracts.calls import CallName, ProjectInfo, ThreadInfo
+from loom_contracts.calls import Audience, CallName, ProjectInfo, ThreadInfo
 from loom_contracts.events import Event
 
 from . import keys
@@ -14,8 +14,8 @@ from .store import MAX_EVENT_ID, MAX_EVENTS, Store
 
 SERVED: tuple[str, ...] = (
     'threads.launch', 'threads.delegate', 'threads.send', 'threads.list', 'threads.get',
-    'threads.stop', 'threads.settle', 'threads.events', 'projects.add', 'projects.set_mode',
-    'projects.remove', 'projects.list',
+    'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
+    'projects.set_mode', 'projects.remove', 'projects.list',
 )
 
 
@@ -49,6 +49,17 @@ def _string(value: object, field: str) -> str:
     return value
 
 
+def _audience(params: dict) -> Audience | None:
+    if 'audience' not in params:
+        return None
+    value = params['audience']
+    if value is None:
+        raise LoomError('invalid', 'audience must not be null')
+    if isinstance(value, str) and value in tuple(Audience):
+        return Audience(value)
+    raise LoomError('invalid', f'audience must be one of {", ".join(Audience)}')
+
+
 def _is_person(caller: Caller) -> bool:
     if caller.schedule_id is not None:
         return False
@@ -63,7 +74,7 @@ def _source(caller: Caller) -> StartSource:
     return StartSource.PERSON
 
 
-def _events_params(params: object) -> tuple[int, str | None, bool]:
+def _events_params(params: object) -> tuple[int, str | None, Audience | None, bool]:
     params = _params(params)
     after = params.get('after', 0)
     if (
@@ -74,10 +85,11 @@ def _events_params(params: object) -> tuple[int, str | None, bool]:
     thread_id = None
     if 'thread_id' in params:
         thread_id = _string(params['thread_id'], 'thread_id')
+    audience = _audience(params)
     follow = params.get('follow', False)
     if not isinstance(follow, bool):
         raise LoomError('invalid', 'follow must be true or false')
-    return after, thread_id, follow
+    return after, thread_id, audience, follow
 
 
 class Service:
@@ -93,6 +105,7 @@ class Service:
             'threads.get': self._get_thread,
             'threads.stop': self._stop,
             'threads.settle': self._settle,
+            'threads.update': self._update,
             'threads.events': self._events,
             'projects.add': self._add_project,
             'projects.set_mode': self._set_mode,
@@ -124,20 +137,21 @@ class Service:
         self._methods.update(zip(names, methods.values()))
 
     def follow(self, params: object, caller: Caller) -> AsyncIterator[Event]:
-        after, thread_id, _ = _events_params(params)
-        return self._follow(after, thread_id)
+        after, thread_id, audience, _ = _events_params(params)
+        return self._follow(after, thread_id, audience)
 
     async def close(self) -> None:
         await self.orchestrator.close()
         self.store.close()
 
-    async def _follow(self, after: int, thread_id: str | None) -> AsyncIterator[Event]:
+    async def _follow(self, after: int, thread_id: str | None,
+                      audience: Audience | None) -> AsyncIterator[Event]:
         wake = asyncio.Event()
         remove = self.store.listen(wake.set)
         try:
             while True:
                 wake.clear()
-                events = self.store.events(after, thread_id)
+                events = self.store.events(after, thread_id, audience=audience)
                 for event in events:
                     after = event['id']
                     yield event
@@ -160,7 +174,7 @@ class Service:
         project_id = None
         if keys.PROJECT_KEY in params:
             project_id = _string(params[keys.PROJECT_KEY], keys.PROJECT_KEY)
-        return self.orchestrator.list(project_id)
+        return self.orchestrator.list(project_id, _audience(params))
 
     async def _get_thread(self, params: object, caller: Caller) -> ThreadInfo:
         params = _params(params)
@@ -172,11 +186,14 @@ class Service:
     async def _settle(self, params: object, caller: Caller) -> ThreadInfo:
         return await self.orchestrator.settle(params)
 
+    async def _update(self, params: object, caller: Caller) -> ThreadInfo:
+        return await self.orchestrator.update(params)
+
     async def _events(self, params: object, caller: Caller) -> list[Event]:
-        after, thread_id, follow = _events_params(params)
+        after, thread_id, audience, follow = _events_params(params)
         if follow:
             raise LoomError('invalid', 'follow needs a stream')
-        return self.store.events(after, thread_id)
+        return self.store.events(after, thread_id, audience=audience)
 
     async def _add_project(self, params: object, caller: Caller) -> ProjectInfo:
         if not _is_person(caller):

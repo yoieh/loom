@@ -15,6 +15,7 @@ class CallName(StrEnum):
     THREADS_GET = 'threads.get'
     THREADS_STOP = 'threads.stop'
     THREADS_SETTLE = 'threads.settle'
+    THREADS_UPDATE = 'threads.update'
     THREADS_EVENTS = 'threads.events'
     REQUESTS_RESPOND = 'requests.respond'
     SCHEDULES_ADD = 'schedules.add'
@@ -27,6 +28,11 @@ class CallName(StrEnum):
     PROJECTS_LIST = 'projects.list'
 
 
+class Audience(StrEnum):
+    PERSON = 'person'
+    AGENT = 'agent'
+
+
 class ThreadsLaunchParams(TypedDict):
     id: str
     title: str
@@ -37,6 +43,7 @@ class ThreadsLaunchParams(TypedDict):
     model: NotRequired[str]
     requests: NotRequired[Literal['caller', 'any']]
     origin: NotRequired[str]
+    audience: NotRequired[Audience]
 
 
 class ThreadsDelegateParams(TypedDict):
@@ -57,6 +64,7 @@ class ThreadsSendParams(TypedDict):
 
 class ThreadsListParams(TypedDict):
     project_id: NotRequired[str]
+    audience: NotRequired[Audience]
 
 
 class ThreadsGetParams(TypedDict):
@@ -73,10 +81,17 @@ class ThreadsSettleParams(TypedDict):
     thread_id: str
 
 
+class ThreadsUpdateParams(TypedDict):
+    id: str
+    thread_id: str
+    audience: Audience
+
+
 class ThreadsEventsParams(TypedDict):
     after: NotRequired[int]
     thread_id: NotRequired[str]
     follow: NotRequired[bool]
+    audience: NotRequired[Audience]
 
 
 class RequestsRespondParams(TypedDict):
@@ -141,6 +156,7 @@ CALL_PARAMS: dict[CallName, type] = {
     CallName.THREADS_GET: ThreadsGetParams,
     CallName.THREADS_STOP: ThreadsStopParams,
     CallName.THREADS_SETTLE: ThreadsSettleParams,
+    CallName.THREADS_UPDATE: ThreadsUpdateParams,
     CallName.THREADS_EVENTS: ThreadsEventsParams,
     CallName.REQUESTS_RESPOND: RequestsRespondParams,
     CallName.SCHEDULES_ADD: SchedulesAddParams,
@@ -168,6 +184,7 @@ class ThreadInfo(TypedDict):
     reason: str | None
     parent_id: str | None
     origin: str | None
+    audience: Audience
     created_at: str
 
 
