@@ -9,8 +9,10 @@ POSTED = frozenset({TurnState.COMPLETED, TurnState.FAILED})
 
 
 def child_title(task: str) -> str:
-    lines = task.splitlines()
-    return (lines[0] if lines else task)[:TITLE_LENGTH]
+    for line in task.splitlines():
+        if line.strip():
+            return line.strip()[:TITLE_LENGTH]
+    return task[:TITLE_LENGTH]
 
 
 def parent_workspace(parent: sqlite3.Row) -> dict[str, str]:
