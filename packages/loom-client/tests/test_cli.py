@@ -10,7 +10,8 @@ from unittest import mock
 from loom_client import Client, cli
 
 from .support import (
-    AT, CLOSE, FakeServerCase, event, failed, line, ok, project_info, stream, thread_info,
+    AT, CLOSE, FakeServerCase, event, failed, line, ok, project_info, schedule_info, stream,
+    thread_info,
 )
 
 COMMANDS = [
@@ -54,10 +55,36 @@ COMMANDS = [
     (['project', 'list'], 'projects.list', {}),
     (['project', 'add', 'Demo', '/tmp/demo'], 'projects.add',
      {'title': 'Demo', 'path': '/tmp/demo'}),
+    (['schedules', 'add', 'Stand-up', '--at', '2026-10-25T09:00', '--action', 'notify'],
+     'schedules.add',
+     {'trigger': {'type': 'at', 'at': '2026-10-25T09:00'}, 'text': 'Stand-up',
+      'action': 'notify'}),
+    (['schedules', 'add', 'Look', '--every', '3600'], 'schedules.add',
+     {'trigger': {'type': 'interval', 'everyMs': 3600000}, 'text': 'Look'}),
+    (['schedules', 'add', 'Look', '--time', '9:07', '--weekdays', '1,2,3,4,5'], 'schedules.add',
+     {'trigger': {'type': 'fixed_time', 'timeOfDay': '9:07', 'weekdays': [1, 2, 3, 4, 5]},
+      'text': 'Look'}),
+    (['schedules', 'add', 'Look', '--time', '9:07'], 'schedules.add',
+     {'trigger': {'type': 'fixed_time', 'timeOfDay': '9:07'}, 'text': 'Look'}),
+    (['schedules', 'add', 'Look', '--time', '9:07', '--action', 'post', '--thread', 't1',
+      '--title', 'Daily'], 'schedules.add',
+     {'trigger': {'type': 'fixed_time', 'timeOfDay': '9:07'}, 'text': 'Look', 'action': 'post',
+      'thread_id': 't1', 'title': 'Daily'}),
+    (['schedule', 'add', 'Go', '--every', '60', '--action', 'launch', '--project', 'demo'],
+     'schedules.add',
+     {'trigger': {'type': 'interval', 'everyMs': 60000}, 'text': 'Go', 'action': 'launch',
+      'project_id': 'demo'}),
+    (['schedules', 'list'], 'schedules.list', {}),
+    (['schedules', 'list', '--thread', 't1', '--project', 'demo'], 'schedules.list',
+     {'thread_id': 't1', 'project_id': 'demo'}),
+    (['schedule', 'list'], 'schedules.list', {}),
+    (['schedules', 'pause', 's1'], 'schedules.pause', {'schedule_id': 's1'}),
+    (['schedules', 'remove', 's1'], 'schedules.remove', {'schedule_id': 's1'}),
 ]
 
 WRITES = {'threads.launch', 'threads.delegate', 'threads.send', 'threads.stop',
-          'threads.settle', 'projects.add', 'projects.set_mode', 'projects.remove'}
+          'threads.settle', 'projects.add', 'projects.set_mode', 'projects.remove',
+          'schedules.add', 'schedules.pause', 'schedules.remove'}
 
 USAGE_ERRORS = [
     [],
@@ -79,7 +106,20 @@ USAGE_ERRORS = [
     ['projects', 'add', 'Demo', '.', '--mode', 'root'],
     ['projects', 'set-mode', 'demo', 'everything'],
     ['projects', 'list', 'extra'],
-    ['schedules', 'list'],
+    ['schedules', 'add', 'x'],
+    ['schedules', 'add', 'x', '--at', '2026-10-25T09:00', '--every', '60'],
+    ['schedules', 'add', 'x', '--every', '60', '--time', '9:07'],
+    ['schedules', 'add', 'x', '--every', '0'],
+    ['schedules', 'add', 'x', '--every', 'x'],
+    ['schedules', 'add', 'x', '--every', '1.5'],
+    ['schedules', 'add', 'x', '--weekdays', '1,2'],
+    ['schedules', 'add', 'x', '--at', '2026-10-25T09:00', '--weekdays', '1,2'],
+    ['schedules', 'add', 'x', '--time', '9:07', '--weekdays', '1,x'],
+    ['schedules', 'add', 'x', '--every', '60', '--action', 'send'],
+    ['schedules', 'add', '--every', '60'],
+    ['schedules', 'list', 'extra'],
+    ['schedules', 'pause'],
+    ['schedules', 'remove'],
     ['requests', 'respond', 'r1', 'allow'],
     ['--socket'],
     ['serve', '--port', '80'],
@@ -123,7 +163,9 @@ class CommandTest(CliCase):
     def test_a_given_id_is_sent(self) -> None:
         self.answer(ok(thread_info()))
         for argv in (['threads', 'stop', 't1'], ['threads', 'send', 't1', 'm'],
-                     ['projects', 'remove', 'demo'], ['threads', 'launch', 'd', 'T', 'm']):
+                     ['projects', 'remove', 'demo'], ['threads', 'launch', 'd', 'T', 'm'],
+                     ['schedules', 'add', 'x', '--every', '60'], ['schedules', 'pause', 's1'],
+                     ['schedules', 'remove', 's1']):
             with self.subTest(argv=argv):
                 self.assertEqual(self.run_cli(*argv, '--id', 'retry-7')[0], 0)
                 self.assertEqual(self.server.requests[-1]['params']['id'], 'retry-7')
@@ -134,7 +176,8 @@ class CommandTest(CliCase):
         self.assertEqual({call.value for call in cli.COMMANDS}, {
             'threads.launch', 'threads.delegate', 'threads.send', 'threads.list', 'threads.get',
             'threads.stop', 'threads.settle', 'threads.events', 'projects.add',
-            'projects.set_mode', 'projects.remove', 'projects.list',
+            'projects.set_mode', 'projects.remove', 'projects.list', 'schedules.add',
+            'schedules.list', 'schedules.pause', 'schedules.remove',
         })
 
     def test_a_relative_project_path_is_made_absolute(self) -> None:
@@ -155,7 +198,8 @@ class CommandTest(CliCase):
         text = 'line one\nline two\n'
         for argv, field in ((['threads', 'launch', 'demo', 'First', '-'], 'message'),
                             (['threads', 'send', 't1', '-'], 'message'),
-                            (['threads', 'delegate', 't1', '-'], 'task')):
+                            (['threads', 'delegate', 't1', '-'], 'task'),
+                            (['schedules', 'add', '-', '--every', '60'], 'text')):
             with self.subTest(argv=argv):
                 self.assertEqual(self.run_cli(*argv, stdin=text)[0], 0)
                 self.assertEqual(self.server.requests[-1]['params'][field], text)
@@ -177,13 +221,30 @@ class UsageTest(CliCase):
                 self.assertIn('usage:', err.getvalue())
         self.assertEqual(self.server.requests, [])
 
+    def test_schedule_usage_errors_say_what_is_wrong(self) -> None:
+        for argv, message in (
+            (['x'], 'one of the arguments --at --every --time is required'),
+            (['x', '--at', 'a', '--time', '9:07'], 'not allowed with argument'),
+            (['x', '--every', '0'], "not a whole number of seconds: '0'"),
+            (['x', '--every', 'x'], "not a whole number of seconds: 'x'"),
+            (['x', '--every', '60', '--weekdays', '1,2'], '--weekdays needs --time'),
+            (['x', '--time', '9:07', '--weekdays', '1,x'], "not a list of weekday numbers: '1,x'"),
+        ):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_cli('schedules', 'add', *argv)
+                self.assertEqual((code, out), (2, ''))
+                self.assertIn(message, err)
+        self.assertEqual(self.server.requests, [])
+
     def test_help_lists_the_commands_and_exits_0(self) -> None:
         for argv, names in (
-            (['--help'], ['serve', 'threads', 'projects']),
+            (['--help'], ['serve', 'threads', 'projects', 'schedules']),
             (['threads', '--help'],
              ['launch', 'delegate', 'send', 'list', 'get', 'stop', 'settle', 'events']),
             (['projects', '--help'], ['add', 'set-mode', 'remove', 'list']),
             (['project', '--help'], ['add', 'set-mode', 'remove', 'list']),
+            (['schedules', '--help'], ['add', 'list', 'pause', 'remove']),
+            (['schedule', '--help'], ['add', 'list', 'pause', 'remove']),
         ):
             with self.subTest(argv=argv):
                 out = io.StringIO()
@@ -209,6 +270,14 @@ class ExitTest(CliCase):
         })
         self.assertEqual(out.count('\n'), 1)
         self.assertEqual(err, 'loom: forbidden: agent threads may not add projects\n')
+
+    def test_a_schedule_the_server_finds_invalid_exits_1(self) -> None:
+        self.answer(failed('invalid', 'everyMs must be at least 60000'))
+        code, out, err = self.run_cli('schedules', 'add', 'x', '--every', '30')
+        self.assertEqual((code, out), (1, ''))
+        self.assertEqual(err, 'loom: invalid: everyMs must be at least 60000\n')
+        self.assertEqual(self.server.requests[-1]['params']['trigger'],
+                         {'type': 'interval', 'everyMs': 30000})
 
     def test_an_api_error_message_is_escaped_on_stderr(self) -> None:
         self.answer(failed('invalid', 'bad\x1b[2J\nthing'))
@@ -475,6 +544,104 @@ class HumanOutputTest(CliCase):
                 code, out, _ = self.run_cli('threads', 'get', 't1')
                 self.assertEqual(code, 0)
                 self.assertTrue(out.isascii())
+
+
+class ScheduleOutputTest(CliCase):
+    def lines(self, *argv: str, result: object) -> list[str]:
+        self.answer(ok(result))
+        code, out, err = self.run_cli(*argv)
+        self.assertEqual((code, err), (0, ''))
+        return out.splitlines()
+
+    def test_each_trigger_and_state_prints_as_one_line(self) -> None:
+        schedules = [
+            schedule_info(),
+            schedule_info('s2', trigger={'type': 'interval', 'everyMs': 3600000},
+                          action='post', thread_id='t1', title='Hourly', paused=True),
+            schedule_info('s3', next_run=None),
+            schedule_info('s4', trigger={'type': 'fixed_time', 'timeOfDay': '9:07',
+                                         'weekdays': [1, 2, 3, 4, 5]},
+                          action='launch', project_id='demo', title='Daily'),
+            schedule_info('s5', trigger={'type': 'fixed_time', 'timeOfDay': '09:07'}),
+            schedule_info('s6', trigger={'type': 'fixed_time', 'timeOfDay': '9:07',
+                                         'weekdays': []}),
+            schedule_info('s7', trigger={'type': 'interval', 'everyMs': 60500}),
+        ]
+        self.assertEqual(self.lines('schedules', 'list', result=schedules), [
+            f's1  {AT}  notify  at 2026-10-25T09:00  -  Stand-up',
+            's2  paused  post  every 3600s  t1  Hourly',
+            's3  done  notify  at 2026-10-25T09:00  -  Stand-up',
+            f's4  {AT}  launch  9:07 on 1,2,3,4,5  demo  Daily',
+            f's5  {AT}  notify  09:07  -  Stand-up',
+            f's6  {AT}  notify  9:07  -  Stand-up',
+            f's7  {AT}  notify  every 60.5s  -  Stand-up',
+        ])
+
+    def test_add_pause_and_remove_print_the_schedule(self) -> None:
+        for argv, result, expected in (
+            (['schedules', 'add', 'Stand-up', '--at', '2026-10-25T09:00'], schedule_info(),
+             f's1  {AT}  notify  at 2026-10-25T09:00  -  Stand-up'),
+            (['schedules', 'pause', 's1'], schedule_info(paused=True),
+             's1  paused  notify  at 2026-10-25T09:00  -  Stand-up'),
+            (['schedules', 'remove', 's1'], schedule_info(next_run=None),
+             's1  done  notify  at 2026-10-25T09:00  -  Stand-up'),
+        ):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.lines(*argv, result=result), [expected])
+
+    def test_text_is_escaped_on_one_line_and_cut(self) -> None:
+        nasty = schedule_info(text='Ti\x1b[2Jck\nnext\x9b', thread_id='t\x1b1')
+        long = schedule_info('s2', text='x' * 2001)
+        lines = self.lines('schedules', 'list', result=[nasty, long])
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0],
+                         f's1  {AT}  notify  at 2026-10-25T09:00  t\\x1b1  '
+                         'Ti\\x1b[2Jck\\nnext\\x9b')
+        self.assertTrue(lines[1].endswith('  ' + 'x' * 2000 + '…'))
+
+    def test_json_prints_the_result_as_one_line(self) -> None:
+        result = [schedule_info(text='a\nb'), schedule_info('s2')]
+        self.answer(ok(result))
+        code, out, _ = self.run_cli('--json', 'schedules', 'list')
+        self.assertEqual(code, 0)
+        self.assertEqual(out.count('\n'), 1)
+        self.assertEqual(json.loads(out), result)
+
+    def test_a_bad_field_prints_a_dash_in_its_place(self) -> None:
+        rest = '  notify  at 2026-10-25T09:00  -  Stand-up'
+        cases = [
+            (schedule_info(trigger=None), f's1  {AT}  notify  -  -  Stand-up'),
+            ({key: value for key, value in schedule_info().items() if key != 'trigger'},
+             f's1  {AT}  notify  -  -  Stand-up'),
+            (schedule_info(trigger='at noon'), f's1  {AT}  notify  -  -  Stand-up'),
+            (schedule_info(trigger=[1]), f's1  {AT}  notify  -  -  Stand-up'),
+            (schedule_info(trigger={'type': 'at'}), f's1  {AT}  notify  -  -  Stand-up'),
+            (schedule_info(trigger={'type': 'interval', 'everyMs': '60000'}),
+             f's1  {AT}  notify  -  -  Stand-up'),
+            (schedule_info(trigger={'type': 'interval', 'everyMs': True}),
+             f's1  {AT}  notify  -  -  Stand-up'),
+            (schedule_info(trigger={'type': 'fixed_time', 'timeOfDay': '9:07',
+                                    'weekdays': [1, 'x']}),
+             f's1  {AT}  notify  -  -  Stand-up'),
+            (schedule_info(trigger={'type': 'fixed_time', 'timeOfDay': '9:07', 'weekdays': 0}),
+             f's1  {AT}  notify  -  -  Stand-up'),
+            (schedule_info(trigger={'type': 'webhook'}), f's1  {AT}  notify  -  -  Stand-up'),
+            ({key: value for key, value in schedule_info().items() if key != 'next_run'},
+             's1  -' + rest),
+            (schedule_info(next_run=5), 's1  -' + rest),
+            ({key: value for key, value in schedule_info().items() if key != 'paused'},
+             's1  -' + rest),
+            (schedule_info(paused='yes'), 's1  -' + rest),
+            (schedule_info(paused=None), 's1  -' + rest),
+        ]
+        for schedule, expected in cases:
+            with self.subTest(schedule=schedule):
+                self.assertEqual(self.lines('schedules', 'list', result=[schedule]), [expected])
+        for result in (None, 5, [None, 'x\x1b'], {}):
+            with self.subTest(result=result):
+                lines = self.lines('schedules', 'list', result=result)
+                self.assertEqual(len(lines), len(result) if isinstance(result, list) else 1)
+                self.assertTrue(''.join(lines).isascii())
 
 
 class ServeTest(CliCase):

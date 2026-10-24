@@ -8,6 +8,7 @@ from typing import TextIO
 
 from loom_contracts.calls import CallName
 from loom_contracts.runners import DispatchMode, PermissionMode, RunnerName
+from loom_contracts.triggers import ScheduleAction, TriggerType
 from loom_contracts.workspaces import WorkspaceStrategy
 
 from . import output
@@ -26,6 +27,7 @@ SERVICE = 'loom_service'
 GROUPS = {
     'threads': ('start, message and follow agent threads', ()),
     'projects': ('manage the projects threads run in', ('project',)),
+    'schedules': ('add, list, pause and remove schedules', ('schedule',)),
 }
 
 WORKSPACE_FIELDS = {
@@ -51,6 +53,23 @@ def _event_id(text: str) -> int:
     return value
 
 
+def _seconds(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f'not a whole number of seconds: {text!r}') from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f'not a whole number of seconds: {text!r}')
+    return value
+
+
+def _weekdays(text: str) -> list[int]:
+    try:
+        return [int(item) for item in text.split(',')]
+    except ValueError:
+        raise argparse.ArgumentTypeError(f'not a list of weekday numbers: {text!r}') from None
+
+
 def _stdin_or(value: str) -> str:
     return sys.stdin.read() if value == STDIN else value
 
@@ -67,6 +86,19 @@ def _workspace(args: argparse.Namespace, parser: argparse.ArgumentParser) -> dic
         if key not in allowed:
             parser.error(f'--{key} does not go with --workspace {args.workspace}')
     return {'strategy': args.workspace, **given}
+
+
+def _trigger(args: argparse.Namespace, parser: argparse.ArgumentParser) -> dict:
+    if args.weekdays is not None and args.time is None:
+        parser.error('--weekdays needs --time')
+    if args.at is not None:
+        return {'type': TriggerType.AT.value, 'at': args.at}
+    if args.every is not None:
+        return {'type': TriggerType.INTERVAL.value, 'everyMs': args.every * 1000}
+    trigger = {'type': TriggerType.FIXED_TIME.value, 'timeOfDay': args.time}
+    if args.weekdays is not None:
+        trigger['weekdays'] = args.weekdays
+    return trigger
 
 
 def _add_id(command: argparse.ArgumentParser) -> None:
@@ -163,6 +195,39 @@ def _project_write_args(command: argparse.ArgumentParser) -> None:
     _add_id(command)
 
 
+def _schedule_add_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument('text', help='the text, or - to read it from stdin')
+    when = command.add_mutually_exclusive_group(required=True)
+    when.add_argument('--at', metavar='DATETIME', help='run once at this time')
+    when.add_argument('--every', metavar='SECONDS', type=_seconds,
+                      help='run every so many seconds')
+    when.add_argument('--time', metavar='H:MM', help='run each day at this local time')
+    command.add_argument('--weekdays', metavar='LIST', type=_weekdays,
+                         help='with --time, only these days, 0 is Sunday (as 1,2,3,4,5)')
+    command.add_argument('--action', choices=_values(ScheduleAction),
+                         help='what it does (default post)')
+    command.add_argument('--thread', help='thread it posts into')
+    command.add_argument('--project', help='project it launches in')
+    command.add_argument('--title', help='its title, also of a thread it launches')
+    _add_id(command)
+
+
+def _schedule_add(client: Client, args: argparse.Namespace) -> object:
+    return client.schedules_add(
+        args.trigger, _stdin_or(args.text), action=args.action, thread_id=args.thread,
+        project_id=args.project, title=args.title, id=args.id)
+
+
+def _schedule_list_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument('--thread', help='only schedules of this thread')
+    command.add_argument('--project', help='only schedules of this project')
+
+
+def _schedule_write_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument('schedule_id')
+    _add_id(command)
+
+
 def _no_args(command: argparse.ArgumentParser) -> None:
     pass
 
@@ -194,6 +259,16 @@ COMMANDS: dict[CallName, tuple[str, Callable[[argparse.ArgumentParser], None], R
         lambda client, args: client.projects_remove(args.project_id, id=args.id)),
     CallName.PROJECTS_LIST: (
         'list projects', _no_args, lambda client, args: client.projects_list()),
+    CallName.SCHEDULES_ADD: ('add a schedule', _schedule_add_args, _schedule_add),
+    CallName.SCHEDULES_LIST: (
+        'list schedules', _schedule_list_args,
+        lambda client, args: client.schedules_list(args.thread, args.project)),
+    CallName.SCHEDULES_PAUSE: (
+        'pause a schedule', _schedule_write_args,
+        lambda client, args: client.schedules_pause(args.schedule_id, id=args.id)),
+    CallName.SCHEDULES_REMOVE: (
+        'remove a schedule', _schedule_write_args,
+        lambda client, args: client.schedules_remove(args.schedule_id, id=args.id)),
 }
 
 
@@ -293,6 +368,8 @@ def _run(args: argparse.Namespace) -> int:
     follow = args.call is CallName.THREADS_EVENTS and args.follow
     if 'workspace' in args:
         args.workspace = _workspace(args, args.parser)
+    if args.call is CallName.SCHEDULES_ADD:
+        args.trigger = _trigger(args, args.parser)
     try:
         client = Client(args.socket)
         if args.call is CallName.THREADS_EVENTS:
