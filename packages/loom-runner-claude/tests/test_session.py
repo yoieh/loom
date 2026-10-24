@@ -48,6 +48,8 @@ A_TXT_ID = '2038e810-2aac-41ec-94f3-f181dcdbc712'
 A_TXT_INPUT = {'command': 'echo spike-233 > a.txt', 'description': 'Write spike-233 to a.txt'}
 B_TXT_ID = 'ac794f47-7556-4f5f-a8a6-2cec64a05505'
 
+TOKEN = 'loom-test-token-3f9c2a7e'
+
 
 def completed(text: str) -> TurnResult:
     return TurnResult(TurnState.COMPLETED, text, None)
@@ -219,6 +221,49 @@ class StartTest(SessionTest):
         with self.assertRaises(RunnerStartError) as caught:
             await ClaudeRunner(spawn=spawn).start(make_thread(), FakeHost())
         self.assertIn('claude', str(caught.exception))
+
+    async def start_error(self, error: OSError, claude_bin: str | None = None) -> RunnerStartError:
+        settings = {} if claude_bin is None else {'claude_bin': claude_bin}
+        host = FakeHost(settings=settings, secrets={'agent-token': f' {TOKEN}\n'})
+        spawn = FakeSpawn(error=error)
+        with self.assertRaises(RunnerStartError) as caught:
+            await ClaudeRunner(spawn=spawn).start(make_thread(), host)
+        self.assertEqual(spawn.calls[0][2]['ANTHROPIC_AUTH_TOKEN'], TOKEN)
+        self.assertIs(caught.exception.__cause__, error)
+        return caught.exception
+
+    async def test_token_in_the_os_error_filename_is_redacted(self) -> None:
+        error = FileNotFoundError(2, 'No such file or directory', f'/work/{TOKEN}/repo')
+        text = str(await self.start_error(error))
+        self.assertEqual(
+            text, 'could not start claude: No such file or directory: /work/[redacted]/repo',
+        )
+
+    async def test_token_in_claude_bin_is_redacted(self) -> None:
+        binary = f'/opt/{TOKEN}/claude'
+        error = PermissionError(13, 'Permission denied', binary)
+        text = str(await self.start_error(error, binary))
+        self.assertEqual(text, 'could not start /opt/[redacted]/claude: Permission denied')
+
+    async def test_long_claude_bin_is_cut_to_500(self) -> None:
+        binary = '/opt/' + 'c' * 1_995
+        self.assertEqual(len(binary), 2_000)
+        error = FileNotFoundError(2, 'No such file or directory', binary)
+        text = str(await self.start_error(error, binary))
+        self.assertEqual(len(text), 500)
+        self.assertTrue(text.startswith('could not start /opt/ccc'))
+
+    async def test_filename_other_than_claude_bin_is_named(self) -> None:
+        error = FileNotFoundError(2, 'No such file or directory', '/tmp/loom-replay/missing')
+        text = str(await self.start_error(error, '/opt/claude'))
+        self.assertEqual(
+            text,
+            'could not start /opt/claude: No such file or directory: /tmp/loom-replay/missing',
+        )
+
+    async def test_error_without_strerror_names_its_type(self) -> None:
+        text = str(await self.start_error(FileNotFoundError()))
+        self.assertEqual(text, 'could not start claude: FileNotFoundError')
 
 
 class SendTest(SessionTest):
@@ -565,6 +610,44 @@ class ExitTest(SessionTest):
                     await session.send('hi', DispatchMode.STEER)
 
 
+class FailureReasonTest(SessionTest):
+    def error_result(self, **fields: object) -> bytes:
+        data = {'type': 'result', 'is_error': True, 'result': 'partial', **fields}
+        return json.dumps(data, separators=(',', ':')).encode()
+
+    async def result_of(self, line: bytes) -> TurnResult:
+        host = FakeHost(secrets={'agent-token': TOKEN})
+        session = await self.start(host=host)
+        await session.send('Reply with OK', DispatchMode.STEER)
+        self.process.feed(line)
+        return await next_event(session)
+
+    async def test_token_in_terminal_reason_is_redacted_and_cut(self) -> None:
+        reason = 'error_during_execution: ' + TOKEN
+        reason += 'y' * (1_000 - len(reason))
+        self.assertEqual(len(reason), 1_000)
+        result = await self.result_of(self.error_result(terminal_reason=reason))
+        self.assertEqual(result.state, TurnState.FAILED)
+        self.assertEqual(result.text, 'partial')
+        self.assertEqual(result.reason, ('error_during_execution: [redacted]' + 'y' * 500)[:500])
+        self.assertNotIn(TOKEN, repr(result))
+
+    async def test_missing_null_or_non_string_terminal_reason_gives_none(self) -> None:
+        lines = {
+            'missing': self.error_result(),
+            'null': self.error_result(terminal_reason=None),
+            'number': self.error_result(terminal_reason=7),
+        }
+        for case, line in lines.items():
+            with self.subTest(case=case):
+                result = await self.result_of(line)
+                self.assertEqual(result, TurnResult(TurnState.FAILED, 'partial', None))
+
+    async def test_short_reason_without_the_token_is_unchanged(self) -> None:
+        result = await self.result_of(self.error_result(terminal_reason='error_max_turns'))
+        self.assertEqual(result, TurnResult(TurnState.FAILED, 'partial', 'error_max_turns'))
+
+
 class LineLimitTest(SessionTest):
     def sized(self, fill: str, size: int) -> bytes:
         line = result_line(fill * (size - len(result_line(''))))
@@ -654,6 +737,105 @@ class RealProcessTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RunnerStartError) as caught:
             await ClaudeRunner().start(self.thread, host)
         self.assertIn(missing, str(caught.exception))
+
+
+class TokenHost(FakeHost):
+    def __init__(self, token_file: Path, **options: object) -> None:
+        super().__init__(**options)
+        self.token_file = token_file
+
+    def secret(self, name: str) -> str | None:
+        if name != 'agent-token':
+            return None
+        return self.token_file.read_text()
+
+
+class RealProcessSecretTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve()
+        self.workspace = root / 'workspace'
+        self.workspace.mkdir()
+        (root / 'bin').mkdir()
+        self.claude_bin = root / 'bin' / 'claude'
+        self.claude_bin.write_text(f'#!{sys.executable} -I\n' + FAKE_CLAUDE.read_text())
+        self.claude_bin.chmod(0o700)
+        (self.workspace / 'replay.jsonl').write_bytes((STREAMS / 'turns.jsonl').read_bytes())
+        token_file = root / 'agent-token'
+        fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as file:
+            file.write(TOKEN + '\n')
+        self.assertEqual(token_file.stat().st_mode & 0o777, 0o600)
+        self.thread = make_thread(id=str(uuid.uuid4()), workspace_path=str(self.workspace))
+        self.host = TokenHost(
+            token_file,
+            environment={
+                'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+                'HOME': str(root),
+                'LANG': 'C.UTF-8',
+                'ANTHROPIC_AUTH_TOKEN': TOKEN,
+            },
+            settings={'claude_bin': str(self.claude_bin)},
+        )
+
+    def assert_clean(self, *items: object) -> None:
+        for item in items:
+            text = str(item) if isinstance(item, BaseException) else repr(item)
+            with self.subTest(item=type(item).__name__):
+                self.assertNotIn(TOKEN, text)
+                self.assertLessEqual(len(text), 500)
+
+    def assert_child_had_the_token(self) -> None:
+        spawned = json.loads((self.workspace / 'spawned.json').read_text())
+        self.assertEqual(spawned['env']['ANTHROPIC_AUTH_TOKEN'], TOKEN)
+
+    async def test_missing_binary(self) -> None:
+        missing = str(self.workspace.parent / 'bin' / f'missing-{TOKEN}')
+        self.host.settings = {'claude_bin': missing}
+        with self.assertRaises(RunnerStartError) as caught:
+            await ClaudeRunner().start(self.thread, self.host)
+        self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
+        self.assertIn('[redacted]', str(caught.exception))
+        self.assert_clean(caught.exception)
+
+    async def test_bad_model(self) -> None:
+        thread = make_thread(id=self.thread.id, workspace_path=str(self.workspace), model='-x')
+        with self.assertRaises(ValueError) as caught:
+            await ClaudeRunner().start(thread, self.host)
+        self.assert_clean(caught.exception)
+        self.assertFalse((self.workspace / 'spawned.json').exists())
+
+    async def test_unexpected_exit_with_token_on_stderr(self) -> None:
+        (self.workspace / 'fail-exit').write_text('3')
+        session = await ClaudeRunner(close_timeout=5.0).start(self.thread, self.host)
+        await session.send('Reply with OK', DispatchMode.STEER)
+        events = await remaining(session, timeout=10)
+        self.assertEqual(events, [Exited(3)])
+        self.assert_child_had_the_token()
+        with self.assertRaises(SessionClosed) as sent:
+            await session.send('again', DispatchMode.STEER)
+        with self.assertRaises(SessionClosed) as responded:
+            await session.respond(A_TXT_ID, RequestAnswer(Decision.ALLOW))
+        self.assert_clean(*events, sent.exception, responded.exception)
+
+    async def test_error_result_with_token_in_terminal_reason(self) -> None:
+        init = stream_turns('turns')[0][0]
+        result = {'type': 'result', 'is_error': True, 'terminal_reason': f'failed: {TOKEN}'}
+        replay = init + b'\n' + json.dumps(result).encode() + b'\n'
+        (self.workspace / 'replay.jsonl').write_bytes(replay)
+        session = await ClaudeRunner(close_timeout=5.0).start(self.thread, self.host)
+        await session.send('Reply with OK', DispatchMode.STEER)
+        events = await events_until(session, TurnResult, timeout=10)
+        await asyncio.wait_for(session.close(), 10)
+        events += await remaining(session)
+        self.assertEqual(events, [
+            TurnStarted(),
+            TurnResult(TurnState.FAILED, None, 'failed: [redacted]'),
+            Exited(0),
+        ])
+        self.assert_child_had_the_token()
+        self.assert_clean(*events)
 
 
 if __name__ == '__main__':

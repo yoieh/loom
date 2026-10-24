@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import dataclasses
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -15,10 +16,12 @@ from loom_contracts.runners import (
     RunnerEvent,
     RunnerHost,
     ThreadSpec,
+    TurnResult,
     TurnStarted,
 )
 
 from .command import claude_argv, claude_env
+from .reasons import safe_reason
 from .stream import (
     BadRequest,
     Init,
@@ -74,6 +77,16 @@ async def spawn_process(argv: list[str], cwd: str, env: dict[str, str], limit: i
     )
 
 
+def _start_text(claude_bin: str, error: OSError) -> str:
+    why = error.strerror
+    if not isinstance(why, str) or not why:
+        why = type(error).__name__
+    text = f'could not start {claude_bin}: {why}'
+    if isinstance(error.filename, str) and error.filename != claude_bin:
+        text += f': {error.filename}'
+    return text
+
+
 class ClaudeRunner:
     name = 'claude'
     capabilities = frozenset({
@@ -101,15 +114,19 @@ class ClaudeRunner:
             claude_bin = 'claude'
         argv = claude_argv(thread, claude_bin)
         env = claude_env(thread, host)
+        token = env.get('ANTHROPIC_AUTH_TOKEN')
+        secrets = (token,) if token else ()
         try:
             process = await self._spawn(argv, thread.workspace_path, env, self._line_limit)
         except OSError as error:
-            raise RunnerStartError(f'could not start {claude_bin}: {error}') from error
+            text = _start_text(claude_bin, error)
+            raise RunnerStartError(safe_reason(text, secrets)) from error
         return ClaudeSession(
             process,
             close_timeout=self._close_timeout,
             interrupt_timeout=self._interrupt_timeout,
             line_limit=self._line_limit,
+            secrets=secrets,
         )
 
 
@@ -120,8 +137,11 @@ class ClaudeSession:
         close_timeout: float,
         interrupt_timeout: float,
         line_limit: int,
+        *,
+        secrets: tuple[str, ...] = (),
     ) -> None:
         self._process = process
+        self._secrets = secrets
         self._close_timeout = close_timeout
         self._interrupt_timeout = interrupt_timeout
         self._line_limit = line_limit
@@ -312,11 +332,16 @@ class ClaudeSession:
             case TaskEnded():
                 self._tasks.discard(item.task_id)
             case Result():
-                self._emit(turn_result(item, self._interrupted))
+                self._emit(self._safe(turn_result(item, self._interrupted)))
                 self._end_turn(bool(self._tasks))
                 await self._write_next()
             case _:
                 self._emit(item)
+
+    def _safe(self, result: TurnResult) -> TurnResult:
+        if result.reason is None:
+            return result
+        return dataclasses.replace(result, reason=safe_reason(result.reason, self._secrets))
 
     async def _end_process(self) -> None:
         process = self._process

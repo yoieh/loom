@@ -264,6 +264,10 @@ is recorded as an outside thread.
   timeout.
 - Agent-written text in events is data: clients show it as text, capped at 2,000 characters per
   entry.
+- A runner's error texts and turn failure reasons never hold the environment or the agent token.
+  `loom-runner-claude` sends `claude`'s stderr to `/dev/null`, builds a start error from the
+  binary and the OS error only, replaces the token with `[redacted]`, and cuts each such text to
+  500 characters.
 - `interval` is at least 60 s, so a mistake can't start a thread every second.
 - Webhooks (later) get T3's checks: a per-schedule random secret compared in constant time,
   optional HMAC-SHA256 signatures, a rate limit and a cap on queued deliveries.
