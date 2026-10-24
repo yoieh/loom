@@ -20,6 +20,7 @@ EVENT_DAYS = 30
 MAX_COMMAND_ID = 200
 MAX_EVENTS = 1000
 MAX_EVENT_ID = 2**63 - 1
+MESSAGE_SOURCE = 'source INTEGER NOT NULL DEFAULT 1'
 
 SCHEMA: list[str] = [
     '''CREATE TABLE IF NOT EXISTS commands (
@@ -68,14 +69,15 @@ SCHEMA: list[str] = [
     )''',
     'CREATE INDEX IF NOT EXISTS threads_project ON threads (project_id, state)',
     'CREATE INDEX IF NOT EXISTS threads_parent ON threads (parent_id)',
-    '''CREATE TABLE IF NOT EXISTS messages (
+    f'''CREATE TABLE IF NOT EXISTS messages (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         thread_id TEXT NOT NULL,
         command_id TEXT NOT NULL,
         text TEXT NOT NULL,
         mode TEXT NOT NULL,
         priority INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        {MESSAGE_SOURCE}
     )''',
     'CREATE INDEX IF NOT EXISTS messages_next ON messages (thread_id, priority DESC, seq)',
     'CREATE TABLE IF NOT EXISTS continuations (thread_id TEXT NOT NULL, at TEXT NOT NULL)',
@@ -111,6 +113,12 @@ def _make_data_dir(data_dir: Path) -> None:
     os.chmod(data_dir, 0o700)
 
 
+def _add_message_source(tx: sqlite3.Connection) -> None:
+    columns = {row[1] for row in tx.execute('PRAGMA table_info(messages)')}
+    if 'source' not in columns:
+        tx.execute(f'ALTER TABLE messages ADD COLUMN {MESSAGE_SOURCE}')
+
+
 def _check_command_id(command_id: object) -> str:
     if not isinstance(command_id, str) or not 1 <= len(command_id) <= MAX_COMMAND_ID:
         raise LoomError('invalid', f'id must be a string of 1 to {MAX_COMMAND_ID} characters')
@@ -138,6 +146,7 @@ class Store:
             with store.transaction() as tx:
                 for statement in SCHEMA:
                     tx.execute(statement)
+                _add_message_source(tx)
             store.prune_events()
         except BaseException:
             connection.close()

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 from loom_contracts.calls import CallName
 from loom_contracts.events import EventType
@@ -12,6 +13,16 @@ from loom_contracts.events import EventType
 from loom_core.clock import iso, utc_now
 from loom_core.errors import LoomError
 from loom_core.store import DB_NAME, MAX_COMMAND_ID, SCHEMA, Receipt, Store
+
+OLD_MESSAGES = '''CREATE TABLE IF NOT EXISTS messages (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id TEXT NOT NULL,
+        command_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    )'''
 
 
 def mode_of(path: Path) -> int:
@@ -200,6 +211,60 @@ class CommandTest(TempDirTest):
                 self.assertIn('id', caught.exception.message)
         self.assertEqual(self.runs, 1)
         self.assertEqual(self.count('commands'), 1)
+
+
+class MessageSourceTest(TempDirTest):
+    def open_traced(self) -> tuple[Store, list[str]]:
+        seen: list[str] = []
+        connect = sqlite3.connect
+
+        def traced(*args: object, **kwargs: object) -> sqlite3.Connection:
+            connection = connect(*args, **kwargs)
+            connection.set_trace_callback(seen.append)
+            return connection
+
+        with mock.patch.object(sqlite3, 'connect', traced):
+            store = Store.open(self.data_dir)
+        self.addCleanup(store.close)
+        return store, seen
+
+    def columns(self, store: Store) -> list[str]:
+        return [row[1] for row in store.connection.execute('PRAGMA table_info(messages)')]
+
+    def alters(self, seen: list[str]) -> list[str]:
+        return [statement for statement in seen if statement.startswith('ALTER')]
+
+    def test_a_new_store_has_the_column_from_its_schema(self) -> None:
+        store, seen = self.open_traced()
+        self.assertEqual(self.columns(store).count('source'), 1)
+        self.assertEqual(self.alters(seen), [])
+
+    def test_an_old_store_gains_the_column_once_and_its_rows_read_as_an_agents(self) -> None:
+        self.data_dir.mkdir(mode=0o700)
+        db = sqlite3.connect(self.data_dir / DB_NAME)
+        db.execute(OLD_MESSAGES)
+        db.execute("INSERT INTO messages (thread_id, command_id, text, mode, created_at) "
+                   "VALUES ('t1', 'c1', 'held', 'steer', 'now')")
+        db.commit()
+        db.close()
+        store, seen = self.open_traced()
+        self.assertEqual(self.columns(store).count('source'), 1)
+        self.assertEqual(self.alters(seen),
+                         ['ALTER TABLE messages ADD COLUMN source INTEGER NOT NULL DEFAULT 1'])
+        alter = seen.index(self.alters(seen)[0])
+        begin = max(at for at, statement in enumerate(seen[:alter])
+                    if statement == 'BEGIN IMMEDIATE')
+        self.assertNotIn('COMMIT', seen[begin:alter])
+        self.assertEqual(seen[begin + 1], SCHEMA[0])
+        self.assertEqual(seen[alter + 1], 'COMMIT')
+        self.assertEqual(store.connection.execute(
+            'SELECT thread_id, text, source FROM messages').fetchall(), [('t1', 'held', 1)])
+        store.close()
+        again, seen = self.open_traced()
+        self.assertEqual(self.columns(again).count('source'), 1)
+        self.assertEqual(self.alters(seen), [])
+        self.assertEqual(again.connection.execute(
+            'SELECT thread_id, text, source FROM messages').fetchall(), [('t1', 'held', 1)])
 
 
 if __name__ == '__main__':
