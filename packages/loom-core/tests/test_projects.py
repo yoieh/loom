@@ -4,7 +4,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from loom_contracts.runners import PermissionMode
+from loom_contracts.states import ThreadState
 
+from loom_core import threads
 from loom_core.errors import LoomError
 from loom_core.projects import PROJECT_ID, Projects
 from loom_core.store import Store
@@ -265,6 +267,22 @@ class RemoveTest(ProjectsTest):
 
     def test_unknown_project_is_not_found(self) -> None:
         self.assert_error('not_found', self.projects.remove, {'id': 'r1', 'project_id': 'nope'})
+
+    def test_live_thread_blocks_remove_until_it_is_settled(self) -> None:
+        thread_id = '9b2f4f4e-3c1a-4d8e-9f00-0123456789ab'
+        with self.store.transaction() as tx:
+            threads.insert(self.store, tx, {
+                'id': thread_id, 'title': 'Work', 'runner': 'claude', 'project_id': 'loom',
+                'workspace_strategy': 'root', 'workspace_path': self.project['workspace_root'],
+                'permission_mode': 'auto', 'requests': 'any', 'state': ThreadState.IDLE,
+            })
+        self.assert_error('conflict', self.projects.remove, {'id': 'r1', 'project_id': 'loom'},
+                          'live thread')
+        self.assertEqual(self.projects.get('loom'), self.project)
+        with self.store.transaction() as tx:
+            threads.transition(self.store, tx, thread_id, ThreadState.SETTLED)
+        self.assertEqual(self.projects.remove({'id': 'r1', 'project_id': 'loom'}), self.project)
+        self.assertEqual(self.projects.list(), [self.other])
 
     def test_bad_params_are_invalid(self) -> None:
         for value in (None, 5, ['loom'], 'missing'):

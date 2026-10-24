@@ -44,6 +44,39 @@ SCHEMA: list[str] = [
         permission_mode TEXT NULL,
         created_at TEXT NOT NULL
     )''',
+    '''CREATE TABLE IF NOT EXISTS threads (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        runner TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        workspace_strategy TEXT NOT NULL,
+        workspace_path TEXT NOT NULL,
+        branch TEXT,
+        base TEXT,
+        model TEXT,
+        permission_mode TEXT NOT NULL,
+        requests TEXT NOT NULL,
+        state TEXT NOT NULL,
+        waiting INTEGER NOT NULL DEFAULT 0,
+        reason TEXT,
+        parent_id TEXT,
+        origin TEXT,
+        has_session INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )''',
+    'CREATE INDEX IF NOT EXISTS threads_project ON threads (project_id, state)',
+    'CREATE INDEX IF NOT EXISTS threads_parent ON threads (parent_id)',
+    '''CREATE TABLE IF NOT EXISTS messages (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id TEXT NOT NULL,
+        command_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    )''',
+    'CREATE INDEX IF NOT EXISTS messages_next ON messages (thread_id, priority DESC, seq)',
 ]
 
 

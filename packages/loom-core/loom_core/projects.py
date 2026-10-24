@@ -6,7 +6,7 @@ from pathlib import Path
 from loom_contracts.calls import CallName, ProjectInfo
 from loom_contracts.runners import PermissionMode
 
-from . import keys
+from . import keys, threads
 from .clock import iso
 from .errors import LoomError
 from .store import Store
@@ -138,6 +138,8 @@ class Projects:
 
         def change(tx: sqlite3.Connection) -> ProjectInfo:
             info = _row(tx, project_id)
+            if threads.has_live(tx, project_id):
+                raise LoomError('conflict', 'the project still has a live thread')
             tx.execute('DELETE FROM projects WHERE id = ?', (project_id,))
             return info
 
