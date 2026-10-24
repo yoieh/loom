@@ -9,8 +9,9 @@ Loom runs agent sessions, called threads, on your own machine, and schedules wor
 - Everything goes through one small API on a Unix socket, so Thread Voice, the software
   factory and the `loom` CLI are just clients.
 
-Status: `loom serve` and the `loom` CLI run Claude threads from a terminal. The API, the CLI and
-the Python client are documented in [`docs/api.md`](docs/api.md); the design is in
+Status: `loom serve` and the `loom` CLI run Claude threads from a terminal, and the scheduler
+runs schedules too, which the `loom schedules` commands add, list, pause and remove. The API, the
+CLI and the Python client are documented in [`docs/api.md`](docs/api.md); the design is in
 `docs/design.md`.
 
 Try it, with the server in one terminal and the rest in another (the project is a git checkout):

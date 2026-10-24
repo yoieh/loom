@@ -5,8 +5,8 @@ script in any language. It documents the socket protocol `loom serve` speaks, ev
 event, `loom serve` itself, the `loom` CLI and the Python API. The design behind it is
 `docs/design.md` §8; this page says what the code does today.
 
-Served now: the twelve `threads.*` and `projects.*` calls. `requests.respond` comes with LM-9 and
-the `schedules.*` calls with LM-6; the server answers them `invalid` until then.
+Served now: sixteen calls, the `threads.*`, `projects.*` and `schedules.*` ones. Only
+`requests.respond` waits: it comes with LM-9, and the server answers it `invalid` until then.
 
 ## Start here
 
@@ -31,10 +31,10 @@ The same from the CLI is `uv run loom projects list`, and from Python
 `loom_client.Client().projects_list()`.
 
 In the examples below, the first JSON line is the request and the next one the answer, as they
-pass on the socket. Thread ids such as `"3f2a…"` and the paths are shortened; everything else
-comes from a real run. The command ids `c1`, `c2`, … give the order the changes ran in; each
-read shows the state at its point in that run, and `projects.remove` succeeded once both threads
-were settled.
+pass on the socket. Thread and schedule ids such as `"3f2a…"` and the paths are shortened;
+everything else comes from a real run. The command ids `c1`, `c2`, … give the order the changes
+ran in; each read shows the state at its point in that run, and `projects.remove` succeeded once
+both threads were settled. The `schedules.*` examples come from later runs of their own.
 
 ## Transport
 
@@ -117,8 +117,8 @@ as usual. The server checks in this order, and the messages are:
 ```
 
 ```json
-{"call": "schedules.add", "params": {}}
-{"ok":false,"error":{"code":"invalid","message":"schedules.add is not served yet"}}
+{"call": "requests.respond", "params": {}}
+{"ok":false,"error":{"code":"invalid","message":"requests.respond is not served yet"}}
 ```
 
 ### Line cap
@@ -142,8 +142,11 @@ string of 1 to 200 characters`. The CLI and the Python API make one for you.
   drops before the answer arrives, send the request again with the same `id`.
 - Using an `id` again for a different call is a `conflict`, `id was already used for <call>`.
 - The calls that take an `id` are `threads.launch`, `threads.delegate`, `threads.send`,
-  `threads.stop`, `threads.settle`, `projects.add`, `projects.set_mode` and `projects.remove`
-  (and `requests.respond` and the `schedules.*` changes, once served).
+  `threads.stop`, `threads.settle`, `projects.add`, `projects.set_mode`, `projects.remove`,
+  `schedules.add`, `schedules.pause` and `schedules.remove` (and `requests.respond`, once
+  served).
+- Loom's scheduler uses ids of the form `schedule:<schedule id>:<due>` for the calls its runs make
+  (see [How schedules run](#how-schedules-run)), so don't choose ids that begin with `schedule:`.
 
 ```json
 {"v": "v1", "call": "threads.stop", "params": {"id": "c3", "thread_id": "3f2a…"}}
@@ -163,7 +166,8 @@ way. The client sees either one as the answer to its first request.
 ### Agents may not add projects or change a project's mode
 
 `projects.add` and `projects.set_mode` answer `forbidden` when the request comes from a thread
-Loom started, or when the server cannot tell who sent it:
+Loom started, from a schedule (see [Calls a schedule makes](#calls-a-schedule-makes)), or when
+the server cannot tell who sent it:
 
 ```json
 {"v": "v1", "call": "projects.add", "params": {"id": "c13", "title": "Other", "path": "/tmp"}}
@@ -202,9 +206,25 @@ the peer's process id and walks up its parent chain in `/proc`, at most 64 proce
 - `projects.remove` is not refused: it only removes the project's entry, and Loom refuses it
   while the project has a live thread.
 
+### Calls a schedule makes
+
+A schedule's maker is the caller of `schedules.add`, told apart as above: an agent thread, whose
+id becomes the schedule's `by`, or a person (`by` null). When the schedule runs, the scheduler
+makes its calls (`threads.send` or `threads.launch`, and the `threads.get` that checks for
+[overlap](#how-schedules-run)) through the same service layer as a client's. Each call carries
+the schedule's maker and the schedule's id:
+
+- A schedule an agent made runs as that agent, so it can do no more than the agent could.
+- A call that carries a schedule id never counts as a person, even for a schedule a person made.
+  So `projects.add` and `projects.set_mode` refuse it (§11), and a schedule can't widen a
+  project's mode.
+- The checks `schedules.add` makes on its `thread_id` and `project_id` run as the caller itself.
+
+Any caller may list, pause or remove any schedule.
+
 ## Results
 
-Most calls answer with a thread or a project.
+Most calls answer with a thread, a project or a schedule.
 
 ### Thread
 
@@ -222,7 +242,7 @@ Most calls answer with a thread or a project.
 | `waiting` | bool | `true` while a running turn waits for an answer to a request. |
 | `reason` | string or null | `stopping` while a stop is in progress, or why the thread failed. |
 | `parent_id` | string or null | The thread that delegated this one. |
-| `origin` | string or null | Who started it, as `threads.launch` was told. |
+| `origin` | string or null | Who started it, as `threads.launch` was told. A thread a schedule launched has `schedule:<schedule id>`. |
 | `created_at` | string | ISO 8601, UTC. |
 
 `permission_mode` is in every thread result, though `ThreadInfo` in
@@ -236,6 +256,22 @@ Most calls answer with a thread or a project.
 | `title` | string | |
 | `workspace_root` | string | The project's main checkout, an absolute path. |
 | `permission_mode` | string or null | null means the server's default. |
+| `created_at` | string | ISO 8601, UTC. |
+
+### Schedule
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | The schedule id, a uuid. |
+| `trigger` | object | The trigger as `schedules.add` was given it, with only its own keys (see [Triggers](#how-schedules-run)). |
+| `action` | string | `post`, `launch` or `notify`. |
+| `text` | string | What it posts, launches with or notifies. |
+| `thread_id` | string or null | The thread a `post` goes into, or the thread a `notify` is about. null for a `launch`, and for a `notify` with no thread. |
+| `project_id` | string or null | The project a `launch` starts its threads in; for a schedule with a thread, the thread's project. null for a `notify` with neither. |
+| `title` | string or null | null means none was given; a `launch` then takes its thread's title from the text. |
+| `by` | string or null | The agent thread that made it; null when a person did (see [Calls a schedule makes](#calls-a-schedule-makes)). |
+| `paused` | bool | `true` once `schedules.pause` stopped it. |
+| `next_run` | string or null | When it is next due, ISO 8601, UTC. null when it is paused, and once an `at` has had its one run. |
 | `created_at` | string | ISO 8601, UTC. |
 
 ### Permission modes
@@ -282,10 +318,10 @@ root is not a git repo, the branch exists already, the base is not a commit), ma
 | [`projects.remove`](#projectsremove) | yes | yes |
 | [`projects.list`](#projectslist) | yes | no |
 | [`requests.respond`](#requestsrespond) | LM-9 | yes |
-| [`schedules.add`](#schedulesadd) | LM-6 | yes |
-| [`schedules.list`](#scheduleslist) | LM-6 | no |
-| [`schedules.pause`](#schedulespause) | LM-6 | yes |
-| [`schedules.remove`](#schedulesremove) | LM-6 | yes |
+| [`schedules.add`](#schedulesadd) | yes | yes |
+| [`schedules.list`](#scheduleslist) | yes | no |
+| [`schedules.pause`](#schedulespause) | yes | yes |
+| [`schedules.remove`](#schedulesremove) | yes | yes |
 
 Any call can also answer `invalid` for a malformed request and `failed` for an internal error;
 the lists below give only the errors particular to each call.
@@ -565,11 +601,221 @@ Lists projects, oldest first. It takes no params.
 {"ok":true,"result":[{"id":"demo-repo","title":"Demo repo","workspace_root":"/home/me/src/demo","permission_mode":null,"created_at":"2026-10-24T18:47:12.927+00:00"}]}
 ```
 
+### How schedules run
+
+A schedule runs a text on a trigger, with one of three actions (§7). The scheduler starts and
+stops with `loom serve`. It wakes when the first schedule is due, and at least every 30 s, so it
+notices a jump of the clock, such as a laptop waking from sleep.
+
+**Triggers.** `trigger.type` is one of these three:
+
+| Trigger | Due | Checks |
+|---|---|---|
+| `{"type": "at", "at": "2026-10-25T09:00"}` | Once, at `at`. A time in the past is due at once. | `at` is an ISO 8601 date and time. Without an offset it is in the machine's local time zone. |
+| `{"type": "interval", "everyMs": 3600000}` | First `everyMs` after the schedule is added, then `everyMs` after each run or skip. | `everyMs` is an integer from 60000 (60 s) to 31536000000 (365 days). |
+| `{"type": "fixed_time", "timeOfDay": "9:00", "weekdays": [1, 2, 3, 4, 5]}` | At `timeOfDay` on each listed day, in the machine's local time zone. | `timeOfDay` is `H:MM` or `HH:MM`, from `0:00` to `23:59`. `weekdays` are 0 to 6, 0 is Sunday and 6 is Saturday; missing or `[]` means every day. |
+
+`{"type": "webhook"}` is part of `v1`, but `schedules.add` refuses it with `invalid` until Loom
+can be reached from outside (§7). An interval is timed from when its last run ran or was
+skipped, not from when it was due, so it never catches up with a burst.
+
+**Actions.** `action` is one of these three:
+
+- `post` (the default): sends the text into the schedule's thread with `threads.send` and
+  `mode: "queue"`, so it waits for a running turn instead of steering it. Without `thread_id`,
+  the thread is the caller's own, so an agent's schedule posts into the agent's thread. A person
+  must give `thread_id`.
+- `launch`: starts a new thread in `project_id` with `threads.launch`. The text is its first
+  message. Its title is the schedule's `title`, or else the text's first non-empty line, cut at
+  80 characters. Its `origin` is `schedule:<schedule id>`. It gets the default workspace (a new
+  worktree) and the project's mode. `launch` needs `project_id` and takes no `thread_id`.
+- `notify`: makes no call. The run only sends a [`schedule.fired`](#schedulefired) event, for a
+  client such as Thread Voice to speak. Its thread is `thread_id`, or the caller's own, or none.
+
+**Late runs.** A run is late when it starts more than 60 s after it was due; exactly 60 s is on
+time. A late `post` or `launch` sends its text after a first line and a blank line:
+
+```text
+This run is late: it was due at 2026-10-24T22:20:00.000+00:00.
+
+Look at the login test again.
+```
+
+Every late run, `notify` too, has `late: true` in its `schedule.fired` event.
+
+**Missed runs.** A run is missed when Loom was not running at its time, or the machine slept.
+The first pass after the server starts, or after the clock jumps, runs each schedule at most
+once, never a burst:
+
+- An `at` runs once, however late, and says it is late.
+- An `interval` runs once, and its next run is `everyMs` after that.
+- A `fixed_time` run more than 10 minutes late is skipped and logged (`skipped_late`), and the
+  schedule goes on at its next time. One exactly 10 minutes late still runs, late.
+
+**Overlap.** Before a `post` or `launch` run, the scheduler gets the thread the schedule's last
+fired run posted into or launched. When that thread is `queued`, `starting` or `running`, the run
+is skipped and logged (`skipped_busy`), not queued. For a `post`, a turn someone else started in
+the thread counts too. `notify` runs are never skipped this way.
+
+**Runs.** Each run is a row in the `schedule_runs` table of `loom.db`: when it was due, when it
+ran, whether it was late, the thread it posted into or launched, and its outcome. Rows older than
+30 days are deleted each time the server starts, and removing a schedule deletes its rows. No `v1`
+call reads them.
+
+| Outcome | When |
+|---|---|
+| `fired` | The run posted, launched or notified. Only these send `schedule.fired`. |
+| `skipped_late` | A `fixed_time` run more than 10 minutes late. |
+| `skipped_busy` | A `post` or `launch` whose last thread is still going (see Overlap). |
+| `failed` | The call failed, for example because the thread was settled. The row keeps the error message, cut at 500 characters. The run is not tried again; the schedule goes on at its next time. |
+
+**No run twice.** A `post` or `launch` run calls with the command id `schedule:<schedule
+id>:<due>`, with `<due>` in ISO 8601, UTC. When Loom stops after the call and before the run's
+row is written, the run is tried again with the same id, so the server returns the first answer
+instead of posting or launching again (see [Command ids](#command-ids-and-safe-retries)). A
+restart never repeats a run.
+
+**Pausing.** A paused schedule stays paused: `v1` has no call to resume it (§8). To run it again,
+remove it and add it again.
+
+### `schedules.add`
+
+Adds a schedule (§7). See [How schedules run](#how-schedules-run) for the triggers and actions.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string, required | Command id. |
+| `trigger` | object, required | An `at`, `interval` or `fixed_time` trigger. |
+| `text` | string, required | Not empty. What it posts, launches with or notifies. |
+| `action` | string | `post` (default), `launch` or `notify`. |
+| `thread_id` | string | For `post`, the thread to post into; for `notify`, the thread it is about. Default: the caller's own thread. Not with `launch`. |
+| `project_id` | string | Required for `launch`. With a thread, it must be the thread's project, which is the default. |
+| `title` | string | Not empty. For `launch`, the title of each thread it starts. |
+
+A param given as null is refused. The thread and the project must exist when the schedule is
+added.
+
+**Result:** the new [schedule](#schedule). Its `by` is the caller's thread, or null for a person,
+and its `next_run` is its first due time. A schedule due already, such as an `at` in the past,
+runs right after the answer.
+
+**Errors:**
+
+| Problem | Code | Message |
+|---|---|---|
+| A missing or bad `id` | `invalid` | `id must be a string of 1 to 200 characters` |
+| No `trigger` | `invalid` | `trigger is required` |
+| `trigger` is not an object | `invalid` | `trigger must be an object` |
+| No `trigger.type` | `invalid` | `trigger.type is required` |
+| A `webhook` trigger | `invalid` | `webhook triggers are not served yet` |
+| Another `trigger.type` | `invalid` | `trigger.type must be one of at, interval, fixed_time` |
+| No `at`, `everyMs` or `timeOfDay` for its type | `invalid` | `trigger.<field> is required` |
+| A bad `at` | `invalid` | `trigger.at must be an ISO 8601 date and time` |
+| A bad `everyMs` | `invalid` | `trigger.everyMs must be an integer from 60000 to 31536000000` |
+| A bad `timeOfDay` | `invalid` | `trigger.timeOfDay must be H:MM or HH:MM, from 0:00 to 23:59` |
+| `weekdays` is null | `invalid` | `trigger.weekdays must not be null` |
+| A bad `weekdays` | `invalid` | `trigger.weekdays must be a list of integers from 0 (Sunday) to 6 (Saturday)` |
+| No `text` | `invalid` | `text is required` |
+| An empty or non-string `text` | `invalid` | `text must be a non-empty string` |
+| A bad `action` | `invalid` | `action must be one of post, launch, notify` |
+| `action`, `thread_id`, `project_id` or `title` is null | `invalid` | `<field> must not be null` |
+| `thread_id` or `project_id` is not a string | `invalid` | `<field> must be a string` |
+| An empty or non-string `title` | `invalid` | `title must be a non-empty string` |
+| A `post` from a person without `thread_id` | `invalid` | `thread_id is required to post from outside a thread` |
+| A `launch` with `thread_id` | `invalid` | `thread_id does not go with launch` |
+| A `launch` without `project_id` | `invalid` | `project_id is required to launch` |
+| `project_id` is not the thread's | `invalid` | `project_id is not the thread's project` |
+| The thread does not exist | `not_found` | `no thread with id '<thread_id>'` |
+| The project does not exist | `not_found` | `no project with id '<project_id>'` |
+| The `id` was used for another call | `conflict` | `id was already used for <call>` |
+
+```json
+{"v": "v1", "call": "schedules.add", "params": {"id": "c3", "trigger": {"type": "interval", "everyMs": 3600000}, "text": "Run the tests and report what fails.", "thread_id": "8a63…"}}
+{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"by":null,"paused":false,"next_run":"2026-10-24T23:31:13.320+00:00","created_at":"2026-10-24T22:31:13.320+00:00"}}
+```
+
+Added just after midnight on Sunday in Stockholm, a weekday stand-up at 9:00 is next due on
+Monday at 08:00 UTC, because the clocks go back an hour that night:
+
+```json
+{"v": "v1", "call": "schedules.add", "params": {"id": "c4", "trigger": {"type": "fixed_time", "timeOfDay": "9:00", "weekdays": [1, 2, 3, 4, 5]}, "text": "Write the stand-up notes.", "action": "launch", "project_id": "demo-repo", "title": "Stand-up notes"}}
+{"ok":true,"result":{"id":"0a5f…","trigger":{"type":"fixed_time","timeOfDay":"9:00","weekdays":[1,2,3,4,5]},"action":"launch","text":"Write the stand-up notes.","thread_id":null,"project_id":"demo-repo","title":"Stand-up notes","by":null,"paused":false,"next_run":"2026-10-26T08:00:00.000+00:00","created_at":"2026-10-24T22:31:13.342+00:00"}}
+```
+
+```json
+{"v": "v1", "call": "schedules.add", "params": {"id": "e11", "trigger": {"type": "interval", "everyMs": 3600000}, "text": "x"}}
+{"ok":false,"error":{"code":"invalid","message":"thread_id is required to post from outside a thread"}}
+```
+
+### `schedules.list`
+
+Lists schedules, oldest first. Paused schedules and `at` schedules that have run are listed too,
+until they are removed.
+
+| Param | Type | |
+|---|---|---|
+| `thread_id` | string | Only schedules with this `thread_id`. |
+| `project_id` | string | Only schedules with this `project_id`. An unknown one gives `[]`. |
+
+**Result:** a list of [schedules](#schedule).
+
+**Errors:** `invalid` when a filter is null (`thread_id must not be null`) or not a string
+(`thread_id must be a string`).
+
+```json
+{"v": "v1", "call": "schedules.list", "params": {"project_id": "demo"}}
+{"ok":true,"result":[{"id":"403b…","trigger":{"type":"fixed_time","timeOfDay":"9:00","weekdays":[1,2,3,4,5]},"action":"launch","text":"Write the stand-up notes.","thread_id":null,"project_id":"demo","title":"Stand-up notes","by":null,"paused":false,"next_run":"2026-10-26T08:00:00.000+00:00","created_at":"2026-10-24T22:33:10.399+00:00"}]}
+```
+
+### `schedules.pause`
+
+Stops a schedule: it runs no more, and keeps its row and its runs. There is no resume in `v1`; to
+run it again, remove it and add it again. Pausing a paused schedule changes nothing.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string, required | Command id. |
+| `schedule_id` | string, required | |
+
+**Result:** the [schedule](#schedule), with `paused: true` and `next_run: null`.
+
+**Errors:** `not_found` (`no schedule with id '<schedule_id>'`); `invalid` when `schedule_id` is
+missing (`schedule_id is required`) or not a string (`schedule_id must be a string`).
+
+```json
+{"v": "v1", "call": "schedules.pause", "params": {"id": "c8", "schedule_id": "2cbf…"}}
+{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"by":null,"paused":true,"next_run":null,"created_at":"2026-10-24T22:31:13.320+00:00"}}
+```
+
+### `schedules.remove`
+
+Deletes a schedule and its runs. The `schedule.fired` events it sent stay in the event log.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string, required | Command id. |
+| `schedule_id` | string, required | |
+
+**Result:** the [schedule](#schedule) as it was before it was removed.
+
+**Errors:** `not_found` (`no schedule with id '<schedule_id>'`); `invalid` when `schedule_id` is
+missing (`schedule_id is required`) or not a string (`schedule_id must be a string`).
+
+```json
+{"v": "v1", "call": "schedules.remove", "params": {"id": "c9", "schedule_id": "2cbf…"}}
+{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"by":null,"paused":true,"next_run":null,"created_at":"2026-10-24T22:31:13.320+00:00"}}
+```
+
+```json
+{"v": "v1", "call": "schedules.remove", "params": {"id": "c10", "schedule_id": "2cbf…"}}
+{"ok":false,"error":{"code":"not_found","message":"no schedule with id '2cbf…'"}}
+```
+
 ### Not served yet
 
-These calls are part of `v1` and their params are fixed in `loom_contracts/calls.py`, but the
-server answers each one `invalid`, `<call> is not served yet`, until its issue is done. The Python
-API already has a method for each; the CLI has no command for them.
+This call is part of `v1` and its params are fixed in `loom_contracts/calls.py`, but the server
+answers it `invalid`, `requests.respond is not served yet`, until its issue is done. The Python
+API already has a method for it; the CLI has no command for it.
 
 #### `requests.respond`
 
@@ -583,52 +829,12 @@ wins (§8 Requests).
 | `decision` | string, required | `allow` or `deny`. |
 | `message` | string | A note for the agent. |
 
-#### `schedules.add`
-
-Not served yet (LM-6). Adds a schedule (§7).
-
-| Param | Type | |
-|---|---|---|
-| `id` | string, required | Command id. |
-| `trigger` | object, required | `{"type": "at", "at": "..."}`, `{"type": "interval", "everyMs": N}` (at least 60000), `{"type": "fixed_time", "timeOfDay": "HH:MM", "weekdays": [...]}` or `{"type": "webhook"}`. |
-| `text` | string, required | What to post, launch with or notify. |
-| `action` | string | `post`, `launch` or `notify`. |
-| `thread_id` | string | |
-| `project_id` | string | |
-| `title` | string | |
-
-#### `schedules.list`
-
-Not served yet (LM-6).
-
-| Param | Type | |
-|---|---|---|
-| `thread_id` | string | |
-| `project_id` | string | |
-
-#### `schedules.pause`
-
-Not served yet (LM-6).
-
-| Param | Type | |
-|---|---|---|
-| `id` | string, required | Command id. |
-| `schedule_id` | string, required | |
-
-#### `schedules.remove`
-
-Not served yet (LM-6).
-
-| Param | Type | |
-|---|---|---|
-| `id` | string, required | Command id. |
-| `schedule_id` | string, required | |
-
 ## Events
 
-Every change of a thread's state, every turn's text and tool calls, and every turn's result is an
-event, with an id that only grows. Read them with [`threads.events`](#threadsevents). The state
-in `threads.get` is the truth; events are a log to follow, kept 30 days (§4 Events).
+Every change of a thread's state, every turn's text and tool calls, every turn's result and every
+schedule run that fired is an event, with an id that only grows. Read them with
+[`threads.events`](#threadsevents). The state in `threads.get` is the truth; events are a log to
+follow, kept 30 days (§4 Events).
 
 ```json
 {"id": 5, "type": "turn.tool", "at": "2026-10-24T18:47:13.004+00:00", "thread_id": "3f2a…", "data": {"tool_use_id": "toolu_fake_1", "name": "Bash", "input": {"command": "true", "description": "Fake tool call 1"}}}
@@ -753,18 +959,31 @@ A request was answered. Not sent yet (LM-9).
 
 ### `schedule.fired`
 
-A schedule ran. Not sent yet (LM-6).
+A schedule's run fired: it posted, launched or notified (see
+[How schedules run](#how-schedules-run)). It is sent once for each fired run, and never for a
+run that was skipped or failed.
+
+The event's `thread_id` is the thread the run posted into or launched. For a `notify` it is the
+schedule's `thread_id`, or null when the schedule has none.
 
 | Field | Type | |
 |---|---|---|
 | `schedule_id` | string | |
 | `action` | string | `post`, `launch` or `notify`. |
-| `text` | string | |
-| `by` | string | Who set the schedule, when known. |
-| `late` | bool | `true` when a missed run ran late (§7). |
+| `text` | string | The schedule's text, without the late line. |
+| `late` | bool | Always there. `true` when the run started more than 60 s after it was due (§7). |
+| `by` | string | The agent thread that made the schedule. Left out when a person made it. |
+
+An agent's reminder, added six minutes after its `at`, so it ran at once and late:
 
 ```json
-{"id": 40, "type": "schedule.fired", "at": "2026-10-25T09:00:00.012+00:00", "thread_id": null, "data": {"schedule_id": "s-1", "action": "notify", "text": "Stand-up in five minutes.", "by": "bertil"}}
+{"id": 9, "type": "schedule.fired", "at": "2026-10-24T22:31:20.775+00:00", "thread_id": "8a63…", "data": {"schedule_id": "9370…", "action": "notify", "text": "Stand-up in five minutes.", "late": true, "by": "8a63…"}}
+```
+
+A person's `launch`, on time, names the thread it started:
+
+```json
+{"id": 18, "type": "schedule.fired", "at": "2026-10-24T22:32:00.039+00:00", "thread_id": "7865…", "data": {"schedule_id": "f842…", "action": "launch", "text": "Check the nightly build.\nSay what broke.", "late": false}}
 ```
 
 ## `loom serve`
@@ -785,7 +1004,10 @@ package is missing. `loom --socket PATH serve` passes `--socket` on too.
 | `--config` | `$XDG_CONFIG_HOME/loom/config.toml`, else `~/.config/loom/config.toml`. A missing file means all defaults. |
 
 The data dir holds the store `loom.db` (mode 0600), the `worktrees/` Loom makes, and the
-`agent-token` file you put there.
+`agent-token` file you put there. `loom.db` also holds the schedules and their runs (the
+`schedules` and `schedule_runs` tables). The scheduler starts with the server, once it listens,
+and stops when the server stops. Runs missed while the server was down follow the
+[missed-run rules](#how-schedules-run) on the first pass after it starts.
 
 ### `config.toml`
 
@@ -829,11 +1051,12 @@ the server's environment, those that are set, plus:
 ### Output and exit codes
 
 - When it listens, it writes `loom: serving on <socket path>` to stderr.
-- On SIGINT or SIGTERM (Ctrl-C) it stops taking connections, ends follow streams, closes every
-  agent, removes the socket file, writes `loom: stopped` and exits 0.
+- On SIGINT or SIGTERM (Ctrl-C) it stops taking connections, ends follow streams, stops the
+  scheduler, closes every agent, removes the socket file, writes `loom: stopped` and exits 0.
 - A failure to start exits 2 with one line `loom: <reason>` on stderr: no socket path, a bad
-  config, another server already answering on the socket, or a path that exists and is not a
-  socket. A socket file nobody answers on is left over from an earlier run, and is replaced.
+  config, another server already answering on the socket, a path that exists and is not a
+  socket, or a store whose schedules can't be opened (`cannot open the schedules in <data dir>:
+  <error>`). A socket file nobody answers on is left over from an earlier run, and is replaced.
 
 ```text
 $ loom serve
@@ -874,17 +1097,33 @@ They go before the command.
 | `loom projects set-mode <project_id> <mode> [--id ID]` | `projects.set_mode` |
 | `loom projects remove <project_id> [--id ID]` | `projects.remove` |
 | `loom projects list` | `projects.list` |
+| `loom schedules add <text> (--at DATETIME \| --every SECONDS \| --time H:MM [--weekdays LIST]) [--action post\|launch\|notify] [--thread T] [--project P] [--title T] [--id ID]` | `schedules.add` |
+| `loom schedules list [--thread T] [--project P]` | `schedules.list` |
+| `loom schedules pause <schedule_id> [--id ID]` | `schedules.pause` |
+| `loom schedules remove <schedule_id> [--id ID]` | `schedules.remove` |
 
-- `loom project ...` is the same as `loom projects ...`.
+- `loom project ...` is the same as `loom projects ...`, and `loom schedule ...` as
+  `loom schedules ...`.
 - `--branch` and `--base` go with `--workspace worktree`, `--path` and `--branch` with
   `--workspace existing_worktree`; any other mix is a usage error.
 - `projects add` makes a relative path absolute from the current directory.
-- A `<message>` or `<task>` of `-` is read from stdin to the end. Prefer it in scripts and agents:
-  a message given as an argument shows in the `loom` process's command line, which other users on
-  the machine can read.
+- `schedules add` takes exactly one trigger option, else it is a usage error:
+  - `--at DATETIME` sends `{"type": "at", "at": DATETIME}`, with the time as given.
+  - `--every SECONDS`, a whole number of 1 or more, sends
+    `{"type": "interval", "everyMs": SECONDS * 1000}`.
+  - `--time H:MM` sends `{"type": "fixed_time", "timeOfDay": H:MM}`. With `--weekdays LIST`,
+    comma-separated whole numbers with 0 for Sunday (as `1,2,3,4,5` for Monday to Friday), it
+    also sends `"weekdays"`. `--weekdays` without `--time` is a usage error.
+
+  The server checks the values (the 60 s floor, weekdays 0 to 6, the form of the time) and
+  answers `invalid`, exit 1. `--action`, `--thread`, `--project` and `--title` send `action`,
+  `thread_id`, `project_id` and `title`; one not given is not sent.
+- A `<message>`, `<task>` or `<text>` of `-` is read from stdin to the end. Prefer it in scripts
+  and agents: a message given as an argument shows in the `loom` process's command line, which
+  other users on the machine can read.
 - `--id` sets the command id, to retry a call safely (see
   [Command ids](#command-ids-and-safe-retries)). Without it, each run sends a new one.
-- There are no `schedules` or `requests` commands yet (LM-6, LM-9).
+- There are no `requests` commands yet (LM-9).
 
 ### Examples
 
@@ -938,6 +1177,34 @@ $ loom projects remove demo
 demo  auto-accept-edits  /home/me/src/demo  Demo
 ```
 
+Schedules, in another run with a project `demo`, at 00:33 on a Sunday in Stockholm (22:33 UTC
+on Saturday). The `--at` time was five minutes in the past, so that reminder ran at once, late:
+
+```text
+$ loom threads launch demo "Fix the login test" "Make the login test pass." --workspace root
+f6c4…  queued  demo  Fix the login test
+$ loom schedules add "Run the tests and report what fails." --every 3600 --thread f6c4…
+bc65…  2026-10-24T23:33:10.311+00:00  post  every 3600s  f6c4…  Run the tests and report what fails.
+$ loom schedules add "Write the stand-up notes." --time 9:00 --weekdays 1,2,3,4,5 --action launch --project demo --title "Stand-up notes"
+403b…  2026-10-26T08:00:00.000+00:00  launch  9:00 on 1,2,3,4,5  demo  Stand-up notes
+$ loom schedules add "Stand-up in five minutes." --at 2026-10-25T00:28 --action notify
+e6c4…  2026-10-24T22:28:00.000+00:00  notify  at 2026-10-25T00:28  -  Stand-up in five minutes.
+$ loom schedules list
+bc65…  2026-10-24T23:33:10.311+00:00  post  every 3600s  f6c4…  Run the tests and report what fails.
+403b…  2026-10-26T08:00:00.000+00:00  launch  9:00 on 1,2,3,4,5  demo  Stand-up notes
+e6c4…  done  notify  at 2026-10-25T00:28  -  Stand-up in five minutes.
+$ loom threads events --after 8
+9 2026-10-24T22:33:10.492+00:00 - schedule.fired e6c4… notify late Stand-up in five minutes.
+$ loom schedules pause bc65…
+bc65…  paused  post  every 3600s  f6c4…  Run the tests and report what fails.
+$ loom schedules remove bc65…
+bc65…  paused  post  every 3600s  f6c4…  Run the tests and report what fails.
+$ loom schedules add "Ping." --every 30 --action notify
+loom: invalid: trigger.everyMs must be an integer from 60000 to 31536000000
+$ loom schedules add "Ping." --every 60
+loom: invalid: thread_id is required to post from outside a thread
+```
+
 ### Following events
 
 `loom threads events` without `--follow` prints every event after `--after` (default 0), asking
@@ -965,7 +1232,10 @@ is the event object, so any language can follow Loom by reading the CLI's stdout
 - Without it, a short human form, with two spaces between fields. A thread is one line: id,
   state (and `waiting`), project, title, and the reason when there is one. `threads get` prints
   one `field: value` line per field. A project is one line: id, mode (or `default`), root and
-  title. An event is one line: id, time, thread (or `-`), type and its data fields, with single
+  title. A schedule is one line: id, state (`paused` when paused, else its `next_run`, else
+  `done`), action, trigger (`at <at>`, `every <seconds>s`, `<timeOfDay>` or
+  `<timeOfDay> on <weekdays>`), the thread or else the project it targets, and its title, else
+  its text. An event is one line: id, time, thread (or `-`), type and its data fields, with single
   spaces. A null prints as `-`.
 - Agent-written text is shown as text: each control character (newline and tab too, DEL and the
   C1 range) prints as an escape such as `\n`, `\t` or `\x1b`, so each event is one line. Each text
@@ -1047,10 +1317,10 @@ not_found no thread with id 'nope'
   - `projects_add(title, path, *, permission_mode=None, id=None)`
   - `projects_set_mode(project_id, permission_mode, *, id=None)`
   - `projects_remove(project_id, *, id=None)`, `projects_list()`
-  - Not served yet: `requests_respond(request_id, decision, *, message=None, id=None)`,
-    `schedules_add(trigger, text, *, action=None, thread_id=None, project_id=None, title=None, id=None)`,
-    `schedules_list(thread_id=None, project_id=None)`, `schedules_pause(schedule_id, *, id=None)`,
-    `schedules_remove(schedule_id, *, id=None)`.
+  - `schedules_add(trigger, text, *, action=None, thread_id=None, project_id=None, title=None, id=None)`
+  - `schedules_list(thread_id=None, project_id=None)`
+  - `schedules_pause(schedule_id, *, id=None)`, `schedules_remove(schedule_id, *, id=None)`
+  - Not served yet: `requests_respond(request_id, decision, *, message=None, id=None)`.
 - A call that changes something sends a new uuid4 `id` when `id` is `None`. Pass the same `id`
   again to retry it safely.
 - `Client.follow_events(after=0, thread_id=None) -> Iterator[Event]`: yields every event after
