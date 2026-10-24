@@ -21,9 +21,12 @@ class Config:
     claude_config_dir: str | None = None
     agent_base_url: str | None = None
     permission_mode: str = DEFAULT_MODE
+    agents_max: int | None = None
+    idle_after: int = 1200
 
 
 KEYS = tuple(field.name for field in dataclasses.fields(Config))
+WHOLE_NUMBERS = ('agents_max', 'idle_after')
 
 
 def _option(value: str | None, name: str) -> Path | None:
@@ -78,6 +81,10 @@ def load_config(path: Path) -> Config:
         values = tomllib.loads(data.decode('utf-8'))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise StartError(f'{path}: {error}') from None
+    numbers = {key: values.pop(key) for key in WHOLE_NUMBERS if key in values}
+    for key, value in numbers.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise StartError(f'{path}: {key} must be a whole number of 1 or more')
     for key, value in values.items():
         if key not in KEYS:
             raise StartError(f'{path}: unknown key {key!r}')
@@ -85,4 +92,5 @@ def load_config(path: Path) -> Config:
             raise StartError(f'{path}: {key} must be a string')
     if values.get('permission_mode', DEFAULT_MODE) not in MODES:
         raise StartError(f'{path}: permission_mode must be one of {", ".join(MODES)}')
+    values.update(numbers)
     return Config(**values)

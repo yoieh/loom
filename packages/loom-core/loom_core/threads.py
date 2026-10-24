@@ -9,6 +9,7 @@ from loom_contracts.states import ThreadState
 
 from .clock import iso
 from .errors import LoomError
+from .slots import StartSource
 from .store import Store
 
 ENDED = frozenset({ThreadState.SETTLED, ThreadState.FAILED})
@@ -24,7 +25,7 @@ _MOVES = {
     ThreadState.STARTING: {ThreadState.RUNNING, ThreadState.SLEEPING},
     ThreadState.RUNNING: {ThreadState.IDLE, ThreadState.SLEEPING},
     ThreadState.IDLE: {ThreadState.RUNNING, ThreadState.SLEEPING},
-    ThreadState.SLEEPING: {ThreadState.STARTING},
+    ThreadState.SLEEPING: {ThreadState.STARTING, ThreadState.QUEUED},
     ThreadState.SETTLED: set(),
     ThreadState.FAILED: {ThreadState.SETTLED},
 }
@@ -101,6 +102,29 @@ def add_continuation(store: Store, tx: sqlite3.Connection, thread_id: str) -> in
         return None
     tx.execute('INSERT INTO continuations (thread_id, at) VALUES (?, ?)', (thread_id, iso(now)))
     return count + 1
+
+
+def add_start(tx: sqlite3.Connection, thread_id: str, source: StartSource, at: str) -> None:
+    tx.execute('INSERT INTO starts (thread_id, rank, queued_at) VALUES (?, ?, ?)',
+               (thread_id, int(source), at))
+
+
+def rank_start(tx: sqlite3.Connection, thread_id: str, source: StartSource) -> None:
+    tx.execute(
+        'INSERT INTO starts (thread_id, rank, queued_at) '
+        'SELECT id, min(?, ?), created_at FROM threads WHERE id = ? '
+        'ON CONFLICT (thread_id) DO UPDATE SET rank = min(rank, ?)',
+        (int(source), int(StartSource.AGENT), thread_id, int(source)),
+    )
+
+
+def start_queue(tx: sqlite3.Connection) -> list[tuple[int, str, str]]:
+    return tx.execute(
+        'SELECT coalesce(starts.rank, ?), coalesce(starts.queued_at, threads.created_at), '
+        'threads.id FROM threads LEFT JOIN starts ON starts.thread_id = threads.id '
+        'WHERE threads.state = ? AND threads.stop_requested = 0 ORDER BY 1, 2, 3',
+        (int(StartSource.AGENT), str(ThreadState.QUEUED)),
+    ).fetchall()
 
 
 def narrower(first: PermissionMode, second: PermissionMode) -> PermissionMode:
@@ -180,6 +204,8 @@ def transition(store: Store, tx: sqlite3.Connection, thread_id: str, state: Thre
         'UPDATE threads SET state = ?, waiting = ?, reason = ?, updated_at = ? WHERE id = ?',
         (str(state), int(waiting), reason, iso(store.clock()), thread_id),
     )
+    if current is ThreadState.QUEUED and state is not ThreadState.QUEUED:
+        tx.execute('DELETE FROM starts WHERE thread_id = ?', (thread_id,))
     store.append_event(tx, EventType.THREAD_STATE, thread_id,
                        _state_data(state, waiting, reason))
     if state is ThreadState.FAILED:

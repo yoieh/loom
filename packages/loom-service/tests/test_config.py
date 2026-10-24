@@ -95,6 +95,27 @@ class ConfigTest(unittest.TestCase):
         self.assert_refused('claude_bin = ', 'Invalid value')
         self.assert_refused(b'claude_bin = "\xff"', 'codec')
 
+    def test_the_whole_number_keys_load_as_ints(self) -> None:
+        config = self.load('agents_max = 4\nidle_after = 60\nclaude_bin = "/opt/claude"\n')
+        self.assertEqual((config.agents_max, config.idle_after), (4, 60))
+        self.assertIs(type(config.agents_max), int)
+        self.assertEqual(config.claude_bin, '/opt/claude')
+
+    def test_missing_whole_number_keys_give_the_defaults(self) -> None:
+        config = self.load('claude_bin = "/opt/claude"\n')
+        self.assertEqual((config.agents_max, config.idle_after), (None, 1200))
+        self.assertEqual((Config().agents_max, Config().idle_after), (None, 1200))
+
+    def test_whole_number_keys_refuse_anything_but_1_or_more(self) -> None:
+        cases = ('agents_max = "4"', 'agents_max = 4.0', 'agents_max = true',
+                 'agents_max = 0', 'idle_after = -1', 'idle_after = 0', 'idle_after = "60"')
+        for text in cases:
+            key = text.split(' ')[0]
+            with self.subTest(config=text):
+                self.assert_refused(text, f'{key} must be a whole number of 1 or more')
+        self.assert_refused('claude_bin = 4', 'claude_bin must be a string')
+        self.assert_refused('permission_mode = 1', 'permission_mode must be a string')
+
     def test_an_unreadable_path_is_refused(self) -> None:
         self.path.mkdir()
         with self.assertRaises(StartError) as caught:
