@@ -32,14 +32,33 @@ def is_user_line(line: bytes) -> bool:
     return isinstance(data, dict) and data.get('type') == 'user'
 
 
+def fail_code(cwd: str) -> int | None:
+    try:
+        with open(os.path.join(cwd, 'fail-exit')) as file:
+            return int(file.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def fail(code: int) -> None:
+    err = sys.stderr.buffer
+    err.write(os.environ.get('ANTHROPIC_AUTH_TOKEN', '').encode())
+    err.write(b'x' * 100_000)
+    err.flush()
+    sys.exit(code)
+
+
 def main() -> None:
     cwd = os.getcwd()
     spawned = {'argv': sys.argv, 'cwd': cwd, 'env': dict(os.environ)}
     write_private(os.path.join(cwd, 'spawned.json'), json.dumps(spawned).encode())
-    turns = replay_turns(os.path.join(cwd, 'replay.jsonl'))
+    code = fail_code(cwd)
+    turns = [] if code is not None else replay_turns(os.path.join(cwd, 'replay.jsonl'))
     out = sys.stdout.buffer
     for line in sys.stdin.buffer:
         write_private(os.path.join(cwd, 'stdin.jsonl'), line, append=True)
+        if code is not None:
+            fail(code)
         if is_user_line(line) and turns:
             for reply in turns.pop(0):
                 out.write(reply + b'\n')
