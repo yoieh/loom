@@ -4,11 +4,23 @@ requires-python = ">=3.12"
 
 [manifest]
 members = [
+    "loom-client",
     "loom-contracts",
     "loom-core",
     "loom-runner-claude",
     "loom-service",
 ]
+
+[[package]]
+name = "loom-client"
+version = "0.1.0"
+source = { editable = "packages/loom-client" }
+dependencies = [
+    { name = "loom-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "loom-contracts", editable = "packages/loom-contracts" }]
 
 [[package]]
 name = "loom-contracts"
