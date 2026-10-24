@@ -15,9 +15,13 @@ lasting fact here changes.
   §73 design and spike results it builds on, cited as §73.x.
 - **Layout:** a uv workspace. Each package is `packages/<name>/` with its own
   `pyproject.toml` (hatchling) and its import package inside, and its tests
-  in `packages/<name>/tests/test_<module>.py`. The packages and the
-  dependencies each may have are in `docs/design.md` §3; a package imports
-  only what its row lists. Factory rules for this repo are in
+  in `packages/<name>/tests/test_<module>.py`. `packages/`, each
+  `packages/<name>/` and its `tests/` hold an empty `__init__.py`, which the
+  test command's discovery needs, and the root workspace excludes
+  `packages/__pycache__`. The packages and the dependencies each may have are
+  in `docs/design.md` §3; a package imports only what its row lists.
+  `packages/loom-contracts/tests/test_packaging.py` holds §3's table, so a new
+  package adds its row there. Factory rules for this repo are in
   `docs/agent-rules/`.
 - **Language / stack:**
   - Python 3.12, managed with uv: the root `pyproject.toml` (the workspace),
@@ -30,7 +34,8 @@ lasting fact here changes.
   - Loom runs `claude`, `codex` and `git` as child processes; they are not
     Python dependencies.
 - **Test command:** `uv run python -m unittest discover -s packages -p 'test_*.py' -t .`
-  (add `-v` for names), once issue 1 has set the workspace up. Tests use temp
+  (add `-v` for names); one file is
+  `uv run python -m unittest packages.<name>.tests.test_<module>`. Tests use temp
   dirs and temp Unix sockets, never the real `~/.local/share/loom`,
   `~/.config/loom` or `$XDG_RUNTIME_DIR/loom`, and fakes or recorded streams
   instead of real agents. Each `test_*.py` ends with its
