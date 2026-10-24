@@ -307,6 +307,11 @@ Each row is one issue (`LM-<n>`) in the factory's tracker.
 | 8 | `loom-runner-codex` (§6) | 4 |
 | 9 | Requests: permission prompts, `requests.respond`, timeouts (§8) | 4 |
 | 10 | `loom-runner-t3` (§6) | 4 |
+| LM-39 | Signals, event triggers and cause chains (§15) | 6 |
+| LM-40 | Concurrency keys and settle on result (§15) | 5 |
+| LM-41 | Threads carry an audience, person or agent (§15) | 4 |
+
+From LM-39 on, a row's number is its issue key.
 
 Thread Voice becoming a client is Thread Voice's issue, after 4, 6 and 9.
 
@@ -319,3 +324,36 @@ Thread Voice becoming a client is Thread Voice's issue, after 4, 6 and 9.
 5. The API is JSON lines on a Unix socket, with a CLI and a Python client.
 6. State tables are the truth; events are a 30-day log.
 7. "Loom" and the `loom-*` names are working names, cheap to change before issue 1.
+
+## §15 Event-driven agents
+
+Proposed 2026-10-24. The user wants to step in as rarely as possible: every agent thread gets one
+clear goal, does it and is gone, and events start threads, not clocks. Bertil (the factory
+manager) and one project manager per project are how the factory uses this. Those roles are the
+factory's prompts and rules (Factory Manager's `orchestrator/agents.md`), not Loom's; Loom gives
+only the parts below.
+
+- **Signals.** `signals.emit {topic, project_id?, key?, payload}` puts an outside event into
+  Loom as a `signal` event, so the factory can say "run done" or "PR opened". Agents get it as
+  the `loom-mcp` tool `emit`.
+- **Event triggers.** A schedule trigger `{"type":"event","topic":"factory.run.status",
+  "project_id":"glantfolk","match":{"to":"done"}}` fires its action (§7) for each matching
+  `signal`, `thread.settled`, `thread.failed`, `request.opened` or `schedule.fired`. A prompt
+  can use `{{payload.<field>}}` and `{{event.id}}`. Clock triggers stay for what really is about
+  time, such as one daily check that no event was missed.
+- **Cause chains.** Every launch, send and signal records `cause` (the event behind it) and
+  `hops` (its cause's hops + 1). A trigger skips an event at `hops_max` (default 8) and an event
+  from a thread it launched itself, and fires at most `rate_max` times an hour (default 30), so
+  agents that start agents can't loop. Each skip is a `trigger.skipped` event.
+- **Concurrency keys.** A launch with `concurrency_key` (such as `pm:glantfolk`) waits while
+  another unsettled thread holds the key (`on_busy: "queue"`), or joins the one waiting launch
+  for it (`"coalesce"`), so one project manager works on a project at a time and a burst of
+  events becomes one thread.
+- **One goal, then settled.** A launch with `settle: "on_result"` settles after its first
+  `result` instead of going idle. Its `thread.settled` event carries the result, so the next
+  step can trigger on it.
+- **Audience.** A thread is `person` (a person talks with it) or `agent` (the default). Thread
+  Voice lists only `person` threads; the CLI sees all. An agent thread that needs a person asks
+  through `thread-voice-mcp` as now, or is changed to `person` with `threads.update`.
+- **Missed events.** Events are stored (§4), and the scheduler keeps a cursor, so after a
+  restart each matching event since the cursor fires once.
