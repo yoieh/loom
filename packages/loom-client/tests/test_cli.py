@@ -30,6 +30,8 @@ COMMANDS = [
       '--path', '/w/t1', '--branch', 'b'], 'threads.launch',
      {'project_id': 'demo', 'title': 'First', 'message': 'hello',
       'workspace': {'strategy': 'existing_worktree', 'branch': 'b', 'path': '/w/t1'}}),
+    (['threads', 'launch', 'demo', 'First', 'hello', '--audience', 'person'], 'threads.launch',
+     {'project_id': 'demo', 'title': 'First', 'message': 'hello', 'audience': 'person'}),
     (['threads', 'delegate', 't1', 'check it'], 'threads.delegate',
      {'parent_id': 't1', 'task': 'check it'}),
     (['threads', 'delegate', 't1', 'check it', '--workspace', 'root', '--runner', 'claude',
@@ -41,9 +43,14 @@ COMMANDS = [
      {'thread_id': 't1', 'message': 'again', 'mode': 'interrupt'}),
     (['threads', 'list'], 'threads.list', {}),
     (['threads', 'list', '--project', 'demo'], 'threads.list', {'project_id': 'demo'}),
+    (['threads', 'list', '--audience', 'agent'], 'threads.list', {'audience': 'agent'}),
+    (['threads', 'list', '--project', 'demo', '--audience', 'person'], 'threads.list',
+     {'project_id': 'demo', 'audience': 'person'}),
     (['threads', 'get', 't1'], 'threads.get', {'thread_id': 't1'}),
     (['threads', 'stop', 't1'], 'threads.stop', {'thread_id': 't1'}),
     (['threads', 'settle', 't1'], 'threads.settle', {'thread_id': 't1'}),
+    (['threads', 'update', 't1', '--audience', 'person'], 'threads.update',
+     {'thread_id': 't1', 'audience': 'person'}),
     (['projects', 'add', 'Demo', '/tmp/demo'], 'projects.add',
      {'title': 'Demo', 'path': '/tmp/demo'}),
     (['projects', 'add', 'Demo', '/tmp/demo', '--mode', 'approval-required'], 'projects.add',
@@ -83,8 +90,8 @@ COMMANDS = [
 ]
 
 WRITES = {'threads.launch', 'threads.delegate', 'threads.send', 'threads.stop',
-          'threads.settle', 'projects.add', 'projects.set_mode', 'projects.remove',
-          'schedules.add', 'schedules.pause', 'schedules.remove'}
+          'threads.settle', 'threads.update', 'projects.add', 'projects.set_mode',
+          'projects.remove', 'schedules.add', 'schedules.pause', 'schedules.remove'}
 
 USAGE_ERRORS = [
     [],
@@ -103,6 +110,13 @@ USAGE_ERRORS = [
     ['threads', 'delegate', 't1', 'task', '--workspace', 'existing_worktree', '--base', 'b'],
     ['threads', 'events', '--after', '-1'],
     ['threads', 'events', '--after', 'x'],
+    ['threads', 'update', 't1'],
+    ['threads', 'update', '--audience', 'person'],
+    ['threads', 'update', 't1', '--audience', 'people'],
+    ['threads', 'launch', 'demo', 'First', 'm', '--audience', 'people'],
+    ['threads', 'list', '--audience', 'people'],
+    ['threads', 'events', '--audience', 'people'],
+    ['threads', 'events', '--follow', '--audience', 'people'],
     ['projects', 'add', 'Demo', '.', '--mode', 'root'],
     ['projects', 'set-mode', 'demo', 'everything'],
     ['projects', 'list', 'extra'],
@@ -165,7 +179,8 @@ class CommandTest(CliCase):
         for argv in (['threads', 'stop', 't1'], ['threads', 'send', 't1', 'm'],
                      ['projects', 'remove', 'demo'], ['threads', 'launch', 'd', 'T', 'm'],
                      ['schedules', 'add', 'x', '--every', '60'], ['schedules', 'pause', 's1'],
-                     ['schedules', 'remove', 's1']):
+                     ['schedules', 'remove', 's1'],
+                     ['threads', 'update', 't1', '--audience', 'agent']):
             with self.subTest(argv=argv):
                 self.assertEqual(self.run_cli(*argv, '--id', 'retry-7')[0], 0)
                 self.assertEqual(self.server.requests[-1]['params']['id'], 'retry-7')
@@ -175,7 +190,7 @@ class CommandTest(CliCase):
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual({call.value for call in cli.COMMANDS}, {
             'threads.launch', 'threads.delegate', 'threads.send', 'threads.list', 'threads.get',
-            'threads.stop', 'threads.settle', 'threads.events', 'projects.add',
+            'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
             'projects.set_mode', 'projects.remove', 'projects.list', 'schedules.add',
             'schedules.list', 'schedules.pause', 'schedules.remove',
         })
@@ -240,7 +255,8 @@ class UsageTest(CliCase):
         for argv, names in (
             (['--help'], ['serve', 'threads', 'projects', 'schedules']),
             (['threads', '--help'],
-             ['launch', 'delegate', 'send', 'list', 'get', 'stop', 'settle', 'events']),
+             ['launch', 'delegate', 'send', 'list', 'get', 'stop', 'settle', 'update',
+              'events']),
             (['projects', '--help'], ['add', 'set-mode', 'remove', 'list']),
             (['project', '--help'], ['add', 'set-mode', 'remove', 'list']),
             (['schedules', '--help'], ['add', 'list', 'pause', 'remove']),
@@ -260,6 +276,13 @@ class ExitTest(CliCase):
         code, out, err = self.run_cli('threads', 'get', 'nope')
         self.assertEqual((code, out), (1, ''))
         self.assertEqual(err, "loom: not_found: no thread with id 'nope'\n")
+
+    def test_an_update_of_an_unknown_thread_exits_1(self) -> None:
+        self.answer(failed('not_found', "no thread with id 'nope'"))
+        code, out, err = self.run_cli('threads', 'update', 'nope', '--audience', 'person')
+        self.assertEqual((code, out), (1, ''))
+        self.assertEqual(err, "loom: not_found: no thread with id 'nope'\n")
+        self.assertEqual(self.server.calls[-1][0], 'threads.update')
 
     def test_an_api_error_with_json_also_prints_the_error_object(self) -> None:
         self.answer(failed('forbidden', 'agent threads may not add projects'))
@@ -375,6 +398,27 @@ class EventsTest(CliCase):
         self.answer(ok([]))
         self.assertEqual(self.run_cli('threads', 'events', '--thread', 't1'), (0, '', ''))
         self.assertEqual(self.server.calls, [('threads.events', {'after': 0, 'thread_id': 't1'})])
+
+    def test_audience_is_sent_on_every_page(self) -> None:
+        self.page_server(2500)
+        code, out, err = self.run_cli('threads', 'events', '--audience', 'person')
+        self.assertEqual((code, err), (0, ''))
+        self.assertEqual(len(out.splitlines()), 2500)
+        self.assertEqual(self.server.calls, [
+            ('threads.events', {'after': after, 'audience': 'person'})
+            for after in (0, 1000, 2000)
+        ])
+
+    def test_follow_sends_the_audience(self) -> None:
+        self.answer(stream(event(4)))
+        code, out, _ = self.run_cli('threads', 'events', '--follow', '--audience', 'agent',
+                                    '--thread', 't1')
+        self.assertEqual(code, 3)
+        self.assertEqual(len(out.splitlines()), 1)
+        self.assertEqual(self.server.calls, [
+            ('threads.events', {'after': 0, 'thread_id': 't1', 'audience': 'agent',
+                                'follow': True}),
+        ])
 
     def test_a_full_page_that_does_not_move_on_exits_3(self) -> None:
         self.answer(ok([event(5)] * 1000))
@@ -499,6 +543,15 @@ class HumanOutputTest(CliCase):
         self.assertTrue(lines[7].endswith(' t1 turn.started'))
         self.assertEqual(lines[8], f'9 {AT} - some.future {{"odd": "x\\u001by"}}')
 
+    def test_a_thread_updated_event_prints_the_new_audience(self) -> None:
+        out = self.events(event(1, 'thread.updated', audience='person', previous_audience='agent'),
+                          event(2, 'thread.updated', thread_id='t2', audience='agent',
+                                previous_audience='person'))
+        self.assertEqual(out.splitlines(), [
+            f'1 {AT} t1 thread.updated person',
+            f'2 {AT} t2 thread.updated agent',
+        ])
+
     def test_a_long_tool_input_is_cut(self) -> None:
         out = self.events(event(1, 'turn.tool', tool_use_id='t', name='Bash',
                                 input={'command': 'x' * 3000}))
@@ -526,6 +579,11 @@ class HumanOutputTest(CliCase):
         ])
         self.answer(ok([]))
         self.assertEqual(self.run_cli('threads', 'list'), (0, '', ''))
+
+    def test_update_prints_one_thread_line(self) -> None:
+        self.answer(ok(thread_info(audience='person')))
+        self.assertEqual(self.run_cli('threads', 'update', 't1', '--audience', 'person'),
+                         (0, 't1  idle  demo  First\n', ''))
 
     def test_get_prints_each_field_on_its_own_line(self) -> None:
         self.answer(ok(thread_info(title='a\nb', origin=None)))

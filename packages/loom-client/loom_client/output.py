@@ -16,6 +16,7 @@ _ESCAPES = {
 EVENT_FIELDS: dict[str, tuple[str, ...]] = {
     EventType.THREAD_STATE: ('state', 'waiting', 'reason'),
     EventType.THREAD_FAILED: ('reason',),
+    EventType.THREAD_UPDATED: ('audience',),
     EventType.TURN_STARTED: (),
     EventType.TURN_TEXT: ('text',),
     EventType.TURN_TOOL: ('name', 'input', 'tool_use_id'),
