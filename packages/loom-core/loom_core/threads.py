@@ -1,5 +1,6 @@
 import sqlite3
 from collections.abc import Mapping
+from datetime import timedelta
 
 from loom_contracts.calls import ThreadInfo
 from loom_contracts.events import EventType
@@ -13,6 +14,10 @@ from .store import Store
 ENDED = frozenset({ThreadState.SETTLED, ThreadState.FAILED})
 LIVE = frozenset(ThreadState) - ENDED
 STOPPING = 'stopping'
+CONTINUATION = 'Your last turn was cut off; continue where you were.'
+CONTINUATIONS = 3
+CONTINUATION_WINDOW = timedelta(seconds=300)
+CRASHED = 'exited mid-turn after 3 continuations in 5 minutes'
 
 _MOVES = {
     ThreadState.QUEUED: {ThreadState.STARTING, ThreadState.SLEEPING},
@@ -84,6 +89,18 @@ def clear_stop(store: Store, tx: sqlite3.Connection, thread_id: str) -> None:
     tx.execute('UPDATE threads SET stop_requested = 0 WHERE id = ?', (thread_id,))
     if row['state'] in LIVE and row['reason'] == STOPPING:
         transition(store, tx, thread_id, ThreadState(row['state']))
+
+
+def add_continuation(store: Store, tx: sqlite3.Connection, thread_id: str) -> int | None:
+    now = store.clock()
+    tx.execute('DELETE FROM continuations WHERE thread_id = ? AND at <= ?',
+               (thread_id, iso(now - CONTINUATION_WINDOW)))
+    count = tx.execute('SELECT count(*) FROM continuations WHERE thread_id = ?',
+                       (thread_id,)).fetchone()[0]
+    if count >= CONTINUATIONS:
+        return None
+    tx.execute('INSERT INTO continuations (thread_id, at) VALUES (?, ?)', (thread_id, iso(now)))
+    return count + 1
 
 
 def narrower(first: PermissionMode, second: PermissionMode) -> PermissionMode:

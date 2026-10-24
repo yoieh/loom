@@ -20,11 +20,12 @@ from .errors import LoomError
 from .lanes import Lanes
 from .projects import Projects
 from .store import Store
-from .threads import ENDED, fetch, thread_info, transition
+from .threads import ENDED, LIVE, fetch, thread_info, transition
 from .workspaces import WorkspacePlan, make_workspace, plan_workspace
 
 REQUESTS = ('caller', 'any')
 DEFAULT_WORKSPACE = {'strategy': WorkspaceStrategy.WORKTREE.value}
+RECOVERED = frozenset({ThreadState.STARTING, ThreadState.RUNNING, ThreadState.IDLE})
 
 
 def _params(params: object) -> dict:
@@ -245,6 +246,7 @@ class Orchestrator:
                 reason = row['reason'] if before is ThreadState.FAILED else None
                 transition(self.store, tx, thread_id, ThreadState.SETTLED, reason)
                 tx.execute('DELETE FROM messages WHERE thread_id = ?', (thread_id,))
+                tx.execute('DELETE FROM continuations WHERE thread_id = ?', (thread_id,))
             return thread_info(fetch(tx, thread_id))
 
         receipt = self.store.command(params.get('id'), CallName.THREADS_SETTLE, change)
@@ -292,12 +294,46 @@ class Orchestrator:
         await self.lanes.drain()
         sessions = list(self._sessions.values())
         self._sessions.clear()
-        for session in sessions:
-            await self._close_session(session)
+        await asyncio.gather(*(self._close_session(session) for session in sessions))
         pumps = list(self._pumps.values())
         for pump in pumps:
             pump.cancel()
         await asyncio.gather(*pumps, return_exceptions=True)
+
+    async def recover(self) -> None:
+        for row in threads.select(self.store.connection):
+            if row['state'] in RECOVERED or (row['stop_requested'] and row['state'] in LIVE):
+                with self.store.transaction() as tx:
+                    self._recover(tx, fetch(tx, row['id']))
+        for row in threads.select(self.store.connection):
+            thread_id = row['id']
+            if row['state'] == ThreadState.QUEUED:
+                self.lanes.submit(thread_id, lambda thread_id=thread_id: self._start(thread_id))
+                continue
+            found = self.store.connection.execute(
+                'SELECT seq FROM messages WHERE thread_id = ? '
+                'ORDER BY priority DESC, seq LIMIT 1', (thread_id,),
+            ).fetchone()
+            if row['state'] in LIVE and found is not None:
+                self.lanes.submit(thread_id, lambda thread_id=thread_id, seq=found[0]:
+                                  self._deliver(thread_id, seq))
+
+    def _recover(self, tx: sqlite3.Connection, row: sqlite3.Row) -> None:
+        thread_id = row['id']
+        state = ThreadState(row['state'])
+        stopping = bool(row['stop_requested'])
+        if state is ThreadState.RUNNING and not stopping:
+            self.store.append_event(tx, EventType.TURN_RESULT, thread_id,
+                                    {'state': TurnState.FAILED, 'reason': 'restart'})
+            self._crash(tx, row)
+            return
+        if state is ThreadState.RUNNING:
+            self.store.append_event(tx, EventType.TURN_RESULT, thread_id,
+                                    {'state': TurnState.STOPPED, 'reason': 'stop'})
+        if state in RECOVERED or (stopping and state is ThreadState.QUEUED):
+            transition(self.store, tx, thread_id, ThreadState.SLEEPING)
+        if stopping:
+            threads.clear_stop(self.store, tx, thread_id)
 
     def _add_message(self, tx: sqlite3.Connection, thread_id: str, command_id: str,
                      text: str, mode: DispatchMode, priority: int = 0) -> int:
@@ -344,6 +380,8 @@ class Orchestrator:
         await self._boot(thread_id, resume=False)
 
     async def _boot(self, thread_id: str, resume: bool) -> None:
+        if self._closing:
+            return
         row = self._row(thread_id)
         plan = WorkspacePlan(WorkspaceStrategy(row['workspace_strategy']), row['workspace_path'],
                              row['branch'], row['base'])
@@ -557,7 +595,10 @@ class Orchestrator:
             state = ThreadState(row['state'])
             live = current and state not in ENDED
             self._log(tx, thread_id, event, state if live else None)
-            if live:
+            if live and (isinstance(event, Exited) and state is ThreadState.RUNNING
+                         and not row['stop_requested']):
+                posted = self._crash(tx, row)
+            elif live:
                 posted = self._post_result(tx, row, event)
                 turn_over = self._apply(tx, row, event)
         if current and isinstance(event, (TurnResult, Exited)):
@@ -578,16 +619,32 @@ class Orchestrator:
     def _post_result(self, tx: sqlite3.Connection, row: sqlite3.Row,
                      event: RunnerEvent) -> tuple[str, int] | None:
         if (not isinstance(event, TurnResult) or event.state not in delegation.POSTED
-                or row['state'] != ThreadState.RUNNING or row['parent_id'] is None
-                or row['stop_requested']):
+                or row['state'] != ThreadState.RUNNING):
+            return None
+        return self._post(tx, row, event)
+
+    def _post(self, tx: sqlite3.Connection, row: sqlite3.Row,
+              result: TurnResult) -> tuple[str, int] | None:
+        if row['parent_id'] is None or row['stop_requested']:
             return None
         parent = fetch(tx, row['parent_id'])
         if parent['state'] in ENDED or parent['stop_requested']:
             return None
         seq = self._add_message(tx, parent['id'], f'{row["id"]}:result',
-                                delegation.result_text(row, event), DispatchMode.QUEUE,
+                                delegation.result_text(row, result), DispatchMode.QUEUE,
                                 priority=1)
         return parent['id'], seq
+
+    def _crash(self, tx: sqlite3.Connection, row: sqlite3.Row) -> tuple[str, int] | None:
+        thread_id = row['id']
+        count = threads.add_continuation(self.store, tx, thread_id)
+        if count is None:
+            transition(self.store, tx, thread_id, ThreadState.FAILED, threads.CRASHED)
+            return self._post(tx, row, TurnResult(TurnState.FAILED, None, threads.CRASHED))
+        seq = self._add_message(tx, thread_id, f'{thread_id}:continuation:{count}',
+                                threads.CONTINUATION, DispatchMode.QUEUE, priority=2)
+        transition(self.store, tx, thread_id, ThreadState.SLEEPING)
+        return thread_id, seq
 
     def _log(self, tx: sqlite3.Connection, thread_id: str, event: RunnerEvent,
              state: ThreadState | None) -> None:

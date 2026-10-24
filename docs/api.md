@@ -351,6 +351,15 @@ failed or being stopped.
 Sends a message to a thread. An `idle` thread starts a turn with it, and a `sleeping` one is
 resumed first.
 
+Loom keeps a message until it has handed it to the agent. When the agent process exits during a
+turn, without the turn's result, the turn fails (`turn.result` with reason `exited`) and Loom
+resumes the thread with the message `Your last turn was cut off; continue where you were.`,
+ahead of its other messages, which follow in their usual order. That happens at most 3 times in
+5 minutes; the next such exit makes the thread `failed` with the reason
+`exited mid-turn after 3 continuations in 5 minutes`, and a delegated thread's parent gets that
+failed result. An exit after the turn's result is not a crash: the thread only goes to
+`sleeping`.
+
 | Param | Type | |
 |---|---|---|
 | `id` | string, required | Command id. |
@@ -663,7 +672,9 @@ The thread's state changed, or its `waiting` flag or `reason` did.
 
 ### `thread.failed`
 
-The thread failed; it comes right after the `thread.state` event with state `failed`.
+The thread failed; it comes right after the `thread.state` event with state `failed`. A thread
+whose agent process keeps exiting mid-turn fails with the reason
+`exited mid-turn after 3 continuations in 5 minutes` (see [`threads.send`](#threadssend)).
 
 | Field | Type | |
 |---|---|---|
@@ -715,7 +726,7 @@ The turn ended.
 |---|---|---|
 | `state` | string | `completed`, `failed` or `stopped`. |
 | `text` | string | The agent's final text, when it gave one. |
-| `reason` | string | When there is one: `exited` when the agent process ended during the turn, `stop` when a stop cut the turn. |
+| `reason` | string | When there is one: `exited` when the agent process ended during the turn, `restart` when `loom serve` stopped during the turn, `stop` when a stop cut the turn. |
 
 ```json
 {"id": 7, "type": "turn.result", "at": "2026-10-24T18:47:13.017+00:00", "thread_id": "3f2a…", "data": {"state": "completed", "text": "Make the login test pass."}}
@@ -830,7 +841,11 @@ the server's environment, those that are set, plus:
 
 - When it listens, it writes `loom: serving on <socket path>` to stderr.
 - On SIGINT or SIGTERM (Ctrl-C) it stops taking connections, ends follow streams, closes every
-  agent, removes the socket file, writes `loom: stopped` and exits 0.
+  agent, removes the socket file, writes `loom: stopped` and exits 0. Threads keep their state
+  in the store. On the next start, threads that were `running` or `idle` are `sleeping`; a turn
+  that was cut off fails (`turn.result` with reason `restart`) and resumes with the continuation
+  message, as under [`threads.send`](#threadssend); queued starts stay queued and then start.
+  A stop that was in progress ends there.
 - A failure to start exits 2 with one line `loom: <reason>` on stderr: no socket path, a bad
   config, another server already answering on the socket, or a path that exists and is not a
   socket. A socket file nobody answers on is left over from an earlier run, and is replaced.
@@ -839,9 +854,6 @@ the server's environment, those that are set, plus:
 $ loom serve
 loom: no socket path: XDG_RUNTIME_DIR is not set, so pass --socket
 ```
-
-Threads that were `running` or `idle` when the server stopped are not resumed on the next start
-yet; that comes with LM-5.
 
 ## The `loom` CLI
 

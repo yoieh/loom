@@ -1,12 +1,24 @@
 import asyncio
 from collections.abc import AsyncIterator, Callable
+from datetime import datetime, timedelta
 
 from loom_contracts.runners import (
-    DispatchMode, RequestAnswer, RunnerEvent, ThreadSpec, TurnResult,
+    DispatchMode, Exited, RequestAnswer, RunnerEvent, ThreadSpec, TurnResult,
 )
 from loom_contracts.states import TurnState
 
 _END = object()
+
+
+class ManualClock:
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += timedelta(seconds=seconds)
 
 
 class FakeSession:
@@ -17,6 +29,7 @@ class FakeSession:
         self.responses: list[tuple[str, RequestAnswer]] = []
         self.interrupts = 0
         self.closed = False
+        self.closing = False
         self.fail_send: Exception | None = None
         self.fail_interrupt: Exception | None = None
         self._queue: asyncio.Queue = asyncio.Queue()
@@ -28,6 +41,10 @@ class FakeSession:
 
     def emit(self, event: RunnerEvent) -> None:
         self._queue.put_nowait(event)
+
+    def exit(self, code: int | None = 1) -> None:
+        self.emit(Exited(code))
+        self._queue.put_nowait(_END)
 
     async def send(self, message: str, mode: DispatchMode) -> None:
         if self.fail_send is not None:
@@ -47,8 +64,13 @@ class FakeSession:
             self.emit(TurnResult(TurnState.STOPPED, None, 'interrupted'))
 
     async def close(self) -> None:
+        self.closing = True
+        if self.runner.close_gate is not None:
+            await self.runner.close_gate.wait()
         if not self.closed:
             self.closed = True
+            if self.runner.exit_on_close:
+                self._queue.put_nowait(Exited(0))
             self._queue.put_nowait(_END)
 
 
@@ -56,11 +78,13 @@ class FakeRunner:
     def __init__(self, name: str = 'claude',
                  capabilities: frozenset[str] = frozenset({'steer', 'interrupt', 'resume'}),
                  fail_start: Exception | None = None,
-                 stop_on_interrupt: bool = True) -> None:
+                 stop_on_interrupt: bool = True, exit_on_close: bool = False) -> None:
         self.name = name
         self.capabilities = frozenset(capabilities)
         self.fail_start = fail_start
         self.stop_on_interrupt = stop_on_interrupt
+        self.exit_on_close = exit_on_close
+        self.close_gate: asyncio.Event | None = None
         self.starts: list[ThreadSpec] = []
         self.sessions: dict[str, FakeSession] = {}
 

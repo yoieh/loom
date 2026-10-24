@@ -9,11 +9,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from .fake_claude import ENDLESS
 from .support import (
-    TIMEOUT, Connection, clean_env, connect, make_claude_bin, make_repo, run_client, wait_until,
+    TIMEOUT, Connection, ServerCase, clean_env, connect, make_claude_bin, make_repo, run_client,
+    wait_until,
 )
 
 NETWORK_TABLES = ('tcp', 'tcp6', 'udp', 'udp6')
+CONTINUATION = 'Your last turn was cut off; continue where you were.'
 
 
 def mode_of(path: Path) -> int:
@@ -234,6 +237,38 @@ class StopTest(ServeCase):
         self.assertTrue(await follower.stream_ends())
         await wait_until(lambda: is_gone(spawned['pid']))
         self.assertFalse(os.path.lexists(self.socket))
+
+
+class RestartTest(ServerCase):
+    async def state(self, conn: Connection, thread_id: str, wanted: str) -> None:
+        deadline = asyncio.get_running_loop().time() + TIMEOUT
+        while (await conn.ok('threads.get', thread_id=thread_id))['state'] != wanted:
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError(f'thread {thread_id} not {wanted} within {TIMEOUT} s')
+            await asyncio.sleep(0.02)
+
+    async def test_a_turn_cut_off_by_a_restart_resumes_with_the_continuation(self) -> None:
+        conn = await self.connect()
+        await self.add_project(conn)
+        thread = await self.launch(conn, message=ENDLESS)
+        first = await self.spawned(thread['id'])
+        await self.state(conn, thread['id'], 'running')
+        await conn.close()
+
+        await self.restart(self.config())
+        self.assertTrue(is_gone(first['pid']))
+        conn = await self.connect()
+        results = await self.wait_events(conn, 'turn.result', thread['id'], 2)
+        self.assertEqual(results[0]['data'], {'state': 'failed', 'reason': 'restart'})
+        self.assertEqual(results[1]['data'], {'state': 'completed', 'text': CONTINUATION})
+        await self.state(conn, thread['id'], 'idle')
+        resumed = json.loads((self.repo / 'spawned.json').read_text())
+        self.assertNotEqual(resumed['pid'], first['pid'])
+        self.assertIn('--resume', resumed['argv'])
+        self.assertEqual(resumed['argv'][resumed['argv'].index('--resume') + 1], thread['id'])
+        states = [event['data']['state'] for event in await self.all_events(
+            conn, thread_id=thread['id']) if event['type'] == 'thread.state']
+        self.assertEqual(states[-4:], ['sleeping', 'starting', 'running', 'idle'])
 
 
 if __name__ == '__main__':

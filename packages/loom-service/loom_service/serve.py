@@ -55,6 +55,7 @@ async def start(socket: Path, data_dir: Path, config: Config, *,
     projects = Projects(store, default_mode=config.permission_mode)
     host = Host(data_dir, socket, config, environ, log)
     orchestrator = Orchestrator(store, projects, {'claude': ClaudeRunner()}, host)
+    await orchestrator.recover()
     service = Service(store, projects, orchestrator)
     await server.start(service)
     log.write(f'loom: serving on {socket}\n')
