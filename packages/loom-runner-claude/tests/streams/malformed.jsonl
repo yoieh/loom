@@ -1,0 +1,10 @@
+
+not json
+[1,2]
+{}
+{"type":7}
+ÿþ{"type":"result","is_error":false,"result":"OK"}
+{"type":"user","message":{"role":"user","content":"Reply with the word second"},"session_id":"332ac17d-0a9f-4e6c-8922-7a001f90871a","parent_tool_use_id":null,"uuid":"8d2ce6a2-375a-4960-b6ba-2a1784956bf2","timestamp":"2026-10-22T12:33:04.535Z","isReplay":true}
+{"type":"control_response","response":{"subtype":"success","request_id":"spike-int-1","response":{"still_queued":[]}}}
+{"type":"system","subtype":"vcs_state_changed","kind":"push","branch":"master","cwd":"/tmp/loom-replay/repo","uuid":"5a0c856c-ef04-43f5-b178-d2e8ca4ff4f6","session_id":"e3703710-3245-40f9-bdf7-dfdb1173f7a7"}
+{"type":"assistant","message":{"model":"claude-opus-5-5","id":"msg_85a8495ed69755f081fbaec6","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"The user wants the word OK.","signature":"c2lnbmF0dXJl"}],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":37190,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":37190,"ephemeral_1h_input_tokens":0},"output_tokens":8,"service_tier":"standard","inference_geo":"global","speed":"standard"},"diagnostics":null,"context_management":null},"parent_tool_use_id":null,"session_id":"332ac17d-0a9f-4e6c-8922-7a001f90871a","uuid":"2c5e9788-ed61-54ff-8587-45977860a41b","timestamp":"2026-10-22T12:30:54.498Z"}

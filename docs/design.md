@@ -159,8 +159,11 @@ class RunnerSession(Protocol):
   paired, so a project can keep its threads in T3. Built last.
 - **Environment.** Each agent gets an allowlisted environment (§73.13 row 12) plus
   `LOOM_THREAD=<thread id>`, `LOOM_SOCKET`, the provider settings and the agent token from a
-  0600 file in Loom's data dir (§73.13 row 11). Arguments are lists, never a shell string; a
-  message never goes in argv.
+  0600 file in Loom's data dir (§73.13 row 11). For Claude, the host keys are the settings
+  `claude_bin` (default `claude`), `claude_config_dir` (→ `CLAUDE_CONFIG_DIR`) and
+  `agent_base_url` (→ `ANTHROPIC_BASE_URL`), and the secret `agent-token` (→
+  `ANTHROPIC_AUTH_TOKEN`, with `ANTHROPIC_API_KEY` set empty). Arguments are lists, never a
+  shell string; a message never goes in argv.
 
 ## §7 The scheduler
 
