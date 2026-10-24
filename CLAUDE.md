@@ -50,6 +50,12 @@ lasting fact here changes.
     create store, secret and state files with mode 0600.
   - Child processes get argument lists, never a shell string, and an
     allowlisted environment. A message to an agent never goes in argv.
+  - In `loom_contracts`, modules import each other relatively
+    (`from .states import ThreadState`), because the packaging test allows
+    only `__future__`, `collections`, `dataclasses`, `enum` and `typing`
+    there; and a module that defines a `TypedDict` does not use
+    `from __future__ import annotations`, which drops `NotRequired` on
+    Python 3.12.
 
 ## Software factory
 

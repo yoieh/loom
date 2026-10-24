@@ -109,7 +109,10 @@ Rules, each checked by a packaging test:
   parent jumps ahead of the parent's other queued messages.
 - **Stop is intent first.** Stop is recorded and shown at once; the runner's interrupt and the
   final `stopped` state follow as events. Stop on a thread stops everything it started, all the
-  way down.
+  way down. An interrupted turn leaves its thread `idle`; when the turn has not ended 5 s after
+  the interrupt (`stop_grace`), or the runner can't interrupt, the process is closed and the
+  thread is `sleeping`, as is a thread stopped before it started. A stopped child's result is
+  not posted to its parent.
 - **Events.** Each change of state, each turn's text and tool lines, each request and each
   `result` is an event with a growing id, kept 30 days. The state tables are the truth; events
   are a log for clients to follow, not something state is rebuilt from.
@@ -121,6 +124,9 @@ Rules, each checked by a packaging test:
   Modes are T3's four (`approval-required`, `auto-accept-edits`, `auto`, `full-access`),
   mapped to each agent's own flags as §73.13 rows 9 and 15 say. A project with no mode uses
   the config's `permission_mode`, default `auto`; the unset case never becomes `full-access`.
+  A project's id is the slug of its title: NFKD-normalised, cut to ASCII and lowercased, each
+  run of other characters than `a-z0-9` turned into `-`, `-` stripped from both ends, at most 40
+  characters, and `-2`, `-3`, … added (within the 40) when the id is taken.
 - **Workspaces**, the way T3's `workspaceStrategy` names them:
   - `root`: the project's main checkout;
   - `worktree`: a new worktree on a new branch (`loom/<thread-id>` by default) under
@@ -159,8 +165,11 @@ class RunnerSession(Protocol):
   paired, so a project can keep its threads in T3. Built last.
 - **Environment.** Each agent gets an allowlisted environment (§73.13 row 12) plus
   `LOOM_THREAD=<thread id>`, `LOOM_SOCKET`, the provider settings and the agent token from a
-  0600 file in Loom's data dir (§73.13 row 11). Arguments are lists, never a shell string; a
-  message never goes in argv.
+  0600 file in Loom's data dir (§73.13 row 11). For Claude, the host keys are the settings
+  `claude_bin` (default `claude`), `claude_config_dir` (→ `CLAUDE_CONFIG_DIR`) and
+  `agent_base_url` (→ `ANTHROPIC_BASE_URL`), and the secret `agent-token` (→
+  `ANTHROPIC_AUTH_TOKEN`, with `ANTHROPIC_API_KEY` set empty). Arguments are lists, never a
+  shell string; a message never goes in argv.
 
 ## §7 The scheduler
 
