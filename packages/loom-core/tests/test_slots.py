@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,13 +11,16 @@ from loom_contracts.runners import DispatchMode
 from loom_core import slots
 from loom_core.clock import iso
 from loom_core.orchestrator import Orchestrator
+from loom_core.projects import Projects
 from loom_core.service import Caller
 from loom_core.slots import StartSource, available_memory, default_agents_max
+from loom_core.store import DB_NAME, Store
 
 from .fakes import FakeHost, FakeRunner, FakeSession, ManualClock, wait_for
 from .test_delegate import DelegateTest
 from .test_orchestrator import START
 from .test_service import ServiceTest
+from .test_store import OLD_MESSAGES
 
 QUEUE = DispatchMode.QUEUE
 GIB = 2**30
@@ -337,6 +341,153 @@ class RestartTest(SlotsTest):
         await self.finish(waiting, self.session(waiting))
         self.assertEqual(self.started()[-1], (cut, True))
         self.assertEqual(self.session(cut).sent, [(CONTINUATION, QUEUE)])
+
+
+class HeldTest(SlotsTest):
+    async def stopping(self, grace: float = 0.2) -> str:
+        self.runner = FakeRunner(stop_on_interrupt=False)
+        await self.limit(1, stop_grace=grace)
+        thread_id, _ = await self.running()
+        self.clock.advance(1)
+        return thread_id
+
+    async def hold(self, thread_id: str, *sources: StartSource) -> None:
+        session = self.session(thread_id)
+        await self.orchestrator.stop({'id': self.next_id(), 'thread_id': thread_id})
+        await wait_for(lambda: session.interrupts == 1)
+        for source in sources:
+            self.clock.advance(1)
+            await self.orchestrator.send({'id': self.next_id(), 'thread_id': thread_id,
+                                          'message': source.name.lower()}, source=source)
+        self.assertEqual(self.orchestrator.get(thread_id)['reason'], 'stopping')
+        self.assertEqual([text for text, _ in self.pending(thread_id)],
+                         [source.name.lower() for source in sources])
+        self.clock.advance(1)
+
+    async def end_stop(self, thread_id: str, *sources: StartSource) -> str:
+        first = await self.start(StartSource.AGENT)
+        await self.hold(thread_id, *sources)
+        await self.orchestrator.drain()
+        self.assertEqual((self.state(thread_id), self.state(first)), ('queued', 'running'))
+        return first
+
+    async def restart(self) -> None:
+        await self.limit(1)
+        await self.orchestrator.recover()
+        await self.orchestrator.drain()
+
+    def sources(self, thread_id: str) -> list[tuple[str, int]]:
+        return self.store.connection.execute(
+            'SELECT command_id, source FROM messages WHERE thread_id = ? ORDER BY seq',
+            (thread_id,)).fetchall()
+
+    async def test_a_persons_message_held_across_a_stop_goes_before_an_earlier_agent(
+            self) -> None:
+        thread_id = await self.stopping()
+        first = await self.start(StartSource.AGENT)
+        self.clock.advance(1)
+        agent = await self.start(StartSource.AGENT)
+        await self.hold(thread_id, StartSource.PERSON)
+        await self.orchestrator.drain()
+        self.assertEqual([self.state(item) for item in (thread_id, first, agent)],
+                         ['queued', 'running', 'queued'])
+        self.assertEqual(self.start_row(thread_id), (StartSource.PERSON, iso(self.clock())))
+        self.assertLess(self.start_row(agent)[1], self.start_row(thread_id)[1])
+        await self.finish(first, self.session(first))
+        self.assertEqual(self.started()[-1], (thread_id, True))
+        self.assertEqual(self.session(thread_id).sent, [('person', QUEUE)])
+        self.assertEqual(self.state(agent), 'queued')
+
+    async def test_a_persons_message_held_across_a_restart_goes_before_an_earlier_agent(
+            self) -> None:
+        thread_id = await self.stopping(grace=5.0)
+        agent = await self.start(StartSource.AGENT)
+        await self.hold(thread_id, StartSource.PERSON)
+        await self.restart()
+        self.assertEqual(self.started()[-1], (thread_id, True))
+        self.assertEqual(self.session(thread_id).sent, [('person', QUEUE)])
+        self.assertEqual(self.state(agent), 'queued')
+        await self.finish(thread_id, self.session(thread_id))
+        self.assertEqual(self.started()[-1], (agent, False))
+
+    async def test_an_agents_held_message_ranks_as_an_agents_at_the_stop_end(self) -> None:
+        thread_id = await self.stopping()
+        await self.end_stop(thread_id, StartSource.AGENT)
+        self.assertEqual(self.start_row(thread_id), (StartSource.AGENT, iso(self.clock())))
+
+    async def test_an_agents_held_message_goes_after_a_person_and_before_a_schedule(
+            self) -> None:
+        thread_id = await self.stopping(grace=5.0)
+        person = await self.start(StartSource.PERSON)
+        self.clock.advance(1)
+        schedule = await self.start(StartSource.SCHEDULE)
+        await self.hold(thread_id, StartSource.AGENT)
+        await self.restart()
+        self.assertEqual(self.started()[-1], (person, False))
+        self.assertEqual(self.start_row(thread_id)[0], StartSource.AGENT)
+        await self.finish(person, self.session(person))
+        self.assertEqual(self.started()[-1], (thread_id, True))
+        self.assertEqual(self.state(schedule), 'queued')
+        await self.finish(thread_id, self.session(thread_id))
+        self.assertEqual(self.started()[-1], (schedule, False))
+
+    async def test_a_schedules_held_message_alone_ranks_as_a_schedules(self) -> None:
+        thread_id = await self.stopping()
+        await self.end_stop(thread_id, StartSource.SCHEDULE)
+        self.assertEqual(self.start_row(thread_id)[0], StartSource.SCHEDULE)
+
+    async def test_held_messages_rank_by_the_best_sender(self) -> None:
+        thread_id = await self.stopping()
+        first = await self.end_stop(thread_id, StartSource.AGENT, StartSource.PERSON)
+        self.assertEqual(self.start_row(thread_id)[0], StartSource.PERSON)
+        await self.finish(first, self.session(first))
+        self.assertEqual(self.started()[-1], (thread_id, True))
+        self.assertEqual(self.session(thread_id).sent, [('agent', QUEUE)])
+
+    async def test_a_held_message_in_an_old_store_queues_as_an_agents(self) -> None:
+        thread_id = await self.stopping(grace=5.0)
+        person = await self.start(StartSource.PERSON)
+        await self.hold(thread_id, StartSource.PERSON)
+        await self.orchestrator.close()
+        self.store.close()
+        db = sqlite3.connect(self.data_dir / DB_NAME)
+        db.executescript(
+            'ALTER TABLE messages RENAME TO messages_new;'
+            f'{OLD_MESSAGES};'
+            'INSERT INTO messages SELECT seq, thread_id, command_id, text, mode, priority, '
+            'created_at FROM messages_new;'
+            'DROP TABLE messages_new;')
+        db.close()
+        self.store = Store.open(self.data_dir, self.clock)
+        self.projects = Projects(self.store)
+        await self.restart()
+        self.assertEqual((self.state(person), self.state(thread_id)), ('running', 'queued'))
+        self.assertEqual(self.start_row(thread_id)[0], StartSource.AGENT)
+        self.assertEqual(self.pending(thread_id), [('person', 'steer')])
+
+    async def test_send_records_its_callers_source(self) -> None:
+        thread_id, _ = await self.running()
+        for source in StartSource:
+            await self.orchestrator.send({'id': f'send-{source.name}', 'thread_id': thread_id,
+                                          'message': 'later', 'mode': 'queue'}, source=source)
+        await self.orchestrator.drain()
+        self.assertEqual(self.sources(thread_id),
+                         [(f'send-{source.name}', source) for source in StartSource])
+
+    async def test_a_delegated_result_and_a_crash_continuation_are_agents(self) -> None:
+        parent_id, _ = await self.running()
+        child, session = await self.child(parent_id)
+        await self.finish(child['id'], session)
+        self.assertEqual(self.sources(parent_id), [(f'{child["id"]}:result', StartSource.AGENT)])
+        await self.limit(1)
+        crashed = await self.start()
+        waiting = await self.start()
+        self.session(crashed).exit(1)
+        await wait_for(lambda: len(self.events(crashed, EventType.TURN_RESULT)) == 1)
+        await self.orchestrator.drain()
+        self.assertEqual((self.state(crashed), self.state(waiting)), ('queued', 'running'))
+        self.assertEqual(self.sources(crashed),
+                         [(f'{crashed}:continuation:1', StartSource.AGENT)])
 
 
 class SourceTest(ServiceTest):

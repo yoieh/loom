@@ -80,6 +80,14 @@ def _plan(tx: sqlite3.Connection, workspace: object, project: ProjectInfo, proje
     return plan
 
 
+def _held(tx: sqlite3.Connection, thread_id: str) -> tuple[int, StartSource] | None:
+    found = tx.execute(
+        'SELECT seq, (SELECT min(source) FROM messages WHERE thread_id = ?) FROM messages '
+        'WHERE thread_id = ? ORDER BY priority DESC, seq LIMIT 1', (thread_id, thread_id),
+    ).fetchone()
+    return None if found is None else (found[0], StartSource(found[1]))
+
+
 def _reason(error: BaseException) -> str:
     if isinstance(error, LoomError):
         return error.message
@@ -239,7 +247,7 @@ class Orchestrator:
             row = fetch(tx, thread_id)
             if row['state'] in ENDED:
                 raise LoomError('conflict', f'thread {thread_id} is {row["state"]}')
-            seq = self._add_message(tx, thread_id, command_id, message, mode)
+            seq = self._add_message(tx, thread_id, command_id, message, mode, source=source)
             return thread_info(row)
 
         receipt = self.store.command(command_id, CallName.THREADS_SEND, change)
@@ -328,19 +336,17 @@ class Orchestrator:
             for rank, at, thread_id in threads.start_queue(self.store.connection)]
         now = iso(self.store.clock())
         for row in threads.select(self.store.connection):
-            found = self.store.connection.execute(
-                'SELECT seq FROM messages WHERE thread_id = ? '
-                'ORDER BY priority DESC, seq LIMIT 1', (row['id'],),
-            ).fetchone()
+            found = _held(self.store.connection, row['id'])
             if (row['state'] in LIVE and row['state'] != ThreadState.QUEUED
                     and found is not None):
-                starts.append((StartSource.AGENT, now, row['id'], found[0]))
-        for _, _, thread_id, seq in sorted(starts):
+                seq, source = found
+                starts.append((source, now, row['id'], seq))
+        for rank, _, thread_id, seq in sorted(starts):
             if seq is None:
                 self._submit_start(thread_id)
             else:
-                self.lanes.submit(thread_id, lambda thread_id=thread_id, seq=seq:
-                                  self._deliver(thread_id, seq, StartSource.AGENT))
+                self.lanes.submit(thread_id, lambda thread_id=thread_id, seq=seq, rank=rank:
+                                  self._deliver(thread_id, seq, StartSource(rank)))
         if self._idle_task is None and not self._closing:
             self._idle_task = asyncio.get_running_loop().create_task(
                 self._check_idle(), name='loom-idle')
@@ -383,11 +389,13 @@ class Orchestrator:
             threads.clear_stop(self.store, tx, thread_id)
 
     def _add_message(self, tx: sqlite3.Connection, thread_id: str, command_id: str,
-                     text: str, mode: DispatchMode, priority: int = 0) -> int:
+                     text: str, mode: DispatchMode, priority: int = 0, *,
+                     source: StartSource = StartSource.AGENT) -> int:
         cursor = tx.execute(
-            'INSERT INTO messages (thread_id, command_id, text, mode, priority, created_at) '
-            'VALUES (?, ?, ?, ?, ?, ?)',
-            (thread_id, command_id, text, mode, priority, iso(self.store.clock())),
+            'INSERT INTO messages '
+            '(thread_id, command_id, text, mode, priority, created_at, source) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (thread_id, command_id, text, mode, priority, iso(self.store.clock()), int(source)),
         )
         return cursor.lastrowid
 
@@ -709,12 +717,9 @@ class Orchestrator:
         with self.store.transaction() as tx:
             threads.clear_stop(self.store, tx, thread_id)
             live = fetch(tx, thread_id)['state'] not in ENDED
-            found = tx.execute(
-                'SELECT seq FROM messages WHERE thread_id = ? '
-                'ORDER BY priority DESC, seq LIMIT 1', (thread_id,),
-            ).fetchone()
+            found = _held(tx, thread_id)
         if live and found is not None:
-            await self._deliver(thread_id, found[0], StartSource.AGENT)
+            await self._deliver(thread_id, *found)
         if live:
             self._hand_over(thread_id)
 
