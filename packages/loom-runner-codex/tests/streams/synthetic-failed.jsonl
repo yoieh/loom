@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a163a1-4140-78d3-b4ab-ee2d93e984ad"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I could not reach the model."}}
+{"type":"error","message":"stream disconnected before completion"}
+{"type":"turn.failed","error":{"message":"stream disconnected before completion"}}
