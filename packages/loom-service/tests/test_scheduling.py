@@ -14,10 +14,11 @@ from loom_service.config import StartError
 from loom_service.scheduling import ServiceHost
 from loom_service.serve import start
 
+from .fake_claude import ENDLESS
 from .support import TIMEOUT, Connection, ServerCase, clean_env, run_client
 
-INFO_KEYS = {'id', 'trigger', 'action', 'text', 'thread_id', 'project_id', 'title', 'by',
-             'paused', 'next_run', 'created_at'}
+INFO_KEYS = {'id', 'trigger', 'action', 'text', 'thread_id', 'project_id', 'title',
+             'concurrency_key', 'on_busy', 'settle', 'by', 'paused', 'next_run', 'created_at'}
 FORBIDDEN_MAKERS = (Maker(None, True, 's1'), Maker('t1', True, 's1'), Maker(None, False, 's1'))
 
 
@@ -224,6 +225,31 @@ class RunTest(ScheduleCase):
         fired = await self.wait_events(conn, 'schedule.fired', thread['id'])
         self.assertEqual(fired[0]['data'], {
             'schedule_id': added['id'], 'action': 'post', 'text': 'scheduled', 'late': False})
+
+    async def test_a_keyed_launch_waits_for_the_holder_and_settles_on_its_result(self) -> None:
+        conn = await self.connect()
+        await self.add_project(conn)
+        holder = await self.launch(conn, ENDLESS, concurrency_key='k')
+        await self.spawned(holder['id'])
+        added = await self.add_schedule(conn, -5, action='launch', project_id='repo',
+                                        text='from a schedule', concurrency_key='k',
+                                        settle='on_result')
+        self.assertEqual((added['concurrency_key'], added['on_busy'], added['settle']),
+                         ('k', 'queue', 'on_result'))
+        fired = await self.fired(conn)
+        scheduled = fired[0]['thread_id']
+        await asyncio.sleep(0.2)
+        waiting = await conn.ok('threads.get', thread_id=scheduled)
+        self.assertEqual((waiting['state'], waiting['concurrency_key'], waiting['settle'],
+                          waiting['origin']),
+                         ('queued', 'k', 'on_result', f'schedule:{added["id"]}'))
+        self.assertEqual([event['type'] for event in await self.all_events(
+            conn, thread_id=scheduled) if event['type'].startswith('turn.')], [])
+        await conn.ok('threads.settle', id=conn.new_id(), thread_id=holder['id'])
+        settled = await self.wait_events(conn, 'thread.settled', scheduled)
+        self.assertEqual(settled[0]['data'], {'result': 'from a schedule'})
+        self.assertEqual((await conn.ok('threads.get', thread_id=scheduled))['state'],
+                         'settled')
 
 
 class CallerTest(ScheduleCase):

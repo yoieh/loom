@@ -273,6 +273,9 @@ Most calls answer with a thread, a project or a schedule.
 | `thread_id` | string or null | The thread a `post` goes into, or the thread a `notify` is about. null for a `launch`, and for a `notify` with no thread. |
 | `project_id` | string or null | The project a `launch` starts its threads in; for a schedule with a thread, the thread's project. null for a `notify` with neither. |
 | `title` | string or null | null means none was given; a `launch` then takes its thread's title from the text. |
+| `concurrency_key` | string or null | The key a `launch` passes to `threads.launch` (see Concurrency keys under [`threads.launch`](#threadslaunch)), or null for none. |
+| `on_busy` | string or null | `queue` or `coalesce` for a schedule with a key (`queue` when none was given); null when it has no key. |
+| `settle` | string or null | `on_result` when each thread it launches settles after its first result, or null. |
 | `by` | string or null | The agent thread that made it; null when a person did (see [Calls a schedule makes](#calls-a-schedule-makes)). |
 | `paused` | bool | `true` once `schedules.pause` stopped it. |
 | `next_run` | string or null | When it is next due, ISO 8601, UTC. null when it is paused, and once an `at` has had its one run. |
@@ -824,7 +827,12 @@ skipped, not from when it was due, so it never catches up with a burst.
 - `launch`: starts a new thread in `project_id` with `threads.launch`. The text is its first
   message. Its title is the schedule's `title`, or else the text's first non-empty line, cut at
   80 characters. Its `origin` is `schedule:<schedule id>`. It gets the default workspace (a new
-  worktree) and the project's mode. `launch` needs `project_id` and takes no `thread_id`.
+  worktree) and the project's mode. `launch` needs `project_id` and takes no `thread_id`. A
+  schedule with `concurrency_key`, `on_busy` or `settle` passes them to `threads.launch`, so its
+  thread waits for, or joins, the thread working on the key and can settle after its first
+  result (see Concurrency keys and Settle on result under [`threads.launch`](#threadslaunch)).
+  Without them it launches as before. The Overlap rule below still applies: while the thread
+  the last run launched, or joined, waits `queued` on its key, the next run is skipped.
 - `notify`: makes no call. The run only sends a [`schedule.fired`](#schedulefired) event, for a
   client such as Thread Voice to speak. Its thread is `thread_id`, or the caller's own, or none.
 
@@ -887,6 +895,9 @@ Adds a schedule (§7). See [How schedules run](#how-schedules-run) for the trigg
 | `thread_id` | string | For `post`, the thread to post into; for `notify`, the thread it is about. Default: the caller's own thread. Not with `launch`. |
 | `project_id` | string | Required for `launch`. With a thread, it must be the thread's project, which is the default. |
 | `title` | string | Not empty. For `launch`, the title of each thread it starts. |
+| `concurrency_key` | string | Only with `launch`. 1 to 200 characters; each run passes it to `threads.launch`. Default: no key. |
+| `on_busy` | string | Only with `launch` and `concurrency_key`: `"queue"` (default) or `"coalesce"`, passed to `threads.launch`. |
+| `settle` | string | Only with `launch`: `"on_result"`, passed to `threads.launch`. Default: each thread goes `idle` after its result. |
 
 A param given as null is refused. The thread and the project must exist when the schedule is
 added.
@@ -920,6 +931,12 @@ runs right after the answer.
 | A `post` from a person without `thread_id` | `invalid` | `thread_id is required to post from outside a thread` |
 | A `launch` with `thread_id` | `invalid` | `thread_id does not go with launch` |
 | A `launch` without `project_id` | `invalid` | `project_id is required to launch` |
+| `concurrency_key`, `on_busy` or `settle` without `action: "launch"` | `invalid` | `<field> goes only with launch`, naming the first of the three given |
+| `concurrency_key`, `on_busy` or `settle` is null | `invalid` | `<field> must not be null` |
+| A non-string, empty or longer `concurrency_key` | `invalid` | `concurrency_key must be a string of 1 to 200 characters` |
+| A bad `on_busy` | `invalid` | `on_busy must be one of queue, coalesce` |
+| `on_busy` without `concurrency_key` | `invalid` | `on_busy needs concurrency_key` |
+| A bad `settle` | `invalid` | `settle must be one of on_result` |
 | `project_id` is not the thread's | `invalid` | `project_id is not the thread's project` |
 | The thread does not exist | `not_found` | `no thread with id '<thread_id>'` |
 | The project does not exist | `not_found` | `no project with id '<project_id>'` |
@@ -927,7 +944,7 @@ runs right after the answer.
 
 ```json
 {"v": "v1", "call": "schedules.add", "params": {"id": "c3", "trigger": {"type": "interval", "everyMs": 3600000}, "text": "Run the tests and report what fails.", "thread_id": "8a63…"}}
-{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"by":null,"paused":false,"next_run":"2026-10-24T23:31:13.320+00:00","created_at":"2026-10-24T22:31:13.320+00:00"}}
+{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"concurrency_key":null,"on_busy":null,"settle":null,"by":null,"paused":false,"next_run":"2026-10-24T23:31:13.320+00:00","created_at":"2026-10-24T22:31:13.320+00:00"}}
 ```
 
 Added just after midnight on Sunday in Stockholm, a weekday stand-up at 9:00 is next due on
@@ -935,7 +952,7 @@ Monday at 08:00 UTC, because the clocks go back an hour that night:
 
 ```json
 {"v": "v1", "call": "schedules.add", "params": {"id": "c4", "trigger": {"type": "fixed_time", "timeOfDay": "9:00", "weekdays": [1, 2, 3, 4, 5]}, "text": "Write the stand-up notes.", "action": "launch", "project_id": "demo-repo", "title": "Stand-up notes"}}
-{"ok":true,"result":{"id":"0a5f…","trigger":{"type":"fixed_time","timeOfDay":"9:00","weekdays":[1,2,3,4,5]},"action":"launch","text":"Write the stand-up notes.","thread_id":null,"project_id":"demo-repo","title":"Stand-up notes","by":null,"paused":false,"next_run":"2026-10-26T08:00:00.000+00:00","created_at":"2026-10-24T22:31:13.342+00:00"}}
+{"ok":true,"result":{"id":"0a5f…","trigger":{"type":"fixed_time","timeOfDay":"9:00","weekdays":[1,2,3,4,5]},"action":"launch","text":"Write the stand-up notes.","thread_id":null,"project_id":"demo-repo","title":"Stand-up notes","concurrency_key":null,"on_busy":null,"settle":null,"by":null,"paused":false,"next_run":"2026-10-26T08:00:00.000+00:00","created_at":"2026-10-24T22:31:13.342+00:00"}}
 ```
 
 ```json
@@ -960,7 +977,7 @@ until they are removed.
 
 ```json
 {"v": "v1", "call": "schedules.list", "params": {"project_id": "demo"}}
-{"ok":true,"result":[{"id":"403b…","trigger":{"type":"fixed_time","timeOfDay":"9:00","weekdays":[1,2,3,4,5]},"action":"launch","text":"Write the stand-up notes.","thread_id":null,"project_id":"demo","title":"Stand-up notes","by":null,"paused":false,"next_run":"2026-10-26T08:00:00.000+00:00","created_at":"2026-10-24T22:33:10.399+00:00"}]}
+{"ok":true,"result":[{"id":"403b…","trigger":{"type":"fixed_time","timeOfDay":"9:00","weekdays":[1,2,3,4,5]},"action":"launch","text":"Write the stand-up notes.","thread_id":null,"project_id":"demo","title":"Stand-up notes","concurrency_key":null,"on_busy":null,"settle":null,"by":null,"paused":false,"next_run":"2026-10-26T08:00:00.000+00:00","created_at":"2026-10-24T22:33:10.399+00:00"}]}
 ```
 
 ### `schedules.pause`
@@ -980,7 +997,7 @@ missing (`schedule_id is required`) or not a string (`schedule_id must be a stri
 
 ```json
 {"v": "v1", "call": "schedules.pause", "params": {"id": "c8", "schedule_id": "2cbf…"}}
-{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"by":null,"paused":true,"next_run":null,"created_at":"2026-10-24T22:31:13.320+00:00"}}
+{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"concurrency_key":null,"on_busy":null,"settle":null,"by":null,"paused":true,"next_run":null,"created_at":"2026-10-24T22:31:13.320+00:00"}}
 ```
 
 ### `schedules.remove`
@@ -999,7 +1016,7 @@ missing (`schedule_id is required`) or not a string (`schedule_id must be a stri
 
 ```json
 {"v": "v1", "call": "schedules.remove", "params": {"id": "c9", "schedule_id": "2cbf…"}}
-{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"by":null,"paused":true,"next_run":null,"created_at":"2026-10-24T22:31:13.320+00:00"}}
+{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"concurrency_key":null,"on_busy":null,"settle":null,"by":null,"paused":true,"next_run":null,"created_at":"2026-10-24T22:31:13.320+00:00"}}
 ```
 
 ```json

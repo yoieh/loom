@@ -125,6 +125,9 @@ class SchedulesAddParams(TypedDict):
     thread_id: NotRequired[str]
     project_id: NotRequired[str]
     title: NotRequired[str]
+    concurrency_key: NotRequired[str]
+    on_busy: NotRequired[OnBusy]
+    settle: NotRequired[Settle]
 
 
 class SchedulesListParams(TypedDict):
@@ -222,6 +225,9 @@ class ScheduleInfo(TypedDict):
     thread_id: str | None
     project_id: str | None
     title: str | None
+    concurrency_key: str | None
+    on_busy: OnBusy | None
+    settle: Settle | None
     by: str | None
     paused: bool
     next_run: str | None

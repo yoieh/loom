@@ -197,9 +197,10 @@ class RunnerSession(Protocol):
   - `{"type":"webhook"}`: later, once Loom can be reached from outside (with Thread Voice's
     relay, its §74). It then needs a per-schedule secret.
 - **Actions**: `post` (into a thread, which wakes it), `launch` (a new thread with the prompt,
-  T3's `bindToCurrentThread: false`), or `notify` (only a `schedule.fired` event with the text
-  and who set it; Thread Voice speaks it as that persona). The default is `post` into the
-  thread that made it. A reminder is `notify`.
+  T3's `bindToCurrentThread: false`; it can carry a concurrency key with `on_busy`, and
+  `settle: "on_result"`, which it passes on to `threads.launch`, §15), or `notify` (only a
+  `schedule.fired` event with the text and who set it; Thread Voice speaks it as that
+  persona). The default is `post` into the thread that made it. A reminder is `notify`.
 - **The loop.** A generic tick (T3's `Scheduler.ts`) that sources register on; the schedules
   source keeps a heap by next run and wakes at the first one due, but at least every 30 s, so
   a clock jump (WSL after sleep, a laptop lid) is noticed. The schedules are rows in a

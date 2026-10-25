@@ -8,6 +8,22 @@ from .fakes import AGENT, PERSON, UNKNOWN, SchedulerCase
 
 ID_MESSAGE = 'id must be a string of 1 to 200 characters'
 BAD_IDS = ({}, {'id': None}, {'id': 7}, {'id': 'x' * 201})
+KEY_MESSAGE = 'concurrency_key must be a string of 1 to 200 characters'
+LAUNCH = {'action': 'launch', 'thread_id': ..., 'project_id': 'p1'}
+OLD_SCHEDULES = '''CREATE TABLE schedules (
+    id TEXT PRIMARY KEY,
+    trigger TEXT NOT NULL,
+    action TEXT NOT NULL,
+    text TEXT NOT NULL,
+    thread_id TEXT,
+    project_id TEXT,
+    title TEXT,
+    by TEXT,
+    verified INTEGER NOT NULL,
+    paused INTEGER NOT NULL DEFAULT 0,
+    next_run TEXT,
+    created_at TEXT NOT NULL
+)'''
 
 
 class MethodsTest(SchedulerCase):
@@ -109,6 +125,40 @@ class AddRefusalTest(SchedulerCase):
             'not_found',
         )
 
+    async def test_launch_options_are_checked(self) -> None:
+        await self.assert_refused([({**LAUNCH, **fields}, message) for fields, message in [
+            ({'concurrency_key': None}, 'concurrency_key must not be null'),
+            ({'concurrency_key': 3}, KEY_MESSAGE),
+            ({'concurrency_key': ''}, KEY_MESSAGE),
+            ({'concurrency_key': 'k' * 201}, KEY_MESSAGE),
+            ({'concurrency_key': 'k', 'on_busy': None}, 'on_busy must not be null'),
+            ({'concurrency_key': 'k', 'on_busy': 'wait'},
+             'on_busy must be one of queue, coalesce'),
+            ({'concurrency_key': 'k', 'on_busy': 1}, 'on_busy must be one of queue, coalesce'),
+            ({'on_busy': 'queue'}, 'on_busy needs concurrency_key'),
+            ({'on_busy': 'coalesce'}, 'on_busy needs concurrency_key'),
+            ({'settle': None}, 'settle must not be null'),
+            ({'settle': 'idle'}, 'settle must be one of on_result'),
+            ({'settle': 1}, 'settle must be one of on_result'),
+        ]])
+
+    async def test_launch_options_go_only_with_launch(self) -> None:
+        actions = [{'action': ...}, {'action': 'post'},
+                   {'action': 'notify', 'thread_id': ...}]
+        options = [
+            ({'concurrency_key': 'k'}, 'concurrency_key'),
+            ({'on_busy': 'queue'}, 'on_busy'),
+            ({'settle': 'on_result'}, 'settle'),
+            ({'settle': None}, 'settle'),
+            ({'concurrency_key': 'k', 'on_busy': 'coalesce', 'settle': 'on_result'},
+             'concurrency_key'),
+            ({'settle': 'on_result', 'on_busy': 'queue'}, 'on_busy'),
+        ]
+        await self.assert_refused([
+            ({**action, **fields}, f'{field} goes only with launch')
+            for action in actions for fields, field in options
+        ])
+
     async def test_notify_with_an_unknown_project_is_not_found(self) -> None:
         await self.assert_refused(
             [({'action': 'notify', 'thread_id': ..., 'project_id': 'p9'},
@@ -151,6 +201,37 @@ class AddTest(SchedulerCase):
         alone = await self.add('a3', PERSON, action='notify', thread_id=...)
         self.assertEqual((alone['thread_id'], alone['project_id']), (None, None))
 
+    async def test_launch_shows_its_options_and_list_shows_the_same(self) -> None:
+        info = await self.add(**LAUNCH, concurrency_key='inbox:p1', on_busy='coalesce',
+                              settle='on_result')
+        self.assertEqual((info['concurrency_key'], info['on_busy'], info['settle']),
+                         ('inbox:p1', 'coalesce', 'on_result'))
+        self.assertEqual(await self.call('schedules.list', {}), [info])
+
+    async def test_a_key_without_on_busy_queues_and_no_key_shows_nulls(self) -> None:
+        keyed = await self.add('a1', **LAUNCH, concurrency_key='pm:p1')
+        self.assertEqual((keyed['concurrency_key'], keyed['on_busy'], keyed['settle']),
+                         ('pm:p1', 'queue', None))
+        settles = await self.add('a2', **LAUNCH, settle='on_result')
+        self.assertEqual((settles['concurrency_key'], settles['on_busy'], settles['settle']),
+                         (None, None, 'on_result'))
+        for number, fields in enumerate([LAUNCH, {}, {'action': 'notify'}]):
+            with self.subTest(fields=fields):
+                info = await self.add(f'b{number}', **fields)
+                self.assertEqual((info['concurrency_key'], info['on_busy'], info['settle']),
+                                 (None, None, None))
+
+    async def test_a_key_of_two_hundred_characters_is_taken(self) -> None:
+        info = await self.add(**LAUNCH, concurrency_key='k' * 200)
+        self.assertEqual(info['concurrency_key'], 'k' * 200)
+        self.assertEqual(
+            await self.refused('schedules.add', {
+                'id': 'a2', 'trigger': {'type': 'interval', 'everyMs': 60_000}, 'text': 'x',
+                'action': 'launch', 'project_id': 'p1', 'concurrency_key': 'k' * 201,
+            }), KEY_MESSAGE,
+        )
+        self.assertEqual(self.schedule_rows(), 1)
+
     async def test_lookups_carry_the_caller_and_no_schedule(self) -> None:
         await self.add(caller=AGENT, thread_id=...)
         self.assertEqual([call.call for call in self.host.calls],
@@ -184,6 +265,34 @@ class AddTest(SchedulerCase):
         self.assertEqual(self.scheduler.tick.delay(), 30.0)
         self.assertEqual(self.scheduler.next_wake().isoformat(timespec='milliseconds'),
                          info['next_run'])
+
+
+class OldStoreTest(SchedulerCase):
+    async def test_an_old_store_gains_the_columns_and_fires_as_before(self) -> None:
+        self.host.connection.execute('DROP TABLE schedules')
+        self.host.connection.execute(OLD_SCHEDULES)
+        self.host.connection.execute(
+            'INSERT INTO schedules (id, trigger, action, text, thread_id, project_id, title, '
+            'by, verified, paused, next_run, created_at) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ('s-old', '{"type": "interval", "everyMs": 60000}', 'launch', 'nightly', None,
+             'p1', None, None, 1, 0, '2026-10-23T07:01:00.000+00:00',
+             '2026-10-23T07:00:00.000+00:00'),
+        )
+        self.scheduler = self.new_scheduler()
+        self.scheduler = self.new_scheduler()
+        columns = [row[1] for row in self.host.rows('PRAGMA table_info(schedules)')]
+        self.assertEqual(columns[-3:], ['concurrency_key', 'on_busy', 'settle'])
+        [info] = await self.call('schedules.list', {})
+        self.assertEqual((info['id'], info['concurrency_key'], info['on_busy'], info['settle']),
+                         ('s-old', None, None, None))
+        await self.run_pass(minutes=1)
+        [launch] = self.host.calls_of(CallName.THREADS_LAUNCH)
+        self.assertEqual(launch.params, {
+            'id': 'schedule:s-old:2026-10-23T07:01:00.000+00:00', 'title': 'nightly',
+            'message': 'nightly', 'project_id': 'p1', 'origin': 'schedule:s-old',
+        })
+        self.assertEqual(self.runs('s-old')[0][2], 'fired')
 
 
 class ListTest(SchedulerCase):

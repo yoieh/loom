@@ -14,7 +14,7 @@ from loom_contracts.triggers import ScheduleAction
 
 from . import timing
 from .host import Maker, ScheduleError, SchedulerHost
-from .params import AddRequest, check_add, check_list, check_target
+from .params import LAUNCH_OPTIONS, AddRequest, check_add, check_list, check_target
 from .tick import Tick
 from .timing import iso, parse_iso
 
@@ -38,6 +38,9 @@ SCHEMA: list[str] = [
         thread_id TEXT,
         project_id TEXT,
         title TEXT,
+        concurrency_key TEXT,
+        on_busy TEXT,
+        settle TEXT,
         by TEXT,
         verified INTEGER NOT NULL,
         paused INTEGER NOT NULL DEFAULT 0,
@@ -56,9 +59,11 @@ SCHEMA: list[str] = [
     )''',
     'CREATE INDEX IF NOT EXISTS schedule_runs_schedule ON schedule_runs (schedule_id, id)',
 ]
+ADDED_COLUMNS = ('concurrency_key TEXT', 'on_busy TEXT', 'settle TEXT')
 
-COLUMNS = ('id', 'trigger', 'action', 'text', 'thread_id', 'project_id', 'title', 'by',
-           'verified', 'paused', 'next_run', 'created_at')
+COLUMNS = ('id', 'trigger', 'action', 'text', 'thread_id', 'project_id', 'title',
+           'concurrency_key', 'on_busy', 'settle', 'by', 'verified', 'paused', 'next_run',
+           'created_at')
 SELECT = f'SELECT {", ".join(COLUMNS)} FROM schedules'
 
 Method = Callable[[object, object], Awaitable[object]]
@@ -67,6 +72,12 @@ Method = Callable[[object, object], Awaitable[object]]
 class Caller(Protocol):
     thread_id: str | None
     verified: bool
+
+
+def _add_column(tx: sqlite3.Connection, column: str) -> None:
+    columns = {row[1] for row in tx.execute('PRAGMA table_info(schedules)')}
+    if column.split()[0] not in columns:
+        tx.execute(f'ALTER TABLE schedules ADD COLUMN {column}')
 
 
 def _row(row: tuple | None) -> dict | None:
@@ -82,6 +93,9 @@ def _info(row: dict) -> ScheduleInfo:
         'thread_id': row['thread_id'],
         'project_id': row['project_id'],
         'title': row['title'],
+        'concurrency_key': row['concurrency_key'],
+        'on_busy': row['on_busy'],
+        'settle': row['settle'],
         'by': row['by'],
         'paused': bool(row['paused']),
         'next_run': row['next_run'],
@@ -127,6 +141,8 @@ class Scheduler:
         with self.host.transaction() as tx:
             for statement in SCHEMA:
                 tx.execute(statement)
+            for column in ADDED_COLUMNS:
+                _add_column(tx, column)
             tx.execute('DELETE FROM schedule_runs WHERE at < ?', (cutoff,))
         with self.host.transaction() as tx:
             rows = tx.execute(
@@ -195,7 +211,8 @@ class Scheduler:
                 f'INSERT INTO schedules ({", ".join(COLUMNS)}) '
                 f'VALUES ({", ".join("?" for _ in COLUMNS)})',
                 (schedule_id, json.dumps(request.trigger), request.action.value, request.text,
-                 request.thread_id, project_id, request.title, by, int(verified), 0,
+                 request.thread_id, project_id, request.title, request.concurrency_key,
+                 request.on_busy, request.settle, by, int(verified), 0,
                  None if first is None else iso(first), iso(now)),
             )
             return _info(_fetch(tx, schedule_id))
@@ -297,10 +314,13 @@ class Scheduler:
                     'mode': 'queue',
                 }, maker)
                 return FIRED, row['thread_id'], None
-            thread = await self.host.call(CallName.THREADS_LAUNCH, {
+            params = {
                 'id': command_id, 'title': _title(row), 'message': message,
                 'project_id': row['project_id'], 'origin': f'schedule:{row["id"]}',
-            }, maker)
+            }
+            params.update((field, row[field]) for field in LAUNCH_OPTIONS
+                          if row[field] is not None)
+            thread = await self.host.call(CallName.THREADS_LAUNCH, params, maker)
             return FIRED, thread['id'], None
         except ScheduleError as error:
             return FAILED, None, error.message[:MAX_REASON]

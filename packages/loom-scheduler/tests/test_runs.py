@@ -57,6 +57,30 @@ class FireTest(SchedulerCase):
                      'late': False},
                 ))
 
+    async def test_launch_passes_its_key_on_busy_and_settle_only_when_set(self) -> None:
+        keyed = await self.add('a1', action='launch', thread_id=..., project_id='p1',
+                               concurrency_key='pm:p1', settle='on_result')
+        coalescing = await self.add('a2', action='launch', thread_id=..., project_id='p1',
+                                    concurrency_key='inbox:p1', on_busy='coalesce')
+        plain = await self.add('a3', action='launch', thread_id=..., project_id='p1')
+        await self.run_pass(minutes=1)
+        sent = {call.params['origin']: call.params
+                for call in self.host.calls_of(CallName.THREADS_LAUNCH)}
+        self.assertEqual(sent[f'schedule:{keyed["id"]}'], {
+            'id': f'schedule:{keyed["id"]}:{DUE}', 'title': 'check the build',
+            'message': 'check the build', 'project_id': 'p1',
+            'origin': f'schedule:{keyed["id"]}', 'concurrency_key': 'pm:p1',
+            'on_busy': 'queue', 'settle': 'on_result',
+        })
+        coalesced = sent[f'schedule:{coalescing["id"]}']
+        self.assertEqual((coalesced['concurrency_key'], coalesced['on_busy']),
+                         ('inbox:p1', 'coalesce'))
+        self.assertNotIn('settle', coalesced)
+        self.assertEqual(set(sent[f'schedule:{plain["id"]}']),
+                         {'id', 'title', 'message', 'project_id', 'origin'})
+        for info in (keyed, coalescing, plain):
+            self.assertEqual(self.runs(info['id'])[0][2], 'fired')
+
     async def test_notify_only_appends_the_event(self) -> None:
         info = await self.add(caller=AGENT, action='notify', thread_id=...)
         alone = await self.add('a2', action='notify', thread_id=...)
