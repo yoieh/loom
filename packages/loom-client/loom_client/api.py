@@ -133,7 +133,13 @@ class Client:
 
     def call(self, name: str, params: dict) -> object:
         with self._connect() as sock, sock.makefile('rb') as file:
-            return parse_answer(self._send(sock, file, name, params))
+            try:
+                return parse_answer(self._send(sock, file, name, params))
+            except LoomConnectionError as error:
+                command_id = params.get('id')
+                if isinstance(command_id, str):
+                    error.command_id = command_id
+                raise
 
     def follow_events(self, after: int = 0, thread_id: str | None = None, *,
                       audience: str | None = None) -> Iterator[Event]:

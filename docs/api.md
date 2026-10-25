@@ -1454,7 +1454,7 @@ is the event object, so any language can follow Loom by reading the CLI's stdout
 | 0 | Done. |
 | 1 | The API answered `ok: false`. stderr gets `loom: <code>: <message>`; with `--json`, stdout also gets `{"error": {"code": ..., "message": ...}}`. |
 | 2 | A usage error: an unknown command, a missing argument, an option outside its choices. |
-| 3 | Loom can't be reached, the connection dropped or the answer broke the protocol. stderr gets `loom: <what happened>`; a lost follow adds `resume with --after <last event id>`. |
+| 3 | Loom can't be reached, the connection dropped or the answer broke the protocol. stderr gets `loom: <what happened>`; a lost follow adds `resume with --after <last event id>`, and a write command whose connection was lost after it reached Loom adds `retry with --id <the id it sent>`. |
 | 130 | Ctrl-C, without a traceback. |
 
 ```text
