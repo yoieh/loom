@@ -262,8 +262,8 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
 
 | Tool | Does | Like T3's |
 |---|---|---|
-| `launch_thread {title, message, project_id?, workspace?, runner?, model?, audience?}` | a new top-level thread | `t3_thread_launch` |
-| `delegate {task, workspace?, runner?, model?}` → `task_id` | a child thread; its last `result` is posted back to the parent | `delegate_task` |
+| `launch_thread {title, message, project_id?, workspace?, runner?, model?, audience?, concurrency_key?, on_busy?, settle?}` | a new top-level thread | `t3_thread_launch` |
+| `delegate {task, workspace?, runner?, model?, concurrency_key?, on_busy?}` → `task_id` | a child thread; its last `result` is posted back to the parent | `delegate_task` |
 | `task_status {task_id}`, `task_cancel {task_id}` | read or stop a child | same |
 | `thread_send {thread_id, message, mode?}` | a message into a thread | `t3_thread_send` |
 | `threads {project_id?}` | threads and their states | `t3_thread_list` |
@@ -411,10 +411,14 @@ only the parts below.
   (`"coalesce"`), so one project manager works on a project at a time and a burst of events
   becomes one thread. A thread holds its key until it settles, fails or is stopped, so a
   stopped or failed thread does not hold it; then the next waiting launch starts, oldest first.
-  `coalesce` joins only a waiting launch of the same project and parent.
-- **One goal, then settled.** A launch with `settle: "on_result"` settles after its first
-  `result` instead of going idle. Its `thread.settled` event carries the result, so the next
-  step can trigger on it.
+  `coalesce` joins only a waiting launch of the same project and parent. A joining launch's
+  `title`, `workspace`, `runner`, `model`, `requests`, `origin`, `audience` and `settle` are
+  checked but not used: the waiting thread keeps its own.
+- **One goal, then settled.** A launch with `settle: "on_result"` settles on its first
+  `completed` or `failed` result instead of going idle. A `stopped` result, or any result while
+  a stop is in progress, does not settle it: the thread goes idle, and the `completed` or
+  `failed` result of a later message settles it. Its `thread.settled` event carries the result,
+  so the next step can trigger on it.
 - **Audience.** A thread is `person` (a person talks with it) or `agent` (the default). Thread
   Voice lists only `person` threads; the CLI sees all. An agent thread that needs a person asks
   through `thread-voice-mcp` as now, or is changed to `person` with `threads.update`. An event
