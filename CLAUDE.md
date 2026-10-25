@@ -70,4 +70,7 @@ The factory's steps also read this repo's rules in `docs/agent-rules/`:
 `code.md` for building and code review, `security.md` for the security
 review, and `review.md` for every review.
 
-The repo has no remote. Never push until the user sets one up.
+The repo's `origin` is a private backup, github.com/yoieh/loom (the user,
+2026-10-25). The factory has no code host for it, so runs still end `no_pr`
+and are merged into main here; after such a merge, push main
+(`git push origin main`). Never push any other branch.
