@@ -446,6 +446,13 @@ class ArgumentCheckTest(ToolsCase):
                     check_arguments(tool, {**arguments, 'cause': value})
                 self.assertEqual(str(caught.exception), 'cause must be an integer')
 
+    def test_the_runner_text_names_each_runner(self) -> None:
+        for name in ('launch_thread', 'delegate'):
+            with self.subTest(tool=name):
+                runner = BY_NAME[name].listing()['inputSchema']['properties']['runner']
+                self.assertEqual(runner['description'],
+                                 'The agent that runs it: claude, codex or t3.')
+
 
 class OwnTaskTest(ToolsCase):
     def test_a_thread_that_is_not_a_child_of_the_caller(self) -> None:

@@ -146,6 +146,19 @@ class ConfigTest(unittest.TestCase):
             with self.subTest(config=text):
                 self.assert_refused(text, f'{key} must be a string')
 
+    def test_the_t3_keys_default_to_none_and_load_as_strings(self) -> None:
+        self.assertEqual((Config().t3_home, Config().t3_bin), (None, None))
+        config = self.load('claude_bin = "/opt/claude"\n')
+        self.assertEqual((config.t3_home, config.t3_bin), (None, None))
+        config = self.load('t3_home = "/t3-home"\nt3_bin = "/opt/t3"\n')
+        self.assertEqual((config.t3_home, config.t3_bin), ('/t3-home', '/opt/t3'))
+
+    def test_the_t3_keys_refuse_anything_but_a_string(self) -> None:
+        for text in ('t3_home = 1', 't3_home = true', 't3_bin = ["/x"]', 't3_bin = 1.5'):
+            key = text.split(' ')[0]
+            with self.subTest(config=text):
+                self.assert_refused(text, f'{key} must be a string')
+
     def test_an_unreadable_path_is_refused(self) -> None:
         self.path.mkdir()
         with self.assertRaises(StartError) as caught:
