@@ -80,6 +80,7 @@ source = { editable = "packages/loom-service" }
 dependencies = [
     { name = "loom-core" },
     { name = "loom-runner-claude" },
+    { name = "loom-runner-codex" },
     { name = "loom-scheduler" },
 ]
 
@@ -87,5 +88,6 @@ dependencies = [
 requires-dist = [
     { name = "loom-core", editable = "packages/loom-core" },
     { name = "loom-runner-claude", editable = "packages/loom-runner-claude" },
+    { name = "loom-runner-codex", editable = "packages/loom-runner-codex" },
     { name = "loom-scheduler", editable = "packages/loom-scheduler" },
 ]

@@ -2,11 +2,12 @@
 name = 'loom-service'
 version = '0.1.0'
 requires-python = '>=3.12'
-dependencies = ['loom-core', 'loom-runner-claude', 'loom-scheduler']
+dependencies = ['loom-core', 'loom-runner-claude', 'loom-runner-codex', 'loom-scheduler']
 
 [tool.uv.sources]
 loom-core = { workspace = true }
 loom-runner-claude = { workspace = true }
+loom-runner-codex = { workspace = true }
 loom-scheduler = { workspace = true }
 
 [build-system]

@@ -116,6 +116,20 @@ class ConfigTest(unittest.TestCase):
         self.assert_refused('claude_bin = 4', 'claude_bin must be a string')
         self.assert_refused('permission_mode = 1', 'permission_mode must be a string')
 
+    def test_the_codex_keys_default_to_none_and_load_as_strings(self) -> None:
+        self.assertEqual((Config().codex_bin, Config().codex_home), (None, None))
+        config = self.load('claude_bin = "/opt/claude"\n')
+        self.assertEqual((config.codex_bin, config.codex_home), (None, None))
+        config = self.load('codex_bin = "/opt/codex"\ncodex_home = "/codex-home"\n')
+        self.assertEqual((config.codex_bin, config.codex_home), ('/opt/codex', '/codex-home'))
+
+    def test_the_codex_keys_refuse_anything_but_a_string(self) -> None:
+        for text in ('codex_bin = 1', 'codex_bin = true', 'codex_home = ["/x"]',
+                     'codex_home = 1.5'):
+            key = text.split(' ')[0]
+            with self.subTest(config=text):
+                self.assert_refused(text, f'{key} must be a string')
+
     def test_an_unreadable_path_is_refused(self) -> None:
         self.path.mkdir()
         with self.assertRaises(StartError) as caught:
@@ -157,6 +171,13 @@ class HostTest(unittest.TestCase):
         self.assertIsNone(host.setting('permission_mode'))
         self.assertIsNone(host.setting('other'))
         self.assertIsNone(self.host.setting('claude_bin'))
+
+    def test_the_codex_settings_come_from_the_config(self) -> None:
+        host = self.make(Config(codex_bin='/opt/codex', codex_home='/codex-home'))
+        self.assertEqual(host.setting('codex_bin'), '/opt/codex')
+        self.assertEqual(host.setting('codex_home'), '/codex-home')
+        self.assertIsNone(self.host.setting('codex_bin'))
+        self.assertIsNone(self.host.setting('codex_home'))
 
     def test_environment_is_the_allowlist_plus_socket_and_thread(self) -> None:
         self.assertEqual(self.host.environment(THREAD), {
@@ -209,6 +230,10 @@ class HostTest(unittest.TestCase):
         self.write_token(b'sk-token')
         self.assertIsNone(self.host.secret('other'))
         self.assertIsNone(self.host.secret('../agent-token'))
+        for name in ('codex-token', 'CLIPROXY_API_KEY', 'codex_home', 'agent-token\n'):
+            with self.subTest(name=name):
+                self.assertIsNone(self.host.secret(name))
+        self.assertEqual(self.host.secret('agent-token'), 'sk-token')
 
 
 if __name__ == '__main__':

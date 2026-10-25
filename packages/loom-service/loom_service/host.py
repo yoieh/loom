@@ -8,7 +8,7 @@ from typing import Protocol, TextIO
 from .config import Config
 
 ENV_KEYS = ('HOME', 'LANG', 'LOGNAME', 'PATH', 'SHELL', 'USER', 'XDG_RUNTIME_DIR')
-SETTINGS = ('claude_bin', 'claude_config_dir', 'agent_base_url')
+SETTINGS = ('claude_bin', 'claude_config_dir', 'agent_base_url', 'codex_bin', 'codex_home')
 TOKEN = 'agent-token'
 MAX_SECRET = 65_536
 

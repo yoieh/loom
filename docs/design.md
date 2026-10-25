@@ -30,9 +30,11 @@ through T3's own tools.
 
 ## §2 Words
 
-- **Thread**: one agent session. It has an id (the agent's session uuid, §73.4), a runner
-  (`claude`, `codex` or `t3`), a project, a workspace (§5), a title, an optional parent thread
-  and an optional `origin` (the client or schedule that started it), and a state (§4).
+- **Thread**: one agent session. It has an id (a uuid; for Claude it is the agent's session
+  uuid, §73.4), a runner (`claude`, `codex` or `t3`), a project, a workspace (§5), a title, an
+  optional parent thread and an optional `origin` (the client or schedule that started it), and
+  a state (§4). Codex picks its own thread id (`thread.started`), so its runner keeps that id in
+  `<data_dir>/codex/<thread id>`.
 - **Turn**: one message, or several that steer it, up to the agent's `result`.
 - **Task**: a thread another thread started with `delegate`, whose result goes back to its
   parent.
@@ -163,8 +165,11 @@ class RunnerSession(Protocol):
   after, as §73.4 with every correction in §73.13's table (rows 1–12, 18). The thread id is the
   session uuid.
 - **`loom-runner-codex`**: `codex exec --json` per turn and `codex -C <worktree> -s <sandbox>
-  exec resume <thread_id> --json -` after, as §73.4.1 with §73.13 rows 13–17. Codex never asks,
-  so it has no `permission_requests` capability.
+  exec resume <thread_id> --json -` after, as §73.4.1 with §73.13 rows 13–17. Its capabilities
+  are `interrupt` and `resume`: Codex never asks, so it has no `permission_requests`, and `exec`
+  takes no message mid-turn, so it has no `steer`. It keeps Codex's thread id (from
+  `thread.started`) in `<data_dir>/codex/<thread id>` (directory 0700, file 0600) to resume
+  after a sleep or a restart.
 - **`loom-runner-t3`**: drives a T3 thread through T3's own API when T3 is installed and
   paired, so a project can keep its threads in T3. Built last.
 - **Environment.** Each agent gets an allowlisted environment (§73.13 row 12) plus
@@ -172,8 +177,11 @@ class RunnerSession(Protocol):
   0600 file in Loom's data dir (§73.13 row 11). For Claude, the host keys are the settings
   `claude_bin` (default `claude`), `claude_config_dir` (→ `CLAUDE_CONFIG_DIR`) and
   `agent_base_url` (→ `ANTHROPIC_BASE_URL`), and the secret `agent-token` (→
-  `ANTHROPIC_AUTH_TOKEN`, with `ANTHROPIC_API_KEY` set empty). Arguments are lists, never a
-  shell string; a message never goes in argv.
+  `ANTHROPIC_AUTH_TOKEN`, with `ANTHROPIC_API_KEY` set empty). For Codex, the host keys are
+  the settings `codex_bin` (default `codex`; the directory holding the `node` its shebang needs
+  is appended to `PATH`) and `codex_home` (→ `CODEX_HOME`), and the secret `agent-token` (→
+  `CLIPROXY_API_KEY`, for Codex only). Arguments are lists, never a shell string; a message
+  never goes in argv.
 
 ## §7 The scheduler
 

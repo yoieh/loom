@@ -209,6 +209,16 @@ class StartTest(ServeCase):
                 self.assert_one_loom_line(err, problem)
                 self.assertFalse(os.path.lexists(self.socket))
 
+    async def test_a_codex_key_that_is_not_a_string_exits_2(self) -> None:
+        for text, problem in {'codex_bin = 1\n': 'codex_bin must be a string',
+                              'codex_home = false\n': 'codex_home must be a string'}.items():
+            with self.subTest(config=text):
+                self.config.write_text(text)
+                code, err = await self.exits(*self.args())
+                self.assertEqual(code, 2)
+                self.assert_one_loom_line(err, f'{self.config}: {problem}')
+                self.assertFalse(os.path.lexists(self.socket))
+
 
 class StopTest(ServeCase):
     async def test_sigterm_ends_streams_closes_agents_and_removes_the_socket(self) -> None:
