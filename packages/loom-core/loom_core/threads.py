@@ -46,7 +46,7 @@ COLUMNS = (
     'id', 'title', 'runner', 'project_id', 'workspace_strategy', 'workspace_path', 'branch',
     'base', 'model', 'permission_mode', 'requests', 'state', 'waiting', 'reason', 'parent_id',
     'origin', 'has_session', 'stop_requested', 'created_at', 'updated_at', 'audience',
-    'concurrency_key', 'settle', 'key_state', 'launched_by',
+    'concurrency_key', 'settle', 'key_state', 'launched_by', 'cause', 'hops',
 )
 
 
@@ -172,6 +172,8 @@ def thread_info(row: sqlite3.Row) -> ThreadInfo:
         'audience': Audience(row['audience']),
         'concurrency_key': row['concurrency_key'],
         'settle': None if row['settle'] is None else Settle(row['settle']),
+        'cause': row['cause'],
+        'hops': row['hops'],
         'created_at': row['created_at'],
     }
 
@@ -187,7 +189,7 @@ def insert(store: Store, tx: sqlite3.Connection, fields: Mapping[str, object]) -
     now = iso(store.clock())
     values = {column: None for column in COLUMNS}
     values.update(state=ThreadState.QUEUED, waiting=0, has_session=0, stop_requested=0,
-                  created_at=now, updated_at=now, audience=Audience.AGENT)
+                  created_at=now, updated_at=now, audience=Audience.AGENT, hops=0)
     values.update(fields)
     tx.execute(
         f'INSERT INTO threads ({", ".join(COLUMNS)}) VALUES ({", ".join("?" for _ in COLUMNS)})',

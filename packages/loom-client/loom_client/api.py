@@ -168,11 +168,11 @@ class Client:
                        workspace: dict | None = None, runner: str | None = None,
                        model: str | None = None, requests: str | None = None,
                        origin: str | None = None, audience: str | None = None,
-                       id: str | None = None) -> ThreadInfo:
+                       cause: int | None = None, id: str | None = None) -> ThreadInfo:
         return self.call(CallName.THREADS_LAUNCH, _params(
             id=_command_id(id), project_id=project_id, title=title, message=message,
             workspace=workspace, runner=runner, model=model, requests=requests, origin=origin,
-            audience=audience))
+            audience=audience, cause=cause))
 
     def threads_delegate(self, parent_id: str, task: str, *, workspace: dict | None = None,
                          runner: str | None = None, model: str | None = None,
@@ -182,9 +182,9 @@ class Client:
             runner=runner, model=model))
 
     def threads_send(self, thread_id: str, message: str, *, mode: str | None = None,
-                     id: str | None = None) -> ThreadInfo:
+                     cause: int | None = None, id: str | None = None) -> ThreadInfo:
         return self.call(CallName.THREADS_SEND, _params(
-            id=_command_id(id), thread_id=thread_id, message=message, mode=mode))
+            id=_command_id(id), thread_id=thread_id, message=message, mode=mode, cause=cause))
 
     def threads_list(self, project_id: str | None = None, *,
                      audience: str | None = None) -> list[ThreadInfo]:
@@ -219,6 +219,13 @@ class Client:
                          id: str | None = None) -> object:
         return self.call(CallName.REQUESTS_RESPOND, _params(
             id=_command_id(id), request_id=request_id, decision=decision, message=message))
+
+    def signals_emit(self, topic: str, payload: dict, *, project_id: str | None = None,
+                     key: str | None = None, cause: int | None = None,
+                     id: str | None = None) -> Event:
+        return self.call(CallName.SIGNALS_EMIT, _params(
+            id=_command_id(id), topic=topic, payload=payload, project_id=project_id, key=key,
+            cause=cause))
 
     def schedules_add(self, trigger: dict, text: str, *, action: str | None = None,
                       thread_id: str | None = None, project_id: str | None = None,

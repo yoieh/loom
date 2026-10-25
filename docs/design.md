@@ -196,7 +196,9 @@ class RunnerSession(Protocol):
     machine's local time zone. `weekdays` are 0 to 6 with 0 Sunday, as T3's, and missing or
     empty means every day;
   - `{"type":"webhook"}`: later, once Loom can be reached from outside (with Thread Voice's
-    relay, its §74). It then needs a per-schedule secret.
+    relay, its §74). It then needs a per-schedule secret;
+  - `{"type":"event","topic":...}`: once for each matching event, with its loop guards (§15
+    Event triggers). The first three are clock triggers.
 - **Actions**: `post` (into a thread, which wakes it), `launch` (a new thread with the prompt,
   T3's `bindToCurrentThread: false`; it can carry a concurrency key with `on_busy`, and
   `settle: "on_result"`, which it passes on to `threads.launch`, §15), or `notify` (only a
@@ -211,18 +213,18 @@ class RunnerSession(Protocol):
   than 10 minutes late is skipped and logged. Never a burst of catch-up runs. A run is late
   when it starts more than 60 s after it was due: a late `post` or `launch` begins with
   `This run is late: it was due at <due>.`, and `schedule.fired` carries `late`.
-- **Overlap.** A `post` or `launch` run whose previous run's turn is still going is skipped and
-  logged, not queued. "Still going" means the thread the schedule's last fired run posted into
-  or launched is `queued`, `starting` or `running`, so a turn someone else started in a posted
-  thread counts too. Posts use dispatch mode `queue`.
+- **Overlap.** For a clock trigger, a `post` or `launch` run whose previous run's turn is still
+  going is skipped and logged, not queued. "Still going" means the thread the schedule's last
+  fired run posted into or launched is `queued`, `starting` or `running`, so a turn someone else
+  started in a posted thread counts too. Posts use dispatch mode `queue`.
 
 ## §8 The API
 
 - **Calls** (`v1`): `threads.launch`, `threads.delegate`, `threads.send`, `threads.list`,
   `threads.get`, `threads.stop`, `threads.settle`, `threads.update` (a thread's audience, §15),
   `threads.events` (a stream from a given event id, so a client that reconnects misses nothing),
-  `requests.respond`, `schedules.add`, `schedules.list`, `schedules.pause`, `schedules.remove`,
-  `projects.*`. Each call and event is documented, with examples, in `docs/api.md`.
+  `requests.respond`, `signals.emit` (§15), `schedules.add`, `schedules.list`, `schedules.pause`,
+  `schedules.remove`, `projects.*`. Each call and event is documented, with examples, in `docs/api.md`.
 - **Transport.** `loom serve` listens on `$XDG_RUNTIME_DIR/loom/api.sock` (user-only, mode
   0600), JSON lines. A local client needs no token and nothing listens on a port. A remote
   client waits for a relay and is not covered.
@@ -375,18 +377,35 @@ manager) and one project manager per project are how the factory uses this. Thos
 factory's prompts and rules (Factory Manager's `orchestrator/agents.md`), not Loom's; Loom gives
 only the parts below.
 
-- **Signals.** `signals.emit {topic, project_id?, key?, payload}` puts an outside event into
-  Loom as a `signal` event, so the factory can say "run done" or "PR opened". Agents get it as
-  the `loom-mcp` tool `emit`.
+- **Signals.** `signals.emit {topic, project_id?, key?, payload, cause?}` puts an outside event
+  into Loom as a `signal` event, so the factory can say "run done" or "PR opened". A signal is an
+  event with no thread; one an agent thread emits records that thread as its `by`. The command id
+  rule (§4) holds, so a retry emits once. Agents get it as the `loom-mcp` tool `emit`.
 - **Event triggers.** A schedule trigger `{"type":"event","topic":"factory.run.status",
   "project_id":"glantfolk","match":{"to":"done"}}` fires its action (§7) for each matching
   `signal`, `thread.settled`, `thread.failed`, `request.opened` or `schedule.fired`. A prompt
   can use `{{payload.<field>}}` and `{{event.id}}`. Clock triggers stay for what really is about
-  time, such as one daily check that no event was missed.
+  time, such as one daily check that no event was missed. `hops_max` and `rate_max` (below) are
+  optional trigger fields that may only lower the defaults, so an agent's schedule can't loosen
+  them. Each matching event runs: the overlap rule (§7) is for clock triggers, and an event run is
+  never late.
 - **Cause chains.** Every launch, send and signal records `cause` (the event behind it) and
   `hops` (its cause's hops + 1). A trigger skips an event at `hops_max` (default 8) and an event
-  from a thread it launched itself, and fires at most `rate_max` times an hour (default 30), so
-  agents that start agents can't loop. Each skip is a `trigger.skipped` event.
+  from a thread it launched itself, or its own `schedule.fired`, and fires at most `rate_max`
+  times an hour (default 30), so agents that start agents can't loop. Each skip is a
+  `trigger.skipped` event, and the first rate skip in an hour also sends one `notify`. The rules:
+  - An event's hops are its `data.hops` when that is an integer (a `signal`, a `schedule.fired`
+    of an event run), else its thread's hops at the time they are read, else 0.
+  - A call with `cause: E` gets `hops(E) + 1`; from an agent thread, at least that thread's hops,
+    so an agent can't lower its count by naming an old event.
+  - An agent's call without `cause` records its thread's `cause` and `hops`; a person's, an
+    unchecked caller's or a clock's has none and 0.
+  - A schedule's call ignores the thread that made the schedule.
+  - A delegated child gets its parent's `cause` and `hops`, or the calling thread's when those are
+    more.
+  - A send stores them on its message, and one with more hops than its thread raises the
+    thread's `cause` and `hops` to its own; a coalescing launch that joins a waiting thread does
+    the same to it.
 - **Concurrency keys.** A launch with `concurrency_key` (such as `pm:glantfolk`) waits while
   another thread holds the key (`on_busy: "queue"`), or joins the one waiting launch for it
   (`"coalesce"`), so one project manager works on a project at a time and a burst of events
@@ -398,6 +417,10 @@ only the parts below.
   step can trigger on it.
 - **Audience.** A thread is `person` (a person talks with it) or `agent` (the default). Thread
   Voice lists only `person` threads; the CLI sees all. An agent thread that needs a person asks
-  through `thread-voice-mcp` as now, or is changed to `person` with `threads.update`.
-- **Missed events.** Events are stored (§4), and the scheduler keeps a cursor, so after a
-  restart each matching event since the cursor fires once.
+  through `thread-voice-mcp` as now, or is changed to `person` with `threads.update`. An event
+  with no thread reaches a `person` follower of `threads.events` only when it is a
+  `schedule.fired`, so a `person` follower gets no `signal` or `trigger.skipped`; an `agent`
+  follower gets every event with no thread.
+- **Missed events.** Events are stored (§4), and the scheduler keeps a cursor per schedule, in
+  the `schedules` table, so after a restart each matching event since the cursor fires once. The
+  cursor starts at the newest event when the schedule is added.

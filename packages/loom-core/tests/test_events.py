@@ -67,6 +67,14 @@ class EventsTest(unittest.TestCase):
         self.assertEqual(self.store.events(), [])
         self.assertGreater(self.append(), max(ids))
 
+    def test_last_event_id_is_the_largest_stored_id(self) -> None:
+        self.assertEqual(self.store.last_event_id(), 0)
+        ids = [self.append() for _ in range(3)]
+        self.assertEqual(self.store.last_event_id(), ids[-1])
+        self.clock.now = START + timedelta(days=EVENT_DAYS, milliseconds=1)
+        self.store.prune_events()
+        self.assertEqual(self.store.last_event_id(), 0)
+
     def test_after_returns_later_events_in_order(self) -> None:
         ids = [self.append(text=str(n)) for n in range(5)]
         events = self.store.events(after=ids[1])

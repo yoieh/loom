@@ -7,6 +7,7 @@ from unittest import mock
 
 from loom_core.service import Caller
 from loom_core.slots import StartSource
+from loom_core.store import Store
 from loom_core.threads import start_queue
 from loom_scheduler import Maker, ScheduleError
 
@@ -304,6 +305,77 @@ class CallerTest(ScheduleCase):
                          [(StartSource.PERSON, person['id']),
                           (StartSource.SCHEDULE, scheduled)])
         self.assertEqual(fired[0]['data']['schedule_id'], added['id'])
+
+
+class EventTriggerTest(ScheduleCase):
+    async def on_event(self, conn: Connection, topic: str = 'demo.done', **params: object) -> dict:
+        params = {'trigger': {'type': 'event', 'topic': topic, 'match': {'to': 'done'}},
+                  'text': 'Run {{payload.to}} for {{event.id}}', 'action': 'notify', **params}
+        return await conn.ok('schedules.add', id=conn.new_id(), **params)
+
+    async def emit(self, conn: Connection, to: str = 'done') -> dict:
+        return await conn.ok('signals.emit', id=conn.new_id(), topic='demo.done',
+                             payload={'to': to})
+
+    async def test_the_host_reports_new_events_and_the_last_event_id(self) -> None:
+        host = self.host()
+        self.assertEqual(host.last_event_id(), 0)
+        seen: list[int] = []
+        remove = host.listen(lambda: seen.append(host.last_event_id()))
+        conn = await self.connect()
+        signal = await self.emit(conn)
+        remove()
+        await self.emit(conn)
+        self.assertEqual(seen, [signal['id']])
+        self.assertEqual(host.last_event_id(), signal['id'] + 1)
+
+    async def test_a_notify_event_schedule_fires_on_a_signal(self) -> None:
+        conn = await self.connect()
+        early = await self.emit(conn)
+        added = await self.on_event(conn)
+        self.assertEqual((added['trigger'], added['next_run']), (
+            {'type': 'event', 'topic': 'demo.done', 'match': {'to': 'done'}}, None))
+        await self.emit(conn, 'open')
+        signal = await self.emit(conn)
+        [fired] = await self.fired(conn)
+        self.assertEqual((fired['thread_id'], fired['data']), (None, {
+            'schedule_id': added['id'], 'action': 'notify',
+            'text': f'Run done for {signal["id"]}', 'late': False, 'cause': signal['id'],
+            'hops': 1}))
+        await asyncio.sleep(0.1)
+        self.assertEqual(len(await self.fired(conn)), 1)
+        self.assertNotEqual(early['id'], signal['id'])
+
+    async def test_a_launch_records_the_cause_and_hops_it_fired_with(self) -> None:
+        conn = await self.connect()
+        await self.add_project(conn)
+        added = await self.on_event(conn, action='launch', project_id='repo')
+        signal = await self.emit(conn)
+        [fired] = await self.fired(conn)
+        thread = await conn.ok('threads.get', thread_id=fired['thread_id'])
+        self.assertEqual((thread['cause'], thread['hops'], thread['origin']),
+                         (signal['id'], 1, f'schedule:{added["id"]}'))
+        self.assertEqual((fired['data']['cause'], fired['data']['hops']), (signal['id'], 1))
+
+    async def test_after_a_restart_a_missed_signal_fires_once(self) -> None:
+        conn = await self.connect()
+        added = await self.on_event(conn)
+        handled = await self.emit(conn)
+        await self.fired(conn)
+        await self.serving.close()
+        store = Store.open(self.data_dir)
+        with store.transaction() as tx:
+            missed = store.append_event(tx, 'signal', None, {
+                'topic': 'demo.done', 'payload': {'to': 'done'}, 'hops': 0})
+        store.close()
+        self.serving = await self.serve()
+        conn = await self.connect()
+        events = await self.fired(conn, 2)
+        await asyncio.sleep(0.2)
+        events = await self.fired(conn, 2)
+        self.assertEqual([(event['data']['schedule_id'], event['data']['cause'])
+                          for event in events],
+                         [(added['id'], handled['id']), (added['id'], missed)])
 
 
 class LifecycleTest(ScheduleCase):

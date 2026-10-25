@@ -49,6 +49,19 @@ class AudienceTest(ServiceTest):
     def thread_count(self) -> int:
         return self.store.connection.execute('SELECT count(*) FROM threads').fetchone()[0]
 
+    async def threadless(self) -> list[int]:
+        with self.store.transaction() as tx:
+            fired = self.store.append_event(tx, EventType.SCHEDULE_FIRED, None, {
+                'schedule_id': 's1', 'action': 'notify', 'text': 'Stand up'})
+            skipped = self.store.append_event(tx, EventType.TRIGGER_SKIPPED, None, {
+                'schedule_id': 's1', 'event_id': fired, 'reason': 'hops'})
+        signal = await self.call('signals.emit', {
+            'id': self.next_id(), 'topic': 'demo.done', 'payload': {'to': 'done'}})
+        return [fired, skipped, signal['id']]
+
+    def threadless_ids(self, found: list[dict]) -> list[int]:
+        return [event['id'] for event in found if event['thread_id'] is None]
+
 
 class LaunchTest(AudienceTest):
     async def test_a_launch_without_audience_is_agent_whoever_calls(self) -> None:
@@ -178,6 +191,23 @@ class EventsTest(AudienceTest):
                 self.assertEqual(found[-1]['thread_id'], None)
                 self.assertEqual(self.thread_events(found, theirs), [])
 
+    async def test_a_person_gets_no_thread_less_signal_or_trigger_skipped(self) -> None:
+        fired, skipped, signal = await self.threadless()
+        found = await self.events(audience='person')
+        self.assertEqual(self.threadless_ids(found), [fired])
+        self.assertEqual(self.thread_events(found, self.agent), [])
+        self.assertEqual(self.thread_events(found, self.person),
+                         self.thread_events(self.store.events(), self.person))
+
+    async def test_an_agent_and_an_unfiltered_reader_get_every_thread_less_event(self) -> None:
+        made = await self.threadless()
+        for params in ({'audience': 'agent'}, {}):
+            with self.subTest(params=params):
+                found = await self.events(**params)
+                self.assertEqual(self.threadless_ids(found), made)
+        self.assertEqual([event['type'] for event in self.store.events(made[0] - 1)],
+                         ['schedule.fired', 'trigger.skipped', 'signal'])
+
     async def test_a_thread_that_leaves_person_shows_its_update_and_nothing_later(self) -> None:
         await self.update(self.person, 'agent')
         self.add_events(2, self.person)
@@ -276,6 +306,25 @@ class FollowTest(AudienceTest):
         self.assertEqual(self.ids(got), sorted(self.ids(got)))
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+    async def test_each_follower_gets_the_thread_less_events_its_audience_passes(
+            self) -> None:
+        streams = {name: self.consume(self.service.follow(params, PERSON))
+                   for name, params in (('person', {'audience': 'person'}),
+                                        ('agent', {'audience': 'agent'}), ('all', {}))}
+        made = await self.threadless()
+        for name, expected in (('person', made[:1]), ('agent', made), ('all', made)):
+            got, _ = streams[name]
+            await wait_for(lambda got=got, expected=expected: len(got) >= len(expected),
+                           timeout=1.0)
+        await asyncio.sleep(0.05)
+        for name, expected in (('person', made[:1]), ('agent', made), ('all', made)):
+            with self.subTest(follower=name):
+                self.assertEqual(self.ids(streams[name][0]), expected)
+        for _, task in streams.values():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 class UpdateTest(AudienceTest):

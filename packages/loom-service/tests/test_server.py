@@ -365,11 +365,12 @@ class FollowTest(ServerCase):
 
     async def test_closing_a_follower_ends_its_stream(self) -> None:
         store = self.serving.service.store
+        before = set(store.listeners)
         follower = await self.connect()
         await follower.call('threads.events', follow=True)
-        await wait_until(lambda: store.listeners)
+        await wait_until(lambda: store.listeners - before)
         await follower.close()
-        await wait_until(lambda: not store.listeners)
+        await wait_until(lambda: store.listeners == before)
         conn = await self.connect()
         self.assertEqual(await conn.ok('projects.list'), [])
 

@@ -5,8 +5,8 @@ script in any language. It documents the socket protocol `loom serve` speaks, ev
 event, `loom serve` itself, the `loom` CLI and the Python API. The design behind it is
 `docs/design.md` §8; this page says what the code does today.
 
-Served now: all eighteen `v1` calls, the `threads.*`, `projects.*` and `schedules.*` ones and
-`requests.respond`.
+Served now: all nineteen `v1` calls, the `threads.*`, `projects.*` and `schedules.*` ones,
+`requests.respond` and `signals.emit`.
 
 ## Start here
 
@@ -35,8 +35,9 @@ pass on the socket. Thread, schedule and request ids such as `"3f2a…"` and the
 shortened; everything else comes from a real run. The command ids `c1`, `c2`, … give the order
 the changes ran in; each read shows the state at its point in that run, and `projects.remove`
 succeeded once both threads were settled. The `schedules.*` examples, those of `threads.update`
-and the `audience` filters, those of concurrency keys and `thread.settled`, and those of
-permission requests, come from later runs of their own.
+and the `audience` filters, those of concurrency keys and `thread.settled`, those of
+permission requests, those of signals and cause chains, and those of event triggers, come from
+later runs of their own.
 
 ## Transport
 
@@ -226,6 +227,9 @@ the schedule's maker and the schedule's id:
   So `projects.add` and `projects.set_mode` refuse it (§11), and a schedule can't widen a
   project's mode.
 - The checks `schedules.add` makes on its `thread_id` and `project_id` run as the caller itself.
+- An [event trigger](#how-schedules-run) also reads events with `threads.events` and looks up
+  their threads with `threads.get`. These reads carry neither the maker nor the schedule id, and
+  answer the same to any caller.
 
 Any caller may list, pause or remove any schedule.
 
@@ -287,6 +291,50 @@ The thread `2cc7…`, launched with the default `requests`, answers its own requ
 - Under `any`, a thread can still have another thread answer for it, such as a child it
   delegates or a thread it launches.
 
+### Cause chains
+
+Every launch, delegate, send and signal records `cause`, the id of the event behind it, and
+`hops`, how many steps led to it (§15 Cause chains). A thread shows its own in `threads.get`; a
+send keeps them on its message; a [`signal`](#signal) event holds them in its `data`. The
+scheduler's event triggers (§15) read them to stop agents that start agents from looping.
+
+`threads.launch`, `threads.send` and `signals.emit` take an optional `cause`: an event id, an
+integer of 1 or more, that names an event Loom still stores. Its hops, `hops(E)`, are:
+
+- the event's `data.hops`, when that is an integer (as on a `signal`);
+- else, when the event has a thread, that thread's `hops` now;
+- else 0.
+
+The caller's thread is the Loom thread a call comes from (told apart as under
+[Agents may not add projects](#agents-may-not-add-projects-or-change-a-projects-mode)), when that
+thread exists. A call a schedule makes has none, whoever made the schedule (see
+[Calls a schedule makes](#calls-a-schedule-makes)). A call records:
+
+| `cause` given | Caller's thread `T` | Recorded `cause` | Recorded `hops` |
+|---|---|---|---|
+| `E` | none | `E` | `hops(E) + 1` |
+| `E` | `T` | `E` | `hops(E) + 1`, or `T`'s `hops` when that is more |
+| none | `T` | `T`'s `cause` | `T`'s `hops` |
+| none | none (a person, an unchecked caller, a schedule's clock run) | null | 0 |
+
+- A launch stores them on the new thread.
+- A delegated child gets its parent's `cause` and `hops`, or its caller's thread's when those
+  hops are more.
+- A send stores them on its message. When its `hops` are more than its thread's, the thread's
+  `cause` and `hops` become the send's; fewer or equal hops change nothing. A coalescing launch or
+  delegate that joins a waiting thread raises that thread's the same way.
+- So an agent never lowers its own count: a `cause` that names an old event, a send, a delegate
+  or a launch all record at least its thread's hops.
+- A thread from before Loom recorded causes has `cause` null and `hops` 0.
+
+A bad `cause` answers `invalid` and changes nothing: null (`cause must not be null`), anything but
+an integer of 1 or more, `true` included (`cause must be an event id`), or an id with no stored
+event (`cause names no stored event`).
+
+**Limits.** As for requests, the caller's thread is what the calling process says
+(`LOOM_THREAD`). An agent that unsets it counts as a person and gets `hops` 0 for calls without a
+`cause`. This guards an agent's own calls; it is not a sandbox.
+
 ## Results
 
 Most calls answer with a thread, a project or a schedule.
@@ -311,6 +359,8 @@ Most calls answer with a thread, a project or a schedule.
 | `audience` | string | `person` when a person talks with it, else `agent`, the default (§15 Audience). See [`threads.update`](#threadsupdate). |
 | `concurrency_key` | string or null | The key it was launched or delegated with, or null (see Concurrency keys under [`threads.launch`](#threadslaunch)). |
 | `settle` | string or null | `on_result` when it settles after its first result, or null (see Settle on result under [`threads.launch`](#threadslaunch)). |
+| `cause` | int or null | The id of the event behind the thread's work so far, or null (see [Cause chains](#cause-chains)). |
+| `hops` | int | How many steps of agents and triggers led to the thread, 0 for a person's or a clock's (see [Cause chains](#cause-chains)). |
 | `created_at` | string | ISO 8601, UTC. |
 
 ### Project
@@ -339,7 +389,7 @@ Most calls answer with a thread, a project or a schedule.
 | `settle` | string or null | `on_result` when each thread it launches settles after its first result, or null. |
 | `by` | string or null | The agent thread that made it; null when a person did (see [Calls a schedule makes](#calls-a-schedule-makes)). |
 | `paused` | bool | `true` once `schedules.pause` stopped it. |
-| `next_run` | string or null | When it is next due, ISO 8601, UTC. null when it is paused, and once an `at` has had its one run. |
+| `next_run` | string or null | When it is next due, ISO 8601, UTC. null when it is paused, once an `at` has had its one run, and always for an `event` trigger. |
 | `created_at` | string | ISO 8601, UTC. |
 
 ### Permission modes
@@ -387,6 +437,7 @@ root is not a git repo, the branch exists already, the base is not a commit), ma
 | [`projects.remove`](#projectsremove) | yes | yes |
 | [`projects.list`](#projectslist) | yes | no |
 | [`requests.respond`](#requestsrespond) | yes | yes |
+| [`signals.emit`](#signalsemit) | yes | yes |
 | [`schedules.add`](#schedulesadd) | yes | yes |
 | [`schedules.list`](#scheduleslist) | yes | no |
 | [`schedules.pause`](#schedulespause) | yes | yes |
@@ -414,6 +465,7 @@ Starts a new top-level thread in a project with a first message.
 | `concurrency_key` | string | 1 to 200 characters, such as `pm:demo-repo`. At most one thread holds a key (see Concurrency keys below). Default: no key. A null answers `invalid`, `concurrency_key must not be null`; another type, an empty string or a longer one answers `invalid`, `concurrency_key must be a string of 1 to 200 characters`. |
 | `on_busy` | string | What a launch does while another thread holds its key: `"queue"` (default) or `"coalesce"`. Only with `concurrency_key`, else `invalid`, `on_busy needs concurrency_key`. A null answers `invalid`, `on_busy must not be null`; any other value `on_busy must be one of queue, coalesce`. |
 | `settle` | string | `"on_result"`: the thread settles after its first result instead of going `idle` (see Settle on result below). Default: it goes `idle`. A null answers `invalid`, `settle must not be null`; any other value `settle must be one of on_result`. |
+| `cause` | int | The id of the event behind this launch, such as a [`signal`](#signal). The thread records it and its hops (see [Cause chains](#cause-chains)). Default: none. |
 
 **Result:** the new thread, in state `queued`, or the waiting thread a coalescing launch joined
 (see Concurrency keys below). Loom starts it after it answers, unless it waits for
@@ -456,7 +508,8 @@ While another thread holds the key:
   another project or was delegated, it answers `conflict`,
   `concurrency key <key> is waiting in another project or under another parent`, and changes
   nothing. A joining launch's `title`, `workspace`, `runner`, `model`, `requests`, `origin`,
-  `audience` and `settle` are checked but not used: the waiting thread keeps its own, and its
+  `audience` and `settle` are checked but not used, and its `cause` and `hops` raise the waiting
+  thread's only when they are more (see [Cause chains](#cause-chains)): the waiting thread keeps its own, and its
   launcher (see [Who may answer a request](#who-may-answer-a-request)). A retry with the same
   command id answers the same thread and adds the message once.
 
@@ -477,28 +530,29 @@ fails, which lets the key go.
 
 **Errors:** `not_found` when the project does not exist; `invalid` for a missing or wrong
 parameter, such as an `audience` that is null (`audience must not be null`) or not `person` or
-`agent` (`audience must be one of person, agent`); `conflict` when the call comes from an agent
+`agent` (`audience must be one of person, agent`), or a bad `cause` (`cause must not be null`,
+`cause must be an event id`, `cause names no stored event`); `conflict` when the call comes from an agent
 thread that is being stopped (`thread <id> is stopping`), as
 [`threads.delegate`](#threadsdelegate) refuses a stopping parent. A schedule's launch is not
 refused this way, and a retry of a launch that already succeeded still returns its first answer.
 
 ```json
 {"v": "v1", "call": "threads.launch", "params": {"id": "c3", "project_id": "demo-repo", "title": "Fix the login test", "message": "Make the login test pass.", "workspace": {"strategy": "root"}}}
-{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto-accept-edits","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:12.958+00:00"}}
+{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto-accept-edits","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"cause":null,"hops":0,"created_at":"2026-10-24T18:47:12.958+00:00"}}
 ```
 
 A thread a person talks with, from a later run:
 
 ```json
 {"v": "v1", "call": "threads.launch", "params": {"id": "c3", "project_id": "demo-repo", "title": "Plan the week", "message": "What is on this week?", "workspace": {"strategy": "root"}, "audience": "person"}}
-{"ok":true,"result":{"id":"31d4…","title":"Plan the week","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","concurrency_key":null,"settle":null,"created_at":"2026-10-24T23:48:37.421+00:00"}}
+{"ok":true,"result":{"id":"31d4…","title":"Plan the week","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","concurrency_key":null,"settle":null,"cause":null,"hops":0,"created_at":"2026-10-24T23:48:37.421+00:00"}}
 ```
 
 A launch on a key that `008a…` holds, from a later run, waits `queued` until `008a…` is settled:
 
 ```json
 {"v": "v1", "call": "threads.launch", "params": {"id": "c3", "project_id": "demo-repo", "title": "Plan the next step", "message": "Run LM-12 is done.", "workspace": {"strategy": "root"}, "concurrency_key": "pm:demo-repo"}}
-{"ok":true,"result":{"id":"4e3a…","title":"Plan the next step","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":"pm:demo-repo","settle":null,"created_at":"2026-10-25T01:28:09.040+00:00"}}
+{"ok":true,"result":{"id":"4e3a…","title":"Plan the next step","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":"pm:demo-repo","settle":null,"cause":null,"hops":0,"created_at":"2026-10-25T01:28:09.040+00:00"}}
 ```
 
 In the same run, with `9a7d…` holding `inbox:demo-repo` and `4bb0…` waiting for it with the
@@ -507,7 +561,15 @@ message is now `PR 14 was opened.`, a blank line and `PR 15 was opened.`:
 
 ```json
 {"v": "v1", "call": "threads.launch", "params": {"id": "c6", "project_id": "demo-repo", "title": "Read the inbox", "message": "PR 15 was opened.", "workspace": {"strategy": "root"}, "concurrency_key": "inbox:demo-repo", "on_busy": "coalesce"}}
-{"ok":true,"result":{"id":"4bb0…","title":"Read the inbox","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":"inbox:demo-repo","settle":null,"created_at":"2026-10-25T01:28:10.149+00:00"}}
+{"ok":true,"result":{"id":"4bb0…","title":"Read the inbox","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":"inbox:demo-repo","settle":null,"cause":null,"hops":0,"created_at":"2026-10-25T01:28:10.149+00:00"}}
+```
+
+A launch caused by the person's signal `1` (see [`signals.emit`](#signalsemit)), from a later run,
+has one more hop than the signal:
+
+```json
+{"v": "v1", "call": "threads.launch", "params": {"id": "c4", "project_id": "demo-repo", "title": "Plan the next step", "message": "Run LM-12 is done.", "workspace": {"strategy": "root"}, "cause": 1}}
+{"ok":true,"result":{"id":"92fa…","title":"Plan the next step","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"cause":1,"hops":1,"created_at":"2026-10-25T04:31:06.869+00:00"}}
 ```
 
 ### `threads.delegate`
@@ -532,7 +594,8 @@ The child's title is the first line of `task`, cut at 80 characters. It runs in 
 project with the project's mode, and it inherits the parent's `requests` and keeps the top-level
 thread's launcher, so under `caller` that launcher answers its requests, never the parent (see
 [Who may answer a request](#who-may-answer-a-request)). Its audience is always `agent`, whatever
-the parent's is.
+the parent's is. It gets the parent's `cause` and `hops`, or its caller's thread's when those
+hops are more (see [Cause chains](#cause-chains)); a delegate takes no `cause`.
 
 A key works as under Concurrency keys in [`threads.launch`](#threadslaunch): a child holds it,
 or waits for it.
@@ -552,7 +615,7 @@ parent`); `invalid` for a bad `concurrency_key` or `on_busy`, with the messages 
 
 ```json
 {"v": "v1", "call": "threads.delegate", "params": {"id": "c5", "parent_id": "3f2a…", "task": "Review the login test fix."}}
-{"ok":true,"result":{"id":"b836…","title":"Review the login test fix.","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto-accept-edits","state":"queued","waiting":false,"reason":null,"parent_id":"3f2a…","origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:29.240+00:00"}}
+{"ok":true,"result":{"id":"b836…","title":"Review the login test fix.","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto-accept-edits","state":"queued","waiting":false,"reason":null,"parent_id":"3f2a…","origin":null,"audience":"agent","concurrency_key":null,"settle":null,"cause":null,"hops":0,"created_at":"2026-10-24T18:47:29.240+00:00"}}
 ```
 
 ### `threads.send`
@@ -580,15 +643,17 @@ failed result. An exit after the turn's result is not a crash: the thread only g
 | `thread_id` | string, required | |
 | `message` | string, required | Not empty. |
 | `mode` | string | What happens when a turn is running (§4 Dispatch modes): `steer` (default) adds it to the running turn, `queue` sends it after the turn, `interrupt` stops the turn and then sends it. |
+| `cause` | int | The id of the event behind this message. The message records it and its hops, and raises the thread's when they are more (see [Cause chains](#cause-chains)). Default: none. |
 
-**Result:** the thread as it was when the message was stored. The delivery happens after the
-answer.
+**Result:** the thread as it was when the message was stored, with the send's `cause` and `hops`
+when they raised the thread's. The delivery happens after the answer.
 
-**Errors:** `not_found`; `conflict` when the thread is settled or failed.
+**Errors:** `not_found`; `conflict` when the thread is settled or failed; `invalid` for a bad
+`cause`, as under [`threads.launch`](#threadslaunch).
 
 ```json
 {"v": "v1", "call": "threads.send", "params": {"id": "c4", "thread_id": "3f2a…", "message": "Also run the linter.", "mode": "queue"}}
-{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:12.958+00:00"}}
+{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"cause":null,"hops":0,"created_at":"2026-10-24T18:47:12.958+00:00"}}
 ```
 
 ### `threads.list`
@@ -609,12 +674,12 @@ A thread is listed when it matches every filter given. With no filter, every thr
 
 ```json
 {"v": "v1", "call": "threads.list", "params": {"project_id": "demo-repo"}}
-{"ok":true,"result":[{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:12.958+00:00"}]}
+{"ok":true,"result":[{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"cause":null,"hops":0,"created_at":"2026-10-24T18:47:12.958+00:00"}]}
 ```
 
 ```json
 {"v": "v1", "call": "threads.list", "params": {"audience": "person"}}
-{"ok":true,"result":[{"id":"31d4…","title":"Plan the week","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"master","model":null,"permission_mode":"auto","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","concurrency_key":null,"settle":null,"created_at":"2026-10-24T23:48:37.421+00:00"}]}
+{"ok":true,"result":[{"id":"31d4…","title":"Plan the week","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"master","model":null,"permission_mode":"auto","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","concurrency_key":null,"settle":null,"cause":null,"hops":0,"created_at":"2026-10-24T23:48:37.421+00:00"}]}
 ```
 
 ### `threads.get`
@@ -627,7 +692,7 @@ A thread is listed when it matches every filter given. With no filter, every thr
 
 ```json
 {"v": "v1", "call": "threads.get", "params": {"thread_id": "3f2a…"}}
-{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:12.958+00:00"}}
+{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"cause":null,"hops":0,"created_at":"2026-10-24T18:47:12.958+00:00"}}
 ```
 
 ```json
@@ -655,7 +720,7 @@ returned as it is.
 
 ```json
 {"v": "v1", "call": "threads.stop", "params": {"id": "c6", "thread_id": "3f2a…"}}
-{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":"stopping","parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:12.958+00:00"}}
+{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":"stopping","parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"cause":null,"hops":0,"created_at":"2026-10-24T18:47:12.958+00:00"}}
 ```
 
 ### `threads.settle`
@@ -678,7 +743,7 @@ settled`).
 
 ```json
 {"v": "v1", "call": "threads.settle", "params": {"id": "c7", "thread_id": "b836…"}}
-{"ok":true,"result":{"id":"b836…","title":"Review the login test fix.","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"settled","waiting":false,"reason":null,"parent_id":"3f2a…","origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:29.240+00:00"}}
+{"ok":true,"result":{"id":"b836…","title":"Review the login test fix.","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"settled","waiting":false,"reason":null,"parent_id":"3f2a…","origin":null,"audience":"agent","concurrency_key":null,"settle":null,"cause":null,"hops":0,"created_at":"2026-10-24T18:47:29.240+00:00"}}
 ```
 
 ### `threads.update`
@@ -704,7 +769,7 @@ be one of person, agent`).
 
 ```json
 {"v": "v1", "call": "threads.update", "params": {"id": "c4", "thread_id": "0844…", "audience": "person"}}
-{"ok":true,"result":{"id":"0844…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"master","model":null,"permission_mode":"auto","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","concurrency_key":null,"settle":null,"created_at":"2026-10-24T23:48:37.309+00:00"}}
+{"ok":true,"result":{"id":"0844…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"master","model":null,"permission_mode":"auto","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","concurrency_key":null,"settle":null,"cause":null,"hops":0,"created_at":"2026-10-24T23:48:37.309+00:00"}}
 ```
 
 ```json
@@ -758,7 +823,15 @@ Events are kept 30 days.
 - its thread has audience `A` now;
 - it is a [`thread.updated`](#threadupdated) event whose `previous_audience` is `A`, so a
   follower sees a thread leave its audience;
-- its `thread_id` is null, such as the `schedule.fired` event of a `notify` with no thread.
+- its `thread_id` is null and its type passes `A`:
+
+  | Type of an event with no thread | `audience: "person"` | `audience: "agent"` |
+  |---|---|---|
+  | `schedule.fired`, such as a `notify` with no thread | kept | kept |
+  | `signal`, `trigger.skipped` and any other | dropped | kept |
+
+So a person's follower gets reminders but not the factory's signals, and an agent's follower, or
+one with no filter, gets every event with no thread.
 
 The filter reads each thread's audience at the time of the read, not the one it had when the
 event was written. So once a thread becomes `person`, a reader with `audience: "person"` that
@@ -782,6 +855,14 @@ with no thread fires:
 {"event":{"id":23,"type":"thread.state","at":"2026-10-24T23:49:04.279+00:00","thread_id":"0844…","data":{"state":"idle","waiting":false}}}
 {"event":{"id":24,"type":"thread.updated","at":"2026-10-24T23:49:05.220+00:00","thread_id":"0844…","data":{"audience":"agent","previous_audience":"person"}}}
 {"event":{"id":31,"type":"schedule.fired","at":"2026-10-24T23:49:06.312+00:00","thread_id":null,"data":{"schedule_id":"cba9…","action":"notify","text":"Stand-up in five minutes.","late":true}}}
+```
+
+In a later run, events 11 to 27 are three signals and two agent threads' turns; a `person`
+reader gets only the `notify` with no thread:
+
+```json
+{"v": "v1", "call": "threads.events", "params": {"after": 10, "audience": "person"}}
+{"ok":true,"result":[{"id":28,"type":"schedule.fired","at":"2026-10-25T04:31:25.925+00:00","thread_id":null,"data":{"schedule_id":"171d…","action":"notify","text":"Stand-up in five minutes.","late":true}}]}
 ```
 
 **Errors:** `invalid` when `after` is not an integer of 0 or more (`after must be an integer of 0
@@ -933,7 +1014,7 @@ The person who launched `8408…` with `requests: "caller"` allows its request, 
 
 ```json
 {"v": "v1", "call": "requests.respond", "params": {"id": "c5", "request_id": "7ac9…", "decision": "allow"}}
-{"ok":true,"result":{"id":"8408…","title":"Clean the build","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"approval-required","state":"running","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-25T03:06:10.778+00:00"}}
+{"ok":true,"result":{"id":"8408…","title":"Clean the build","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"approval-required","state":"running","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"cause":null,"hops":0,"created_at":"2026-10-25T03:06:10.778+00:00"}}
 ```
 
 A second answer, with another command id, comes too late:
@@ -943,23 +1024,106 @@ A second answer, with another command id, comes too late:
 {"ok":false,"error":{"code":"conflict","message":"request 7ac9… is closed"}}
 ```
 
+### `signals.emit`
+
+Puts an outside event into Loom as a [`signal`](#signal) event, so that a client, such as the
+factory, can say "run done" or "PR opened" and the scheduler's event triggers can start work on
+it (§15 Signals). A signal belongs to no thread.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string, required | Command id. |
+| `topic` | string, required | What happened, such as `factory.run.status`. 1 to 200 characters, a letter or digit and then letters, digits, `.`, `_`, `:` and `-`. Not one of Loom's own [event types](#events), such as `thread.settled`. |
+| `payload` | object, required | Any JSON object, at most 16,384 bytes as compact UTF-8 JSON. `{}` for none. |
+| `project_id` | string | The project the signal is about. Default: none. |
+| `key` | string | 1 to 200 characters: what the signal is about within its topic, such as a run id. Default: none. |
+| `cause` | int | The id of the event behind this signal (see [Cause chains](#cause-chains)). Default: none. |
+
+**Result:** the `signal` event it wrote, `{id, type, at, thread_id, data}`, as
+[`threads.events`](#threadsevents) gives it. Its `id` is larger than every earlier event's. A
+retry with the same `id` writes no second event and answers the first one (see
+[Command ids](#command-ids-and-safe-retries)), so a signal is emitted once however often a client
+retries it.
+
+**Who emitted it.** A signal from a Loom thread records that thread's id as `by`, and its `cause`
+and `hops` as [Cause chains](#cause-chains) says: an agent's signal without a `cause` carries its
+thread's. A person's signal has no `by`, and `hops` 0 unless it names a `cause`.
+
+**Errors**, checked in this order:
+
+| Problem | Code | Message |
+|---|---|---|
+| `params` is not an object | `invalid` | `params must be an object` |
+| `topic` is missing or null | `invalid` | `topic is required` |
+| `topic` is not a string, is empty or is over 200 characters | `invalid` | `topic must be a string of 1 to 200 characters` |
+| `topic` does not start with a letter or digit, or holds another character | `invalid` | `topic must start with a letter or digit and hold only letters, digits, ".", "_", ":" and "-"` |
+| `topic` is a Loom event type | `invalid` | `topic must not be a Loom event type` |
+| `payload` is missing or null | `invalid` | `payload is required` |
+| `payload` is not an object | `invalid` | `payload must be a JSON object` |
+| `payload` is over 16,384 bytes | `invalid` | `payload must be at most 16384 bytes as JSON` |
+| `project_id` is null | `invalid` | `project_id must not be null` |
+| `project_id` is not a string | `invalid` | `project_id must be a string` |
+| `key` is null | `invalid` | `key must not be null` |
+| `key` is not a string of 1 to 200 characters | `invalid` | `key must be a string of 1 to 200 characters` |
+| `cause` is null, or not an integer of 1 or more | `invalid` | `cause must not be null`, `cause must be an event id` |
+| A missing or bad `id` | `invalid` | `id must be a string of 1 to 200 characters` |
+| The `id` was used for another call | `conflict` | `id was already used for <call>` |
+| No project has this `project_id` | `not_found` | `no project with id '<project_id>'` |
+| `cause` names no stored event | `invalid` | `cause names no stored event` |
+
+The payload's size is the length in bytes of
+`json.dumps(payload, separators=(',', ':'), ensure_ascii=False)` as UTF-8; exactly 16,384 bytes
+is accepted.
+
+A person's signal, then the same request again, which answers the same event:
+
+```json
+{"v": "v1", "call": "signals.emit", "params": {"id": "c2", "topic": "factory.run.status", "project_id": "demo-repo", "key": "LM-12", "payload": {"to": "done", "run": "LM-12"}}}
+{"ok":true,"result":{"id":1,"type":"signal","at":"2026-10-25T04:30:58.829+00:00","thread_id":null,"data":{"topic":"factory.run.status","payload":{"to":"done","run":"LM-12"},"hops":0,"project_id":"demo-repo","key":"LM-12"}}}
+{"v": "v1", "call": "signals.emit", "params": {"id": "c2", "topic": "factory.run.status", "project_id": "demo-repo", "key": "LM-12", "payload": {"to": "done", "run": "LM-12"}}}
+{"ok":true,"result":{"id":1,"type":"signal","at":"2026-10-25T04:30:58.829+00:00","thread_id":null,"data":{"topic":"factory.run.status","payload":{"to":"done","run":"LM-12"},"hops":0,"project_id":"demo-repo","key":"LM-12"}}}
+```
+
+The thread `92fa…`, which the [launch](#threadslaunch) caused by that signal started, emits one
+with `LOOM_THREAD` set to its id; it carries the thread's `cause` and `hops`:
+
+```json
+{"v": "v1", "call": "signals.emit", "params": {"id": "d1", "topic": "plan.ready", "project_id": "demo-repo", "payload": {"steps": 3}}}
+{"ok":true,"result":{"id":10,"type":"signal","at":"2026-10-25T04:31:07.336+00:00","thread_id":null,"data":{"topic":"plan.ready","payload":{"steps":3},"hops":1,"project_id":"demo-repo","cause":1,"by":"92fa…"}}}
+```
+
+Refused signals:
+
+```json
+{"v": "v1", "call": "signals.emit", "params": {"id": "c3", "topic": "thread.settled", "payload": {}}}
+{"ok":false,"error":{"code":"invalid","message":"topic must not be a Loom event type"}}
+{"v": "v1", "call": "signals.emit", "params": {"id": "c3", "topic": "pr.opened", "payload": [14]}}
+{"ok":false,"error":{"code":"invalid","message":"payload must be a JSON object"}}
+{"v": "v1", "call": "signals.emit", "params": {"id": "c3", "topic": "pr.opened", "payload": {"pr": 14}, "cause": 999}}
+{"ok":false,"error":{"code":"invalid","message":"cause names no stored event"}}
+```
+
 ### How schedules run
 
 A schedule runs a text on a trigger, with one of three actions (§7). The scheduler starts and
 stops with `loom serve`. It wakes when the first schedule is due, and at least every 30 s, so it
-notices a jump of the clock, such as a laptop waking from sleep.
+notices a jump of the clock, such as a laptop waking from sleep. While it has an event trigger, it
+also wakes each time Loom stores new events.
 
-**Triggers.** `trigger.type` is one of these three:
+**Triggers.** `trigger.type` is one of these four:
 
 | Trigger | Due | Checks |
 |---|---|---|
 | `{"type": "at", "at": "2026-10-25T09:00"}` | Once, at `at`. A time in the past is due at once. | `at` is an ISO 8601 date and time. Without an offset it is in the machine's local time zone. |
 | `{"type": "interval", "everyMs": 3600000}` | First `everyMs` after the schedule is added, then `everyMs` after each run or skip. | `everyMs` is an integer from 60000 (60 s) to 31536000000 (365 days). |
 | `{"type": "fixed_time", "timeOfDay": "9:00", "weekdays": [1, 2, 3, 4, 5]}` | At `timeOfDay` on each listed day, in the machine's local time zone. | `timeOfDay` is `H:MM` or `HH:MM`, from `0:00` to `23:59`. `weekdays` are 0 to 6, 0 is Sunday and 6 is Saturday; missing or `[]` means every day. |
+| `{"type": "event", "topic": "factory.run.status", "project_id": "demo", "match": {"to": "done"}}` | Once for each event that matches it, from when the schedule is added (see Event triggers below). Its `next_run` is always null. | `topic` is a signal topic, as [`signals.emit`](#signalsemit) takes, or one of `thread.settled`, `thread.failed`, `request.opened` and `schedule.fired`. The optional `project_id` names a project. The optional `match` is an object of at most 20 fields and 4,096 bytes as compact UTF-8 JSON. The optional `hops_max` is an integer from 1 to 8 (default 8) and `rate_max` one from 1 to 30 (default 30), so they can only lower the limits. |
 
 `{"type": "webhook"}` is part of `v1`, but `schedules.add` refuses it with `invalid` until Loom
 can be reached from outside (§7). An interval is timed from when its last run ran or was
-skipped, not from when it was due, so it never catches up with a burst.
+skipped, not from when it was due, so it never catches up with a burst. `at`, `interval` and
+`fixed_time` are clock triggers; the rules for late and missed runs and for overlap below are
+theirs.
 
 **Actions.** `action` is one of these three:
 
@@ -999,25 +1163,81 @@ once, never a burst:
 - A `fixed_time` run more than 10 minutes late is skipped and logged (`skipped_late`), and the
   schedule goes on at its next time. One exactly 10 minutes late still runs, late.
 
-**Overlap.** Before a `post` or `launch` run, the scheduler gets the thread the schedule's last
-fired run posted into or launched. When that thread is `queued`, `starting` or `running`, the run
-is skipped and logged (`skipped_busy`), not queued. For a `post`, a turn someone else started in
-the thread counts too. `notify` runs are never skipped this way.
+**Overlap.** For a clock trigger, before a `post` or `launch` run, the scheduler gets the thread
+the schedule's last fired run posted into or launched. When that thread is `queued`, `starting`
+or `running`, the run is skipped and logged (`skipped_busy`), not queued. For a `post`, a turn
+someone else started in the thread counts too. `notify` runs are never skipped this way.
+
+**Event triggers.** An `event` trigger runs its schedule's action once for each event that
+matches it (§15 Event triggers):
+
+- **Topic.** A topic of `thread.settled`, `thread.failed`, `request.opened` or `schedule.fired`
+  matches events of that type. Any other topic matches [`signal`](#signal) events with that
+  `topic`.
+- **The event's thread** is its `thread_id`, or for a signal, its `by`. The scheduler looks it up
+  with `threads.get`; a thread that no longer exists counts as none.
+- **Project.** With `project_id`, an event matches only when its project is that one: a
+  signal's `project_id`; else its thread's project; else, for a `schedule.fired` with no thread,
+  the project of the schedule that fired; else none, which never matches.
+- **Match.** The event's payload is a signal's `payload`, or any other event's `data`. With
+  `match`, an event matches only when each field of `match` is in the payload with an equal JSON
+  value. Two values are equal when their compact JSON with sorted keys is the same text, so `1`
+  and `true`, and `1` and `1.0`, differ. A field the payload lacks never matches, also when
+  `match` asks for null.
+- **Filling.** A matching event's text has `{{event.id}}` replaced with the event's id, and
+  `{{payload.<field>}}` (a field of letters, digits, `_` and `-`) with that payload field: a
+  string as it is, a number, bool, list or object as its compact JSON, and a missing or null
+  field as nothing. Each value is cut to its first 2,000 characters (§11). A filled value is not
+  read again, so `{{event.id}}` inside a payload stays as it is, and so does any other `{{…}}`.
+  Clock runs fill nothing.
+- **Skips.** A matching event is skipped, checked in this order, and each skip is logged with a
+  [`trigger.skipped`](#triggerskipped) event:
+  - `own`: its thread was launched by this schedule (its `origin` is `schedule:<schedule id>`), or
+    it is this schedule's own `schedule.fired`;
+  - `hops`: its hops (see [Cause chains](#cause-chains)) are `hops_max` or more, so with the
+    default 8, an event with hops 8 is skipped and one with hops 7 runs;
+  - `rate`: the schedule fired `rate_max` times in the last 60 minutes (a run exactly 60 minutes
+    old no longer counts). The first such skip in 60 minutes also sends a `notify`
+    [`schedule.fired`](#schedulefired), with the schedule's thread (or none) and the text
+    `Schedule <schedule id> fired <rate_max> times in the last hour, so it skipped event
+    <event id>.` So a schedule sends at most one such notify an hour.
+- **Running.** A `post` sends the filled text with `threads.send`, `mode: "queue"` and the
+  event's id as `cause`. A `launch` calls `threads.launch` with the filled text, the event's id as
+  `cause`, `origin` `schedule:<schedule id>`, and a title from the schedule's `title`, else the
+  filled text's first non-empty line, cut at 80 characters. So what it starts has the event's
+  hops + 1. A `notify` makes no call. The run's `schedule.fired` holds the filled text, `cause`
+  and `hops`.
+- **No overlap rule, never late.** Each matching event runs, even while the last thread is still
+  going; `rate_max`, `hops_max` and a concurrency key are what bound a burst. An event run has no
+  late line and `late: false`.
+- **The cursor.** Each event schedule keeps the id of the last event it handled. It starts at the
+  newest event when the schedule is added, so an older event never runs it. Events are handled
+  oldest first, and for each event the schedules oldest first. After a restart, each matching
+  event after a schedule's cursor runs once, and one at or before it never runs again. Events are
+  kept 30 days (§4), so a schedule catches up on at most that much.
+- **Failures.** A run whose call fails with a Loom error is logged as `failed`, and the schedule
+  goes on with the next event. When the scheduler itself fails (the store, say), the schedule
+  stays at the event before and tries it again after 5 s.
 
 **Runs.** Each run is a row in the `schedule_runs` table of `loom.db`: when it was due, when it
-ran, whether it was late, the thread it posted into or launched, and its outcome. Rows older than
-30 days are deleted each time the server starts, and removing a schedule deletes its rows. No `v1`
-call reads them.
+ran, whether it was late, the thread it posted into or launched, its outcome, and for an event
+trigger the event it ran for (`event_id`, with the event's time as when it was due). Rows older
+than 30 days are deleted each time the server starts, and removing a schedule deletes its rows.
+No `v1` call reads them.
 
 | Outcome | When |
 |---|---|
-| `fired` | The run posted, launched or notified. Only these send `schedule.fired`. |
+| `fired` | The run posted, launched or notified. Only these, and an event trigger's first `skipped_rate` in an hour, send `schedule.fired`. |
 | `skipped_late` | A `fixed_time` run more than 10 minutes late. |
-| `skipped_busy` | A `post` or `launch` whose last thread is still going (see Overlap). |
-| `failed` | The call failed, for example because the thread was settled. The row keeps the error message, cut at 500 characters. The run is not tried again; the schedule goes on at its next time. |
+| `skipped_busy` | A `post` or `launch` of a clock trigger whose last thread is still going (see Overlap). |
+| `skipped_own` | An event from a thread the schedule launched, or the schedule's own `schedule.fired` (see Event triggers). |
+| `skipped_hops` | An event whose hops reached the trigger's `hops_max`. |
+| `skipped_rate` | An event past the trigger's `rate_max` in the last hour. |
+| `failed` | The call failed, for example because the thread was settled. The row keeps the error message, cut at 500 characters. The run is not tried again; the schedule goes on at its next time, or with its next event. |
 
 **No run twice.** A `post` or `launch` run calls with the command id `schedule:<schedule
-id>:<due>`, with `<due>` in ISO 8601, UTC. When Loom stops after the call and before the run's
+id>:<due>`, with `<due>` in ISO 8601, UTC, or for an event trigger `schedule:<schedule
+id>:event:<event id>`. When Loom stops after the call and before the run's
 row is written, the run is tried again with the same id, so the server returns the first answer
 instead of posting or launching again (see [Command ids](#command-ids-and-safe-retries)). A
 restart never repeats a run.
@@ -1032,7 +1252,7 @@ Adds a schedule (§7). See [How schedules run](#how-schedules-run) for the trigg
 | Param | Type | |
 |---|---|---|
 | `id` | string, required | Command id. |
-| `trigger` | object, required | An `at`, `interval` or `fixed_time` trigger. |
+| `trigger` | object, required | An `at`, `interval`, `fixed_time` or `event` trigger. |
 | `text` | string, required | Not empty. What it posts, launches with or notifies. |
 | `action` | string | `post` (default), `launch` or `notify`. |
 | `thread_id` | string | For `post`, the thread to post into; for `notify`, the thread it is about. Default: the caller's own thread. Not with `launch`. |
@@ -1046,8 +1266,9 @@ A param given as null is refused. The thread and the project must exist when the
 added.
 
 **Result:** the new [schedule](#schedule). Its `by` is the caller's thread, or null for a person,
-and its `next_run` is its first due time. A schedule due already, such as an `at` in the past,
-runs right after the answer.
+and its `next_run` is its first due time, or null for an `event` trigger. A schedule due already,
+such as an `at` in the past, runs right after the answer. An `event` trigger keeps only its own
+fields.
 
 **Errors:**
 
@@ -1058,13 +1279,22 @@ runs right after the answer.
 | `trigger` is not an object | `invalid` | `trigger must be an object` |
 | No `trigger.type` | `invalid` | `trigger.type is required` |
 | A `webhook` trigger | `invalid` | `webhook triggers are not served yet` |
-| Another `trigger.type` | `invalid` | `trigger.type must be one of at, interval, fixed_time` |
+| Another `trigger.type` | `invalid` | `trigger.type must be one of at, interval, fixed_time, event` |
 | No `at`, `everyMs` or `timeOfDay` for its type | `invalid` | `trigger.<field> is required` |
 | A bad `at` | `invalid` | `trigger.at must be an ISO 8601 date and time` |
 | A bad `everyMs` | `invalid` | `trigger.everyMs must be an integer from 60000 to 31536000000` |
 | A bad `timeOfDay` | `invalid` | `trigger.timeOfDay must be H:MM or HH:MM, from 0:00 to 23:59` |
 | `weekdays` is null | `invalid` | `trigger.weekdays must not be null` |
 | A bad `weekdays` | `invalid` | `trigger.weekdays must be a list of integers from 0 (Sunday) to 6 (Saturday)` |
+| No `topic` for an `event` trigger, or a null one | `invalid` | `trigger.topic is required` |
+| A `topic` that is not a string or not a valid signal topic, or a Loom event type other than the four, such as `turn.text` or `signal` | `invalid` | `trigger.topic must be a signal topic or one of thread.settled, thread.failed, request.opened, schedule.fired` |
+| The trigger's `project_id`, `match`, `hops_max` or `rate_max` is null | `invalid` | `trigger.<field> must not be null` |
+| The trigger's `project_id` is not a string | `invalid` | `trigger.project_id must be a string` |
+| `match` is not an object | `invalid` | `trigger.match must be a JSON object` |
+| `match` has more than 20 fields | `invalid` | `trigger.match must have at most 20 fields` |
+| `match` is over 4,096 bytes as compact UTF-8 JSON | `invalid` | `trigger.match must be at most 4096 bytes as JSON` |
+| `hops_max` is not an integer from 1 to 8 | `invalid` | `trigger.hops_max must be an integer from 1 to 8` |
+| `rate_max` is not an integer from 1 to 30 | `invalid` | `trigger.rate_max must be an integer from 1 to 30` |
 | No `text` | `invalid` | `text is required` |
 | An empty or non-string `text` | `invalid` | `text must be a non-empty string` |
 | A bad `action` | `invalid` | `action must be one of post, launch, notify` |
@@ -1082,7 +1312,7 @@ runs right after the answer.
 | A bad `settle` | `invalid` | `settle must be one of on_result` |
 | `project_id` is not the thread's | `invalid` | `project_id is not the thread's project` |
 | The thread does not exist | `not_found` | `no thread with id '<thread_id>'` |
-| The project does not exist | `not_found` | `no project with id '<project_id>'` |
+| The project, or the trigger's `project_id`, does not exist | `not_found` | `no project with id '<project_id>'` |
 | The `id` was used for another call | `conflict` | `id was already used for <call>` |
 
 ```json
@@ -1101,6 +1331,18 @@ Monday at 08:00 UTC, because the clocks go back an hour that night:
 ```json
 {"v": "v1", "call": "schedules.add", "params": {"id": "e11", "trigger": {"type": "interval", "everyMs": 3600000}, "text": "x"}}
 {"ok":false,"error":{"code":"invalid","message":"thread_id is required to post from outside a thread"}}
+```
+
+In another run with a project `demo`, a schedule that launches a thread for each
+`factory.run.status` signal about `demo` with `"to": "done"`, and two refused ones:
+
+```json
+{"v": "v1", "call": "schedules.add", "params": {"id": "c5", "trigger": {"type": "event", "topic": "factory.run.status", "project_id": "demo", "match": {"to": "done"}}, "text": "Land run {{payload.run}}: it is {{payload.to}} (event {{event.id}}).", "action": "launch", "project_id": "demo", "settle": "on_result"}}
+{"ok":true,"result":{"id":"4ec6…","trigger":{"type":"event","topic":"factory.run.status","project_id":"demo","match":{"to":"done"}},"action":"launch","text":"Land run {{payload.run}}: it is {{payload.to}} (event {{event.id}}).","thread_id":null,"project_id":"demo","title":null,"concurrency_key":null,"on_busy":null,"settle":"on_result","by":null,"paused":false,"next_run":null,"created_at":"2026-10-25T05:07:40.889+00:00"}}
+{"v": "v1", "call": "schedules.add", "params": {"id": "c6", "trigger": {"type": "event", "topic": "turn.text"}, "text": "x", "action": "notify"}}
+{"ok":false,"error":{"code":"invalid","message":"trigger.topic must be a signal topic or one of thread.settled, thread.failed, request.opened, schedule.fired"}}
+{"v": "v1", "call": "schedules.add", "params": {"id": "c6", "trigger": {"type": "event", "topic": "demo.done", "hops_max": 9}, "text": "x", "action": "notify"}}
+{"ok":false,"error":{"code":"invalid","message":"trigger.hops_max must be an integer from 1 to 8"}}
 ```
 
 ### `schedules.list`
@@ -1170,9 +1412,10 @@ missing (`schedule_id is required`) or not a string (`schedule_id must be a stri
 ## Events
 
 Every change of a thread's state or audience, every turn's text and tool calls, every turn's
-result, every permission request that opened or closed and every schedule run that fired is an
-event, with an id that only grows. Read them with [`threads.events`](#threadsevents). The state
-in `threads.get` is the truth; events are a log to follow, kept 30 days (§4 Events).
+result, every permission request that opened or closed, every schedule run that fired, every
+signal and every event an event trigger skipped is an event, with an id that only grows. Read
+them with [`threads.events`](#threadsevents). The state in `threads.get` is the truth; events are
+a log to follow, kept 30 days (§4 Events).
 
 ```json
 {"id": 5, "type": "turn.tool", "at": "2026-10-24T18:47:13.004+00:00", "thread_id": "3f2a…", "data": {"tool_use_id": "toolu_fake_1", "name": "Bash", "input": {"command": "true", "description": "Fake tool call 1"}}}
@@ -1181,7 +1424,7 @@ in `threads.get` is the truth; events are a log to follow, kept 30 days (§4 Eve
 | Field | Type | |
 |---|---|---|
 | `id` | int | Grows by one or more with each event. |
-| `type` | string | One of the eleven types below. |
+| `type` | string | One of the thirteen types below. |
 | `at` | string | ISO 8601, UTC, with milliseconds. |
 | `thread_id` | string or null | |
 | `data` | object | Depends on `type`. |
@@ -1358,18 +1601,23 @@ A request nobody answered, with `request_timeout = 3`:
 
 A schedule's run fired: it posted, launched or notified (see
 [How schedules run](#how-schedules-run)). It is sent once for each fired run, and never for a
-run that was skipped or failed.
+run that was skipped or failed, except for the one `notify` an hour that an event trigger's
+`rate_max` skip sends.
 
 The event's `thread_id` is the thread the run posted into or launched. For a `notify` it is the
-schedule's `thread_id`, or null when the schedule has none.
+schedule's `thread_id`, or null when the schedule has none. This holds for an event trigger's
+runs too, and for the `notify` its `rate_max` skip sends (see Event triggers under
+[How schedules run](#how-schedules-run)).
 
 | Field | Type | |
 |---|---|---|
 | `schedule_id` | string | |
 | `action` | string | `post`, `launch` or `notify`. |
-| `text` | string | The schedule's text, without the late line. |
-| `late` | bool | Always there. `true` when the run started more than 60 s after it was due (§7). |
+| `text` | string | The schedule's text, without the late line. For an event trigger's run, the text as filled from the event. |
+| `late` | bool | Always there. `true` when the run started more than 60 s after it was due (§7). Always `false` for an event trigger's run. |
 | `by` | string | The agent thread that made the schedule. Left out when a person made it. |
+| `cause` | int | Only for an event trigger's run, and its rate `notify`: the id of the event it ran for or skipped. |
+| `hops` | int | Only with `cause`: that event's hops + 1 (see [Cause chains](#cause-chains)), the same as the thread a `launch` starts. |
 
 An agent's reminder, added six minutes after its `at`, so it ran at once and late:
 
@@ -1382,6 +1630,61 @@ A person's `launch`, on time, names the thread it started:
 ```json
 {"id": 18, "type": "schedule.fired", "at": "2026-10-24T22:32:00.039+00:00", "thread_id": "7865…", "data": {"schedule_id": "f842…", "action": "launch", "text": "Check the nightly build.\nSay what broke.", "late": false}}
 ```
+
+An event trigger's `launch` (the `schedules.add` example `c5`) ran for the signal 212, and a
+trigger with `rate_max` 1 skipped event 29, so it sent its one notify of the hour:
+
+```json
+{"id": 214, "type": "schedule.fired", "at": "2026-10-25T05:07:41.001+00:00", "thread_id": "0c9b…", "data": {"schedule_id": "4ec6…", "action": "launch", "text": "Land run LM-12: it is done (event 212).", "late": false, "cause": 212, "hops": 1}}
+{"id": 35, "type": "schedule.fired", "at": "2026-10-25T05:07:04.354+00:00", "thread_id": null, "data": {"schedule_id": "71c0…", "action": "notify", "text": "Schedule 71c0… fired 1 times in the last hour, so it skipped event 29.", "late": false, "cause": 29, "hops": 2}}
+```
+
+### `signal`
+
+A client emitted a signal with [`signals.emit`](#signalsemit). Its `thread_id` is always null.
+
+| Field | Type | |
+|---|---|---|
+| `topic` | string | |
+| `payload` | object | As emitted. |
+| `hops` | int | Always there: 0 for a person's signal without a `cause`, else as [Cause chains](#cause-chains) says. |
+| `project_id` | string | Only when one was given. |
+| `key` | string | Only when one was given. |
+| `cause` | int | The event behind it: the given `cause`, else the emitting thread's. Left out when there is none. |
+| `by` | string | The Loom thread that emitted it. Left out for a person's. |
+
+A person's signal caused by the agent's signal 10, so one hop more:
+
+```json
+{"id": 11, "type": "signal", "at": "2026-10-25T04:31:17.442+00:00", "thread_id": null, "data": {"topic": "pr.opened", "payload": {"pr": 15}, "hops": 2, "project_id": "demo-repo", "key": "pr-15", "cause": 10}}
+```
+
+A `person` follower of [`threads.events`](#threadsevents) never gets it (see the `audience`
+filter there).
+
+### `trigger.skipped`
+
+An event trigger sends it when it skips an event that matches it (§15 Cause chains), once per
+schedule and event; see Event triggers under [How schedules run](#how-schedules-run). Its
+`thread_id` is null. The skip's run is logged as `skipped_<reason>`, and the schedule goes on with
+the next event.
+
+| Field | Type | |
+|---|---|---|
+| `schedule_id` | string | The schedule whose trigger skipped. |
+| `event_id` | int | The event it skipped. |
+| `reason` | string | `own` when the event came from a thread the schedule launched (or is its own `schedule.fired`), `hops` when the event's hops reached the trigger's `hops_max`, `rate` when the trigger fired `rate_max` times in the last hour. The first is checked first. |
+
+Two `launch` schedules on `thread.settled` start each other's next step, and each skips the
+`thread.settled` of the threads it launched. Event 200 is where their chain stopped, at an event
+with hops 8, and event 240 an `own` skip in a later chain:
+
+```json
+{"id": 200, "type": "trigger.skipped", "at": "2026-10-25T05:07:11.947+00:00", "thread_id": null, "data": {"schedule_id": "8a73…", "event_id": 198, "reason": "hops"}}
+{"id": 240, "type": "trigger.skipped", "at": "2026-10-25T05:07:42.155+00:00", "thread_id": null, "data": {"schedule_id": "8a73…", "event_id": 238, "reason": "own"}}
+```
+
+A `person` follower never gets it.
 
 ## `loom serve`
 
@@ -1529,9 +1832,9 @@ They go before the command.
 |---|---|
 | `loom serve [--socket PATH] [--data-dir DIR] [--config FILE]` | starts the server, see [`loom serve`](#loom-serve) |
 | `loom install` | registers `loom-mcp` with Claude Code and Codex, see [`loom install`](#loom-install) |
-| `loom threads launch <project_id> <title> <message> [--workspace root\|worktree\|existing_worktree] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--requests caller\|any] [--origin O] [--audience person\|agent] [--id ID]` | `threads.launch` |
+| `loom threads launch <project_id> <title> <message> [--workspace root\|worktree\|existing_worktree] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--requests caller\|any] [--origin O] [--audience person\|agent] [--cause EVENT_ID] [--id ID]` | `threads.launch` |
 | `loom threads delegate <parent_id> <task> [--workspace ...] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--id ID]` | `threads.delegate` |
-| `loom threads send <thread_id> <message> [--mode steer\|queue\|interrupt] [--id ID]` | `threads.send` |
+| `loom threads send <thread_id> <message> [--mode steer\|queue\|interrupt] [--cause EVENT_ID] [--id ID]` | `threads.send` |
 | `loom threads list [--project P] [--audience person\|agent]` | `threads.list` |
 | `loom threads get <thread_id>` | `threads.get` |
 | `loom threads stop <thread_id> [--id ID]` | `threads.stop` |
@@ -1542,14 +1845,16 @@ They go before the command.
 | `loom projects set-mode <project_id> <mode> [--id ID]` | `projects.set_mode` |
 | `loom projects remove <project_id> [--id ID]` | `projects.remove` |
 | `loom projects list` | `projects.list` |
-| `loom schedules add <text> (--at DATETIME \| --every SECONDS \| --time H:MM [--weekdays LIST]) [--action post\|launch\|notify] [--thread T] [--project P] [--title T] [--id ID]` | `schedules.add` |
+| `loom schedules add <text> (--at DATETIME \| --every SECONDS \| --time H:MM [--weekdays LIST] \| --event TOPIC [--event-project P] [--match JSON]) [--action post\|launch\|notify] [--thread T] [--project P] [--title T] [--id ID]` | `schedules.add` |
 | `loom schedules list [--thread T] [--project P]` | `schedules.list` |
 | `loom schedules pause <schedule_id> [--id ID]` | `schedules.pause` |
 | `loom schedules remove <schedule_id> [--id ID]` | `schedules.remove` |
 | `loom requests respond <request_id> allow\|deny [--message M] [--id ID]` | `requests.respond` |
+| `loom signals emit <topic> [--payload JSON\|-] [--project P] [--key K] [--cause EVENT_ID] [--id ID]` | `signals.emit` |
 
 - `loom project ...` is the same as `loom projects ...`, `loom schedule ...` as
-  `loom schedules ...`, and `loom request ...` as `loom requests ...`.
+  `loom schedules ...`, `loom request ...` as `loom requests ...`, and `loom signal ...` as
+  `loom signals ...`.
 - `--branch` and `--base` go with `--workspace worktree`, `--path` and `--branch` with
   `--workspace existing_worktree`; any other mix is a usage error.
 - `--audience` sends `audience`: on `threads launch` the new thread's audience, on `threads list`
@@ -1563,6 +1868,9 @@ They go before the command.
   - `--time H:MM` sends `{"type": "fixed_time", "timeOfDay": H:MM}`. With `--weekdays LIST`,
     comma-separated whole numbers with 0 for Sunday (as `1,2,3,4,5` for Monday to Friday), it
     also sends `"weekdays"`. `--weekdays` without `--time` is a usage error.
+  - `--event TOPIC` sends `{"type": "event", "topic": TOPIC}`. With `--event-project P` it also
+    sends `"project_id"`, and with `--match JSON`, a JSON object, `"match"`. Either of them
+    without `--event`, or a `--match` that is not JSON or not an object, is a usage error.
 
   The server checks the values (the 60 s floor, weekdays 0 to 6, the form of the time) and
   answers `invalid`, exit 1. `--action`, `--thread`, `--project` and `--title` send `action`,
@@ -1577,6 +1885,12 @@ They go before the command.
   `--id`.
 - `requests respond` sends `message` only with `--message`; the agent gets it only with `deny`.
   `--message` is not read from stdin, so it shows in the `loom` process's command line.
+- `signals emit` sends `payload` from `--payload`, a JSON object, or `{}` without it; a
+  `--payload` of `-` is read from stdin. Text that is not JSON, or JSON that is not an object, is
+  a usage error. `--project`, `--key` and `--cause` send `project_id`, `key` and `cause`.
+- `--cause EVENT_ID` on `threads launch`, `threads send` and `signals emit` sends `cause` as an
+  integer; without it no `cause` is sent. Text that is not an integer is a usage error; the
+  server checks the rest (see [Cause chains](#cause-chains)).
 
 ### Examples
 
@@ -1658,6 +1972,22 @@ $ loom schedules add "Ping." --every 60
 loom: invalid: thread_id is required to post from outside a thread
 ```
 
+An event trigger, in the run of the `schedules.add` example `c5`. The first signal matches it,
+the second does not, and event 2 is its run:
+
+```text
+$ loom schedules add 'Run {{payload.to}} for {{event.id}}' --event demo.done --match '{"to":"done"}' --action notify
+bda8…  active  notify  on demo.done  -  Run {{payload.to}} for {{event.id}}
+$ loom signals emit demo.done --payload '{"to":"done","run":"LM-12"}' --project demo
+1 2026-10-25T05:06:42.640+00:00 - signal demo.done demo 0 {"to": "done", "run": "LM-12"}
+$ loom signals emit demo.done --payload '{"to":"open"}'
+3 2026-10-25T05:06:42.815+00:00 - signal demo.done 0 {"to": "open"}
+$ loom threads events
+1 2026-10-25T05:06:42.640+00:00 - signal demo.done demo 0 {"to": "done", "run": "LM-12"}
+2 2026-10-25T05:06:42.678+00:00 - schedule.fired bda8… notify Run done for 1
+3 2026-10-25T05:06:42.815+00:00 - signal demo.done 0 {"to": "open"}
+```
+
 Audiences, in another run with a project `demo-repo`, an agent thread `0844…` and a thread
 `31d4…` launched with `"audience": "person"`. Event 31 is a `notify` with no thread, so every
 filter keeps it:
@@ -1680,6 +2010,66 @@ $ loom threads update 0844…
 usage: loom threads update [-h] --audience {person,agent} [--id ID] thread_id
 loom threads update: error: the following arguments are required: --audience
 ```
+
+Signals and causes, in the run of the [`signals.emit`](#signalsemit) examples, with the agent's
+signal 10 and its thread `92fa…` at hops 1. A signal is one event line. `--id s1` twice gives
+the same event, and the send raises `92fa…` to the hops of its cause:
+
+```text
+$ loom signals emit pr.opened --payload '{"pr":15}' --project demo-repo --key pr-15 --cause 10
+11 2026-10-25T04:31:17.442+00:00 - signal pr.opened demo-repo pr-15 2 {"pr": 15}
+$ loom --json signal emit pr.opened --payload '{"pr":15}' --id s1
+{"id": 12, "type": "signal", "at": "2026-10-25T04:31:17.659+00:00", "thread_id": null, "data": {"topic": "pr.opened", "payload": {"pr": 15}, "hops": 0}}
+$ loom signal emit pr.opened --payload '{"pr":15}' --id s1
+12 2026-10-25T04:31:17.659+00:00 - signal pr.opened 0 {"pr": 15}
+$ echo '{"pr": 16}' | loom signals emit pr.opened --payload -
+13 2026-10-25T04:31:18.012+00:00 - signal pr.opened 0 {"pr": 16}
+$ loom signals emit pr.opened --payload '[16]'
+usage: loom signals emit [-h] [--payload JSON] [--project PROJECT] [--key KEY]
+                         [--cause EVENT_ID] [--id ID]
+                         topic
+loom signals emit: error: --payload must be a JSON object
+$ loom signals emit pr.opened --cause 0
+loom: invalid: cause must be an event id
+$ loom threads launch demo-repo "Review PR 15" "Review PR 15." --workspace root --cause 11
+92e7…  queued  demo-repo  Review PR 15
+$ loom threads send 92fa… "PR 15 was opened." --mode queue --cause 11
+92fa…  idle  demo-repo  Plan the next step
+$ loom threads get 92fa…
+id: 92fa…
+title: Plan the next step
+runner: claude
+project_id: demo-repo
+workspace_path: /home/me/src/demo
+branch: main
+model: -
+permission_mode: auto
+state: idle
+waiting: false
+reason: -
+parent_id: -
+origin: -
+audience: agent
+concurrency_key: -
+settle: -
+cause: 11
+hops: 3
+created_at: 2026-10-25T04:31:06.869+00:00
+$ loom schedules add "Stand-up in five minutes." --at 2026-10-25T05:00 --action notify
+171d…  2026-10-25T04:00:00.000+00:00  notify  at 2026-10-25T05:00  -  Stand-up in five minutes.
+$ loom threads events --audience person --after 10
+28 2026-10-25T04:31:25.925+00:00 - schedule.fired 171d… notify late Stand-up in five minutes.
+$ loom threads events --audience agent --after 10
+11 2026-10-25T04:31:17.442+00:00 - signal pr.opened demo-repo pr-15 2 {"pr": 15}
+12 2026-10-25T04:31:17.659+00:00 - signal pr.opened 0 {"pr": 15}
+13 2026-10-25T04:31:18.012+00:00 - signal pr.opened 0 {"pr": 16}
+14 2026-10-25T04:31:25.328+00:00 92e7… thread.state queued
+…
+27 2026-10-25T04:31:25.712+00:00 92fa… thread.state idle
+28 2026-10-25T04:31:25.925+00:00 - schedule.fired 171d… notify late Stand-up in five minutes.
+```
+
+`threads events` printed events 15 to 26 there too, the two threads' turns; they are left out.
 
 Permission requests, in another run with `request_timeout = 3` in the config. The agent asks to
 run a Bash command; the first answer denies it, and the second comes too late. The second thread
@@ -1743,14 +2133,16 @@ is the event object, so any language can follow Loom by reading the CLI's stdout
 - Without it, a short human form, with two spaces between fields. A thread is one line: id,
   state (and `waiting`), project, title, and the reason when there is one. `threads get` prints
   one `field: value` line per field. A project is one line: id, mode (or `default`), root and
-  title. A schedule is one line: id, state (`paused` when paused, else its `next_run`, else
-  `done`), action, trigger (`at <at>`, `every <seconds>s`, `<timeOfDay>` or
-  `<timeOfDay> on <weekdays>`), the thread or else the project it targets, and its title, else
-  its text. An event is one line: id, time, thread (or `-`), type and its data fields, with single
-  spaces. A null prints as `-`. A field an event lacks is left out: a `request.closed` line
-  shows `request_id`, `decision` and, when it has one, `reason`
+  title. A schedule is one line: id, state (`paused` when paused, `active` for an `event`
+  trigger, else its `next_run`, else `done`), action, trigger (`at <at>`, `every <seconds>s`,
+  `<timeOfDay>`, `<timeOfDay> on <weekdays>` or `on <topic>`), the thread or else the project it
+  targets, and its title, else its text. An event is one line: id, time, thread (or `-`), type
+  and its data fields, with single spaces. A null prints as `-`. A field an event lacks is left
+  out: a `request.closed` line shows `request_id`, `decision` and, when it has one, `reason`
   (`request.closed r1 deny timeout`). A `request.opened` line shows `request_id`, `tool_name`,
-  `description` and `input`, not `expires_at`.
+  `description` and `input`, not `expires_at`. A `signal` line shows `topic`, `project_id`,
+  `key`, `hops` and `payload`, and a `trigger.skipped` line `schedule_id`, `event_id` and
+  `reason`. `signals emit` prints its event as one such line.
 - Agent-written text is shown as text: each control character (newline and tab too, DEL and the
   C1 range) prints as an escape such as `\n`, `\t` or `\x1b`, so each event is one line. Each text
   is cut at 2,000 characters and then marked `…`; `--json` prints it whole.
@@ -2063,9 +2455,9 @@ not_found no thread with id 'nope'
   `LoomApiError` on `ok: false`.
 - One method per `v1` call, named after it with `_` for `.`. Required params are positional; the
   rest are keywords, and a keyword left `None` is not sent:
-  - `threads_launch(project_id, title, message, *, workspace=None, runner=None, model=None, requests=None, origin=None, audience=None, id=None)`
+  - `threads_launch(project_id, title, message, *, workspace=None, runner=None, model=None, requests=None, origin=None, audience=None, cause=None, id=None)`
   - `threads_delegate(parent_id, task, *, workspace=None, runner=None, model=None, id=None)`
-  - `threads_send(thread_id, message, *, mode=None, id=None)`
+  - `threads_send(thread_id, message, *, mode=None, cause=None, id=None)`
   - `threads_list(project_id=None, *, audience=None)`, `threads_get(thread_id)`
   - `threads_stop(thread_id, *, id=None)`, `threads_settle(thread_id, *, id=None)`
   - `threads_update(thread_id, audience, *, id=None)`
@@ -2077,6 +2469,8 @@ not_found no thread with id 'nope'
   - `schedules_list(thread_id=None, project_id=None)`
   - `schedules_pause(schedule_id, *, id=None)`, `schedules_remove(schedule_id, *, id=None)`
   - `requests_respond(request_id, decision, *, message=None, id=None)`
+  - `signals_emit(topic, payload, *, project_id=None, key=None, cause=None, id=None) -> Event`:
+    the `signal` event
 - A call that changes something sends a new uuid4 `id` when `id` is `None`. Pass the same `id`
   again to retry it safely. When such a call fails after it connected (the connection dropped,
   the answer timed out or broke the protocol), the `LoomConnectionError` has `command_id`, the

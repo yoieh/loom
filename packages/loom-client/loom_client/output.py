@@ -24,6 +24,8 @@ EVENT_FIELDS: dict[str, tuple[str, ...]] = {
     EventType.REQUEST_OPENED: ('request_id', 'tool_name', 'description', 'input'),
     EventType.REQUEST_CLOSED: ('request_id', 'decision', 'reason'),
     EventType.SCHEDULE_FIRED: ('schedule_id', 'action', 'by', 'late', 'text'),
+    EventType.SIGNAL: ('topic', 'project_id', 'key', 'hops', 'payload'),
+    EventType.TRIGGER_SKIPPED: ('schedule_id', 'event_id', 'reason'),
 }
 
 
@@ -85,6 +87,8 @@ def _schedule_state(schedule: dict) -> str | None:
         return 'paused'
     if paused is not False or 'next_run' not in schedule:
         return None
+    if _field(schedule.get('trigger'), 'type') == TriggerType.EVENT:
+        return 'active'
     next_run = schedule['next_run']
     if next_run is None:
         return 'done'
@@ -112,6 +116,9 @@ def _trigger_text(trigger: object) -> str | None:
         if not isinstance(weekdays, list) or not all(_whole(day) for day in weekdays):
             return None
         return f'{time} on {",".join(str(day) for day in weekdays)}'
+    if kind == TriggerType.EVENT:
+        topic = trigger.get('topic')
+        return f'on {topic}' if isinstance(topic, str) else None
     return None
 
 
@@ -148,6 +155,8 @@ def event_line(event: object) -> str:
 def human(call: str, result: object) -> list[str]:
     if call == CallName.THREADS_GET:
         return thread_detail(result)
+    if call == CallName.SIGNALS_EMIT:
+        return [event_line(result)]
     if call.startswith('projects.'):
         return [project_line(item) for item in _items(result)]
     if call.startswith('schedules.'):

@@ -8,6 +8,10 @@ import loom_contracts
 from loom_contracts.calls import (
     CALL_PARAMS,
     MAX_CONCURRENCY_KEY,
+    MAX_PAYLOAD,
+    MAX_SIGNAL_KEY,
+    MAX_TOPIC,
+    TOPIC_PATTERN,
     ApiError,
     Audience,
     CallName,
@@ -32,13 +36,13 @@ PARAMS: dict[str, tuple[set[str], set[str]]] = {
     'threads.launch': (
         {'id', 'title', 'message', 'project_id'},
         {'workspace', 'runner', 'model', 'requests', 'origin', 'audience', 'concurrency_key',
-         'on_busy', 'settle'},
+         'on_busy', 'settle', 'cause'},
     ),
     'threads.delegate': (
         {'id', 'parent_id', 'task'},
         {'workspace', 'runner', 'model', 'concurrency_key', 'on_busy'},
     ),
-    'threads.send': ({'id', 'thread_id', 'message'}, {'mode'}),
+    'threads.send': ({'id', 'thread_id', 'message'}, {'mode', 'cause'}),
     'threads.list': (set(), {'project_id', 'audience'}),
     'threads.get': ({'thread_id'}, set()),
     'threads.stop': ({'id', 'thread_id'}, set()),
@@ -46,6 +50,7 @@ PARAMS: dict[str, tuple[set[str], set[str]]] = {
     'threads.update': ({'id', 'thread_id', 'audience'}, set()),
     'threads.events': (set(), {'after', 'thread_id', 'follow', 'audience'}),
     'requests.respond': ({'id', 'request_id', 'decision'}, {'message'}),
+    'signals.emit': ({'id', 'topic', 'payload'}, {'project_id', 'key', 'cause'}),
     'schedules.add': (
         {'id', 'trigger', 'text'},
         {'action', 'thread_id', 'project_id', 'title', 'concurrency_key', 'on_busy', 'settle'},
@@ -87,6 +92,17 @@ class ConcurrencyTest(unittest.TestCase):
         self.assertEqual(MAX_CONCURRENCY_KEY, 200)
 
 
+class SignalLimitsTest(unittest.TestCase):
+    def test_the_signal_limits(self) -> None:
+        self.assertEqual((MAX_TOPIC, MAX_SIGNAL_KEY, MAX_PAYLOAD), (200, 200, 16_384))
+
+    def test_the_topic_pattern_is_a_string(self) -> None:
+        self.assertEqual(TOPIC_PATTERN, r'[A-Za-z0-9][A-Za-z0-9._:-]*')
+
+    def test_signals_emit_is_a_call(self) -> None:
+        self.assertEqual(CallName.SIGNALS_EMIT, 'signals.emit')
+
+
 class CallParamsTest(unittest.TestCase):
     def test_every_call_has_params_and_no_other_key(self) -> None:
         self.assertEqual(set(CALL_PARAMS), set(CallName))
@@ -115,12 +131,14 @@ class CallParamsTest(unittest.TestCase):
             ('threads.launch', 'concurrency_key'): str,
             ('threads.launch', 'on_busy'): OnBusy,
             ('threads.launch', 'settle'): Settle,
+            ('threads.launch', 'cause'): int,
             ('threads.delegate', 'parent_id'): str,
             ('threads.delegate', 'workspace'): Workspace,
             ('threads.delegate', 'runner'): RunnerName,
             ('threads.delegate', 'concurrency_key'): str,
             ('threads.delegate', 'on_busy'): OnBusy,
             ('threads.send', 'mode'): DispatchMode,
+            ('threads.send', 'cause'): int,
             ('threads.list', 'project_id'): str,
             ('threads.list', 'audience'): Audience,
             ('threads.update', 'thread_id'): str,
@@ -128,6 +146,11 @@ class CallParamsTest(unittest.TestCase):
             ('threads.events', 'after'): int,
             ('threads.events', 'audience'): Audience,
             ('requests.respond', 'decision'): Decision,
+            ('signals.emit', 'topic'): str,
+            ('signals.emit', 'payload'): dict[str, object],
+            ('signals.emit', 'project_id'): str,
+            ('signals.emit', 'key'): str,
+            ('signals.emit', 'cause'): int,
             ('schedules.add', 'trigger'): Trigger,
             ('schedules.add', 'action'): ScheduleAction,
             ('schedules.add', 'project_id'): str,
@@ -168,7 +191,7 @@ class RecordTest(unittest.TestCase):
             frozenset({
                 'id', 'title', 'runner', 'project_id', 'workspace_path', 'branch', 'model',
                 'permission_mode', 'state', 'waiting', 'reason', 'parent_id', 'origin',
-                'audience', 'concurrency_key', 'settle', 'created_at',
+                'audience', 'concurrency_key', 'settle', 'cause', 'hops', 'created_at',
             }),
         )
         self.assertEqual(ThreadInfo.__optional_keys__, frozenset())
@@ -176,6 +199,8 @@ class RecordTest(unittest.TestCase):
         self.assertIs(get_type_hints(ThreadInfo)['audience'], Audience)
         self.assertEqual(get_type_hints(ThreadInfo)['concurrency_key'], str | None)
         self.assertEqual(get_type_hints(ThreadInfo)['settle'], Settle | None)
+        self.assertEqual(get_type_hints(ThreadInfo)['cause'], int | None)
+        self.assertIs(get_type_hints(ThreadInfo)['hops'], int)
 
     def test_thread_info_has_audience_right_after_origin(self) -> None:
         names = list(ThreadInfo.__annotations__)
@@ -184,7 +209,12 @@ class RecordTest(unittest.TestCase):
     def test_thread_info_has_concurrency_key_and_settle_right_after_audience(self) -> None:
         names = list(ThreadInfo.__annotations__)
         at = names.index('audience')
-        self.assertEqual(names[at + 1:at + 4], ['concurrency_key', 'settle', 'created_at'])
+        self.assertEqual(names[at + 1:at + 3], ['concurrency_key', 'settle'])
+
+    def test_thread_info_has_cause_and_hops_right_after_settle(self) -> None:
+        names = list(ThreadInfo.__annotations__)
+        at = names.index('settle')
+        self.assertEqual(names[at + 1:], ['cause', 'hops', 'created_at'])
 
     def test_schedule_info_keys(self) -> None:
         self.assertEqual(

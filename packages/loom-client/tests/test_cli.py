@@ -37,6 +37,8 @@ COMMANDS = [
       'workspace': {'strategy': 'existing_worktree', 'branch': 'b', 'path': '/w/t1'}}),
     (['threads', 'launch', 'demo', 'First', 'hello', '--audience', 'person'], 'threads.launch',
      {'project_id': 'demo', 'title': 'First', 'message': 'hello', 'audience': 'person'}),
+    (['threads', 'launch', 'demo', 'First', 'hello', '--cause', '7'], 'threads.launch',
+     {'project_id': 'demo', 'title': 'First', 'message': 'hello', 'cause': 7}),
     (['threads', 'delegate', 't1', 'check it'], 'threads.delegate',
      {'parent_id': 't1', 'task': 'check it'}),
     (['threads', 'delegate', 't1', 'check it', '--workspace', 'root', '--runner', 'claude',
@@ -46,6 +48,8 @@ COMMANDS = [
     (['threads', 'send', 't1', 'again'], 'threads.send', {'thread_id': 't1', 'message': 'again'}),
     (['threads', 'send', 't1', 'again', '--mode', 'interrupt'], 'threads.send',
      {'thread_id': 't1', 'message': 'again', 'mode': 'interrupt'}),
+    (['threads', 'send', 't1', 'again', '--cause', '7'], 'threads.send',
+     {'thread_id': 't1', 'message': 'again', 'cause': 7}),
     (['threads', 'list'], 'threads.list', {}),
     (['threads', 'list', '--project', 'demo'], 'threads.list', {'project_id': 'demo'}),
     (['threads', 'list', '--audience', 'agent'], 'threads.list', {'audience': 'agent'}),
@@ -86,6 +90,14 @@ COMMANDS = [
      'schedules.add',
      {'trigger': {'type': 'interval', 'everyMs': 60000}, 'text': 'Go', 'action': 'launch',
       'project_id': 'demo'}),
+    (['schedules', 'add', 'x', '--event', 'demo.done', '--event-project', 'p', '--match',
+      '{"to":"done"}'], 'schedules.add',
+     {'trigger': {'type': 'event', 'topic': 'demo.done', 'project_id': 'p',
+                  'match': {'to': 'done'}}, 'text': 'x'}),
+    (['schedules', 'add', 'Look', '--event', 'thread.settled', '--action', 'launch',
+      '--project', 'demo'], 'schedules.add',
+     {'trigger': {'type': 'event', 'topic': 'thread.settled'}, 'text': 'Look',
+      'action': 'launch', 'project_id': 'demo'}),
     (['schedules', 'list'], 'schedules.list', {}),
     (['schedules', 'list', '--thread', 't1', '--project', 'demo'], 'schedules.list',
      {'thread_id': 't1', 'project_id': 'demo'}),
@@ -98,12 +110,19 @@ COMMANDS = [
      {'request_id': 'r1', 'decision': 'deny', 'message': 'Not this one.'}),
     (['request', 'respond', 'r1', 'deny'], 'requests.respond',
      {'request_id': 'r1', 'decision': 'deny'}),
+    (['signals', 'emit', 'demo.done', '--payload', '{"to":"done"}', '--project', 'p', '--key',
+      'k', '--cause', '3'], 'signals.emit',
+     {'topic': 'demo.done', 'payload': {'to': 'done'}, 'project_id': 'p', 'key': 'k',
+      'cause': 3}),
+    (['signals', 'emit', 'demo.done'], 'signals.emit', {'topic': 'demo.done', 'payload': {}}),
+    (['signal', 'emit', 'demo.done', '--payload', '{"n": [1, 2]}'], 'signals.emit',
+     {'topic': 'demo.done', 'payload': {'n': [1, 2]}}),
 ]
 
 WRITES = {'threads.launch', 'threads.delegate', 'threads.send', 'threads.stop',
           'threads.settle', 'threads.update', 'projects.add', 'projects.set_mode',
           'projects.remove', 'schedules.add', 'schedules.pause', 'schedules.remove',
-          'requests.respond'}
+          'requests.respond', 'signals.emit'}
 
 USAGE_ERRORS = [
     [],
@@ -143,6 +162,11 @@ USAGE_ERRORS = [
     ['schedules', 'add', 'x', '--time', '9:07', '--weekdays', '1,x'],
     ['schedules', 'add', 'x', '--every', '60', '--action', 'send'],
     ['schedules', 'add', '--every', '60'],
+    ['schedules', 'add', 'x', '--every', '60', '--event', 'demo.done'],
+    ['schedules', 'add', 'x', '--every', '60', '--event-project', 'p'],
+    ['schedules', 'add', 'x', '--every', '60', '--match', '{}'],
+    ['schedules', 'add', 'x', '--event', 'demo.done', '--match', '[1]'],
+    ['schedules', 'add', 'x', '--event', 'demo.done', '--match', 'to=done'],
     ['schedules', 'list', 'extra'],
     ['schedules', 'pause'],
     ['schedules', 'remove'],
@@ -152,6 +176,16 @@ USAGE_ERRORS = [
     ['requests', 'respond', 'r1', 'allow', 'extra'],
     ['request', 'respond', 'r1'],
     ['requests'],
+    ['threads', 'launch', 'demo', 'First', 'm', '--cause', 'x'],
+    ['threads', 'send', 't1', 'm', '--cause', '1.5'],
+    ['signals'],
+    ['signals', 'emit'],
+    ['signals', 'emit', 'demo.done', '--payload', '[1]'],
+    ['signals', 'emit', 'demo.done', '--payload', 'nope'],
+    ['signals', 'emit', 'demo.done', '--payload', '"text"'],
+    ['signals', 'emit', 'demo.done', '--payload', ''],
+    ['signals', 'emit', 'demo.done', '--cause', 'x'],
+    ['signal', 'emit', 'demo.done', '--payload', '5'],
     ['--socket'],
     ['serve', '--port', '80'],
 ]
@@ -213,7 +247,7 @@ class CommandTest(CliCase):
                      ['schedules', 'add', 'x', '--every', '60'], ['schedules', 'pause', 's1'],
                      ['schedules', 'remove', 's1'],
                      ['threads', 'update', 't1', '--audience', 'agent'],
-                     ['requests', 'respond', 'r1', 'allow']):
+                     ['requests', 'respond', 'r1', 'allow'], ['signals', 'emit', 'demo.done']):
             with self.subTest(argv=argv):
                 self.assertEqual(self.run_cli(*argv, '--id', 'retry-7')[0], 0)
                 self.assertEqual(self.server.requests[-1]['params']['id'], 'retry-7')
@@ -226,6 +260,7 @@ class CommandTest(CliCase):
             'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
             'projects.set_mode', 'projects.remove', 'projects.list', 'schedules.add',
             'schedules.list', 'schedules.pause', 'schedules.remove', 'requests.respond',
+            'signals.emit',
         })
 
     def test_requests_respond_sends_a_new_uuid4_id_or_the_given_one(self) -> None:
@@ -279,6 +314,34 @@ class CommandTest(CliCase):
                 self.assertEqual(self.run_cli(*argv, stdin=text)[0], 0)
                 self.assertEqual(self.server.requests[-1]['params'][field], text)
 
+    def test_a_dash_payload_is_read_from_stdin(self) -> None:
+        self.answer(ok(event(9, 'signal', None, topic='demo.done', payload={}, hops=0)))
+        code, _, err = self.run_cli('signals', 'emit', 'demo.done', '--payload', '-',
+                                    stdin='{"to": "done",\n "n": 2}\n')
+        self.assertEqual((code, err), (0, ''))
+        self.assertEqual(self.server.requests[-1]['params']['payload'], {'to': 'done', 'n': 2})
+        self.assertEqual(self.run_cli('signals', 'emit', 'demo.done', '--payload', '-',
+                                      stdin='[1]')[0], 2)
+        self.assertEqual(len(self.server.requests), 1)
+
+    def test_a_payload_that_is_not_a_json_object_says_so(self) -> None:
+        for payload, message in (('[1]', '--payload must be a JSON object'),
+                                 ('nope', '--payload is not JSON')):
+            with self.subTest(payload=payload):
+                code, out, err = self.run_cli('signals', 'emit', 'demo.done', '--payload',
+                                              payload)
+                self.assertEqual((code, out), (2, ''))
+                self.assertIn(message, err)
+        self.assertEqual(self.server.requests, [])
+
+    def test_no_cause_is_sent_without_the_flag(self) -> None:
+        self.answer(ok(thread_info()))
+        for argv in (['threads', 'launch', 'demo', 'First', 'hello'],
+                     ['threads', 'send', 't1', 'again'], ['signals', 'emit', 'demo.done']):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_cli(*argv)[0], 0)
+                self.assertNotIn('cause', self.server.requests[-1]['params'])
+
     def test_a_message_that_is_not_a_dash_does_not_read_stdin(self) -> None:
         self.answer(ok(thread_info()))
         self.run_cli('threads', 'send', 't1', '--', '-x', stdin='unused')
@@ -298,7 +361,11 @@ class UsageTest(CliCase):
 
     def test_schedule_usage_errors_say_what_is_wrong(self) -> None:
         for argv, message in (
-            (['x'], 'one of the arguments --at --every --time is required'),
+            (['x'], 'one of the arguments --at --every --time --event is required'),
+            (['x', '--every', '60', '--event-project', 'p'], '--event-project needs --event'),
+            (['x', '--at', 'a', '--match', '{}'], '--match needs --event'),
+            (['x', '--event', 'e', '--match', '[1]'], '--match must be a JSON object'),
+            (['x', '--event', 'e', '--match', '{'], '--match is not JSON'),
             (['x', '--at', 'a', '--time', '9:07'], 'not allowed with argument'),
             (['x', '--every', '0'], "not a whole number of seconds: '0'"),
             (['x', '--every', 'x'], "not a whole number of seconds: 'x'"),
@@ -313,7 +380,8 @@ class UsageTest(CliCase):
 
     def test_help_lists_the_commands_and_exits_0(self) -> None:
         for argv, names in (
-            (['--help'], ['serve', 'install', 'threads', 'projects', 'schedules', 'requests']),
+            (['--help'], ['serve', 'install', 'threads', 'projects', 'schedules', 'requests',
+                          'signals']),
             (['threads', '--help'],
              ['launch', 'delegate', 'send', 'list', 'get', 'stop', 'settle', 'update',
               'events']),
@@ -323,6 +391,8 @@ class UsageTest(CliCase):
             (['schedule', '--help'], ['add', 'list', 'pause', 'remove']),
             (['requests', '--help'], ['respond']),
             (['request', '--help'], ['respond']),
+            (['signals', '--help'], ['emit']),
+            (['signal', '--help'], ['emit']),
         ):
             with self.subTest(argv=argv):
                 out = io.StringIO()
@@ -637,6 +707,30 @@ class HumanOutputTest(CliCase):
             f'2 {AT} t2 thread.updated agent',
         ])
 
+    def test_signal_and_trigger_skipped_events_print_their_fields(self) -> None:
+        out = self.events(
+            event(1, 'signal', None, topic='demo.done', payload={'to': 'done'}, hops=0),
+            event(2, 'signal', None, topic='run.status', project_id='p', key='k', hops=2,
+                  cause=1, by='t1', payload={}),
+            {**event(3, 'trigger.skipped', None, schedule_id='s1', reason='hops'),
+             'data': {'schedule_id': 's1', 'event_id': 2, 'reason': 'hops'}})
+        self.assertEqual(out.splitlines(), [
+            f'1 {AT} - signal demo.done 0 {{"to": "done"}}',
+            f'2 {AT} - signal run.status p k 2 {{}}',
+            f'3 {AT} - trigger.skipped s1 2 hops',
+        ])
+
+    def test_emit_prints_one_event_line_or_one_json_line(self) -> None:
+        signal = event(9, 'signal', None, topic='demo.done', payload={'to': 'done'}, hops=1,
+                       cause=3)
+        self.answer(ok(signal))
+        self.assertEqual(self.run_cli('signals', 'emit', 'demo.done', '--payload',
+                                      '{"to":"done"}'),
+                         (0, f'9 {AT} - signal demo.done 1 {{"to": "done"}}\n', ''))
+        code, out, err = self.run_cli('--json', 'signal', 'emit', 'demo.done')
+        self.assertEqual((code, err, out.count('\n')), (0, '', 1))
+        self.assertEqual(json.loads(out), signal)
+
     def test_a_long_tool_input_is_cut(self) -> None:
         out = self.events(event(1, 'turn.tool', tool_use_id='t', name='Bash',
                                 input={'command': 'x' * 3000}))
@@ -709,6 +803,9 @@ class ScheduleOutputTest(CliCase):
             schedule_info('s6', trigger={'type': 'fixed_time', 'timeOfDay': '9:07',
                                          'weekdays': []}),
             schedule_info('s7', trigger={'type': 'interval', 'everyMs': 60500}),
+            schedule_info('s8', trigger={'type': 'event', 'topic': 'demo.done'}, next_run=None),
+            schedule_info('s9', trigger={'type': 'event', 'topic': 'demo.done'}, next_run=None,
+                          paused=True),
         ]
         self.assertEqual(self.lines('schedules', 'list', result=schedules), [
             f's1  {AT}  notify  at 2026-10-25T09:00  -  Stand-up',
@@ -718,6 +815,8 @@ class ScheduleOutputTest(CliCase):
             f's5  {AT}  notify  09:07  -  Stand-up',
             f's6  {AT}  notify  9:07  -  Stand-up',
             f's7  {AT}  notify  every 60.5s  -  Stand-up',
+            's8  active  notify  on demo.done  -  Stand-up',
+            's9  paused  notify  on demo.done  -  Stand-up',
         ])
 
     def test_add_pause_and_remove_print_the_schedule(self) -> None:
@@ -769,6 +868,8 @@ class ScheduleOutputTest(CliCase):
             (schedule_info(trigger={'type': 'fixed_time', 'timeOfDay': '9:07', 'weekdays': 0}),
              f's1  {AT}  notify  -  -  Stand-up'),
             (schedule_info(trigger={'type': 'webhook'}), f's1  {AT}  notify  -  -  Stand-up'),
+            (schedule_info(trigger={'type': 'event', 'topic': 5}, next_run=None),
+             's1  active  notify  -  -  Stand-up'),
             ({key: value for key, value in schedule_info().items() if key != 'next_run'},
              's1  -' + rest),
             (schedule_info(next_run=5), 's1  -' + rest),

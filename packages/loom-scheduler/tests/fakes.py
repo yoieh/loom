@@ -13,6 +13,7 @@ from loom_contracts.calls import CallName
 from loom_contracts.events import EventType
 
 from loom_scheduler import Maker, ScheduleError, Scheduler
+from loom_scheduler.timing import iso
 
 START = datetime(2026, 10, 23, 7, 0, tzinfo=UTC)
 
@@ -41,6 +42,12 @@ class Event:
     type: EventType
     thread_id: str | None
     data: dict
+    id: int = field(default=0, compare=False)
+    at: str = field(default='', compare=False)
+
+    def stored(self) -> dict:
+        return {'id': self.id, 'type': str(self.type), 'at': self.at,
+                'thread_id': self.thread_id, 'data': self.data}
 
 
 @dataclass
@@ -54,6 +61,8 @@ class FakeHost:
     fail: dict[CallName, BaseException] = field(default_factory=dict)
     cut_after: CallName | None = None
     launched: int = 0
+    clock: Callable[[], datetime] | None = None
+    listeners: list[Callable[[], None]] = field(default_factory=list)
     _receipts: dict[str, object] = field(default_factory=dict)
     _pending: list[Event] | None = None
     _cut: bool = False
@@ -69,10 +78,35 @@ class FakeHost:
     def close(self) -> None:
         self.connection.close()
 
-    def add_thread(self, thread_id: str, project_id: str = 'p1',
-                   state: str = 'idle') -> dict:
-        self.threads[thread_id] = {'id': thread_id, 'project_id': project_id, 'state': state}
+    def add_thread(self, thread_id: str, project_id: str = 'p1', state: str = 'idle', *,
+                   origin: str | None = None, cause: int | None = None, hops: int = 0) -> dict:
+        self.threads[thread_id] = {'id': thread_id, 'project_id': project_id, 'state': state,
+                                   'origin': origin, 'cause': cause, 'hops': hops}
         return self.threads[thread_id]
+
+    def listen(self, listener: Callable[[], None]) -> Callable[[], None]:
+        self.listeners.append(listener)
+        return lambda: self.listeners.remove(listener)
+
+    def last_event_id(self) -> int:
+        return self.events[-1].id if self.events else 0
+
+    def emit(self, type: EventType | str, thread_id: str | None = None, **data: object) -> int:
+        with self.transaction() as tx:
+            event_id = self.append_event(tx, EventType(type), thread_id, data)
+        return event_id
+
+    def signal(self, topic: str, payload: dict | None = None, **data: object) -> int:
+        return self.emit(EventType.SIGNAL, None, topic=topic,
+                         payload={} if payload is None else payload, **data)
+
+    def event_hops(self, event_id: int) -> int:
+        event = self.events[event_id - 1]
+        hops = event.data.get('hops')
+        if isinstance(hops, int) and not isinstance(hops, bool):
+            return hops
+        thread = self.threads.get(event.thread_id) if event.thread_id is not None else None
+        return 0 if thread is None else thread['hops']
 
     def add_project(self, project_id: str) -> None:
         self.projects.append({'id': project_id, 'title': project_id})
@@ -94,6 +128,9 @@ class FakeHost:
         finally:
             pending, self._pending = self._pending, None
         self.events.extend(pending)
+        if pending:
+            for listener in tuple(self.listeners):
+                listener()
 
     def command(self, command_id: str, call: CallName,
                 change: Callable[[sqlite3.Connection], object]) -> tuple[object, bool]:
@@ -112,8 +149,10 @@ class FakeHost:
     def append_event(self, tx: sqlite3.Connection, type: EventType, thread_id: str | None,
                      data: Mapping[str, object]) -> int:
         assert self._pending is not None, 'append_event outside a transaction'
-        self._pending.append(Event(EventType(type), thread_id, dict(data)))
-        return len(self.events) + len(self._pending)
+        event_id = len(self.events) + len(self._pending) + 1
+        at = '' if self.clock is None else iso(self.clock())
+        self._pending.append(Event(EventType(type), thread_id, dict(data), event_id, at))
+        return event_id
 
     async def call(self, call: CallName, params: dict, maker: Maker) -> object:
         self.calls.append(Call(call, params, maker))
@@ -130,14 +169,22 @@ class FakeHost:
             return self.projects
         if call == CallName.THREADS_GET:
             return self._thread(params['thread_id'])
+        if call == CallName.THREADS_EVENTS:
+            after = params.get('after', 0)
+            return [event.stored() for event in self.events if event.id > after][:1000]
         if params['id'] in self._receipts:
             return self._receipts[params['id']]
+        cause = params.get('cause')
+        hops = 0 if cause is None else self.event_hops(cause) + 1
         if call == CallName.THREADS_SEND:
             answer = self._thread(params['thread_id'])
+            if hops > answer['hops']:
+                answer.update(cause=cause, hops=hops)
         elif call == CallName.THREADS_LAUNCH:
             self.launched += 1
             answer = self.add_thread(f'launched-{self.launched}', params['project_id'],
-                                     'queued')
+                                     'queued', origin=params.get('origin'), cause=cause,
+                                     hops=hops)
         else:
             raise AssertionError(f'unexpected call {call}')
         self._receipts[params['id']] = answer
@@ -164,12 +211,12 @@ PLUS_TWO = timezone(timedelta(hours=2))
 class SchedulerCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.host = FakeHost(Path(self.tmp.name))
+        self.clock = FakeClock()
+        self.host = FakeHost(Path(self.tmp.name), clock=self.clock)
         self.host.add_project('p1')
         self.host.add_project('p2')
         self.host.add_thread('t1', 'p1')
         self.host.add_thread('t2', 'p2')
-        self.clock = FakeClock()
         self.scheduler = self.new_scheduler()
 
     async def asyncTearDown(self) -> None:

@@ -16,7 +16,7 @@ from loom_contracts.runners import (
 from loom_contracts.states import ThreadState, TurnState
 from loom_contracts.workspaces import WorkspaceStrategy
 
-from . import concurrency, delegation, keys, requests, threads
+from . import causes, concurrency, delegation, keys, requests, threads
 from .clock import iso
 from .errors import LoomError
 from .lanes import Lanes
@@ -83,11 +83,14 @@ def _plan(tx: sqlite3.Connection, workspace: object, project: ProjectInfo, proje
 
 
 def _join(tx: sqlite3.Connection, key: str | None, on_busy: OnBusy, project_id: str,
-          parent_id: str | None, text: str) -> ThreadInfo | None:
+          parent_id: str | None, text: str, chain: causes.Chain) -> ThreadInfo | None:
     if on_busy is not OnBusy.COALESCE or concurrency.claim(tx, key) != concurrency.WAITING:
         return None
     thread_id = concurrency.join(tx, key, project_id, parent_id, text)
-    return None if thread_id is None else thread_info(fetch(tx, thread_id))
+    if thread_id is None:
+        return None
+    causes.raise_thread(tx, thread_id, chain)
+    return thread_info(fetch(tx, thread_id))
 
 
 def _held(tx: sqlite3.Connection, thread_id: str) -> tuple[int, StartSource] | None:
@@ -134,7 +137,8 @@ class Orchestrator:
         store.on_handed = self._submit_start
 
     async def launch(self, params: object, *, source: StartSource = StartSource.PERSON,
-                     launcher: str | None = None) -> ThreadInfo:
+                     launcher: str | None = None,
+                     caller_thread: str | None = None) -> ThreadInfo:
         params = _params(params)
         title = _text(_required(params, 'title'), 'title')
         message = _text(_required(params, 'message'), 'message')
@@ -167,6 +171,7 @@ class Orchestrator:
         settle = None
         if 'settle' in params:
             settle = _choice(_not_null(params, 'settle'), 'settle', Settle)
+        cause = causes.cause_param(params)
         command_id = params.get('id')
         start = False
 
@@ -174,9 +179,10 @@ class Orchestrator:
             nonlocal start
             project = self.projects.get(project_id)
             mode = self.projects.effective_mode(project_id)
+            chain = causes.of_call(tx, cause, caller_thread)
             thread_id = str(uuid.uuid4())
             plan = _plan(tx, workspace, project, project_id, thread_id, self.store.data_dir)
-            joined = _join(tx, key, on_busy, project_id, None, message)
+            joined = _join(tx, key, on_busy, project_id, None, message, chain)
             if joined is not None:
                 return joined
             key_state = concurrency.claim(tx, key)
@@ -199,10 +205,12 @@ class Orchestrator:
                 'concurrency_key': key,
                 'settle': settle,
                 'key_state': key_state,
+                'cause': chain.cause,
+                'hops': chain.hops,
             })
             threads.add_start(tx, thread_id, source, row['created_at'])
             self._add_message(tx, thread_id, f'{command_id}:message', message, DispatchMode.STEER,
-                              source=source)
+                              source=source, chain=chain)
             return thread_info(row)
 
         receipt = self.store.command(command_id, CallName.THREADS_LAUNCH, change)
@@ -210,8 +218,8 @@ class Orchestrator:
             self._submit_start(receipt.answer['id'])
         return receipt.answer
 
-    async def delegate(self, params: object, *,
-                       source: StartSource = StartSource.PERSON) -> ThreadInfo:
+    async def delegate(self, params: object, *, source: StartSource = StartSource.PERSON,
+                       caller_thread: str | None = None) -> ThreadInfo:
         params = _params(params)
         parent_id = _string(_required(params, keys.PARENT_KEY), keys.PARENT_KEY)
         task = _text(_required(params, 'task'), 'task')
@@ -246,7 +254,8 @@ class Orchestrator:
             thread_id = str(uuid.uuid4())
             chosen = workspace if workspace is not None else delegation.parent_workspace(parent)
             plan = _plan(tx, chosen, project, project_id, thread_id, self.store.data_dir)
-            joined = _join(tx, key, on_busy, project_id, parent_id, task)
+            chain = causes.delegated(tx, parent, caller_thread)
+            joined = _join(tx, key, on_busy, project_id, parent_id, task, chain)
             if joined is not None:
                 return joined
             key_state = concurrency.claim(tx, key)
@@ -268,10 +277,12 @@ class Orchestrator:
                 'audience': Audience.AGENT,
                 'concurrency_key': key,
                 'key_state': key_state,
+                'cause': chain.cause,
+                'hops': chain.hops,
             })
             threads.add_start(tx, thread_id, source, row['created_at'])
             self._add_message(tx, thread_id, f'{command_id}:message', task, DispatchMode.STEER,
-                              source=source)
+                              source=source, chain=chain)
             return thread_info(row)
 
         receipt = self.store.command(command_id, CallName.THREADS_DELEGATE, change)
@@ -279,14 +290,15 @@ class Orchestrator:
             self._submit_start(receipt.answer['id'])
         return receipt.answer
 
-    async def send(self, params: object, *,
-                   source: StartSource = StartSource.PERSON) -> ThreadInfo:
+    async def send(self, params: object, *, source: StartSource = StartSource.PERSON,
+                   caller_thread: str | None = None) -> ThreadInfo:
         params = _params(params)
         thread_id = _string(_required(params, 'thread_id'), 'thread_id')
         message = _text(_required(params, 'message'), 'message')
         mode = DispatchMode.STEER
         if 'mode' in params:
             mode = _choice(_not_null(params, 'mode'), 'mode', DispatchMode)
+        cause = causes.cause_param(params)
         command_id = params.get('id')
         seq = None
 
@@ -295,8 +307,11 @@ class Orchestrator:
             row = fetch(tx, thread_id)
             if row['state'] in ENDED:
                 raise LoomError('conflict', f'thread {thread_id} is {row["state"]}')
-            seq = self._add_message(tx, thread_id, command_id, message, mode, source=source)
-            return thread_info(row)
+            chain = causes.of_call(tx, cause, caller_thread)
+            seq = self._add_message(tx, thread_id, command_id, message, mode, source=source,
+                                    chain=chain)
+            causes.raise_thread(tx, thread_id, chain)
+            return thread_info(fetch(tx, thread_id))
 
         receipt = self.store.command(command_id, CallName.THREADS_SEND, change)
         if not receipt.replayed:
@@ -530,12 +545,14 @@ class Orchestrator:
 
     def _add_message(self, tx: sqlite3.Connection, thread_id: str, command_id: str,
                      text: str, mode: DispatchMode, priority: int = 0, *,
-                     source: StartSource = StartSource.AGENT) -> int:
+                     source: StartSource = StartSource.AGENT,
+                     chain: causes.Chain = causes.NONE) -> int:
         cursor = tx.execute(
             'INSERT INTO messages '
-            '(thread_id, command_id, text, mode, priority, created_at, source) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?)',
-            (thread_id, command_id, text, mode, priority, iso(self.store.clock()), int(source)),
+            '(thread_id, command_id, text, mode, priority, created_at, source, cause, hops) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (thread_id, command_id, text, mode, priority, iso(self.store.clock()), int(source),
+             chain.cause, chain.hops),
         )
         return cursor.lastrowid
 

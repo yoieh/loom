@@ -10,61 +10,21 @@ from typing import Protocol
 from loom_contracts.calls import CallName, ScheduleInfo
 from loom_contracts.events import EventType
 from loom_contracts.states import ThreadState
-from loom_contracts.triggers import ScheduleAction
+from loom_contracts.triggers import ScheduleAction, TriggerType
 
 from . import timing
+from .events import EventSource
 from .host import Maker, ScheduleError, SchedulerHost
 from .params import LAUNCH_OPTIONS, AddRequest, check_add, check_list, check_target
+from .table import (
+    COLUMNS, FAILED, FIRED, MAX_REASON, RETRY_AFTER, SELECT, SKIPPED_BUSY, SKIPPED_LATE, create,
+    title, to_row,
+)
 from .tick import Tick
 from .timing import iso, parse_iso
 
 RUN_DAYS = 30
-MAX_REASON = 500
-MAX_TITLE = 80
-RETRY_AFTER = timedelta(seconds=5)
 BUSY = frozenset({ThreadState.QUEUED, ThreadState.STARTING, ThreadState.RUNNING})
-
-FIRED = 'fired'
-SKIPPED_LATE = 'skipped_late'
-SKIPPED_BUSY = 'skipped_busy'
-FAILED = 'failed'
-
-SCHEMA: list[str] = [
-    '''CREATE TABLE IF NOT EXISTS schedules (
-        id TEXT PRIMARY KEY,
-        trigger TEXT NOT NULL,
-        action TEXT NOT NULL,
-        text TEXT NOT NULL,
-        thread_id TEXT,
-        project_id TEXT,
-        title TEXT,
-        concurrency_key TEXT,
-        on_busy TEXT,
-        settle TEXT,
-        by TEXT,
-        verified INTEGER NOT NULL,
-        paused INTEGER NOT NULL DEFAULT 0,
-        next_run TEXT,
-        created_at TEXT NOT NULL
-    )''',
-    '''CREATE TABLE IF NOT EXISTS schedule_runs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        schedule_id TEXT NOT NULL,
-        due TEXT NOT NULL,
-        at TEXT NOT NULL,
-        outcome TEXT NOT NULL,
-        late INTEGER NOT NULL,
-        thread_id TEXT,
-        reason TEXT
-    )''',
-    'CREATE INDEX IF NOT EXISTS schedule_runs_schedule ON schedule_runs (schedule_id, id)',
-]
-ADDED_COLUMNS = ('concurrency_key TEXT', 'on_busy TEXT', 'settle TEXT')
-
-COLUMNS = ('id', 'trigger', 'action', 'text', 'thread_id', 'project_id', 'title',
-           'concurrency_key', 'on_busy', 'settle', 'by', 'verified', 'paused', 'next_run',
-           'created_at')
-SELECT = f'SELECT {", ".join(COLUMNS)} FROM schedules'
 
 Method = Callable[[object, object], Awaitable[object]]
 
@@ -72,16 +32,6 @@ Method = Callable[[object, object], Awaitable[object]]
 class Caller(Protocol):
     thread_id: str | None
     verified: bool
-
-
-def _add_column(tx: sqlite3.Connection, column: str) -> None:
-    columns = {row[1] for row in tx.execute('PRAGMA table_info(schedules)')}
-    if column.split()[0] not in columns:
-        tx.execute(f'ALTER TABLE schedules ADD COLUMN {column}')
-
-
-def _row(row: tuple | None) -> dict | None:
-    return None if row is None else dict(zip(COLUMNS, row))
 
 
 def _info(row: dict) -> ScheduleInfo:
@@ -104,18 +54,10 @@ def _info(row: dict) -> ScheduleInfo:
 
 
 def _fetch(tx: sqlite3.Connection, schedule_id: str) -> dict:
-    row = _row(tx.execute(f'{SELECT} WHERE id = ?', (schedule_id,)).fetchone())
+    row = to_row(tx.execute(f'{SELECT} WHERE id = ?', (schedule_id,)).fetchone())
     if row is None:
         raise ScheduleError('not_found', f"no schedule with id '{schedule_id}'")
     return row
-
-
-def _title(row: dict) -> str:
-    if row['title'] is not None:
-        return row['title']
-    text = row['text']
-    line = next((line.strip() for line in text.splitlines() if line.strip()), text)
-    return line[:MAX_TITLE]
 
 
 def _message(text: str, due: str, late: bool) -> str:
@@ -132,6 +74,8 @@ class Scheduler:
         self.tz = tz
         self.tick = Tick(clock)
         self.tick.register(self)
+        self.events = EventSource(host, clock, self.tick.wake)
+        self.tick.register(self.events)
         self._heap: list[tuple[datetime, str]] = []
         self._next: dict[str, datetime] = {}
         self._task: asyncio.Task | None = None
@@ -139,10 +83,7 @@ class Scheduler:
     def open(self) -> None:
         cutoff = iso(self.clock() - timedelta(days=RUN_DAYS))
         with self.host.transaction() as tx:
-            for statement in SCHEMA:
-                tx.execute(statement)
-            for column in ADDED_COLUMNS:
-                _add_column(tx, column)
+            create(tx)
             tx.execute('DELETE FROM schedule_runs WHERE at < ?', (cutoff,))
         with self.host.transaction() as tx:
             rows = tx.execute(
@@ -152,6 +93,7 @@ class Scheduler:
         self._next.clear()
         for schedule_id, next_run in rows:
             self._plan(schedule_id, parse_iso(next_run))
+        self.events.open()
         self.tick.wake()
 
     def methods(self) -> dict[str, Method]:
@@ -167,6 +109,7 @@ class Scheduler:
             self._task = asyncio.create_task(self.tick.run())
 
     async def close(self) -> None:
+        self.events.close()
         task, self._task = self._task, None
         if task is None:
             return
@@ -204,16 +147,18 @@ class Scheduler:
         project_id = await self._check_targets(request, Maker(by, verified, None))
         now = self.clock()
         first = timing.first_run(request.trigger, now, self.tz)
+        on_events = request.trigger['type'] == TriggerType.EVENT
 
         def change(tx: sqlite3.Connection) -> ScheduleInfo:
             schedule_id = str(uuid.uuid4())
+            event_after = self.host.last_event_id() if on_events else None
             tx.execute(
                 f'INSERT INTO schedules ({", ".join(COLUMNS)}) '
                 f'VALUES ({", ".join("?" for _ in COLUMNS)})',
                 (schedule_id, json.dumps(request.trigger), request.action.value, request.text,
                  request.thread_id, project_id, request.title, request.concurrency_key,
                  request.on_busy, request.settle, by, int(verified), 0,
-                 None if first is None else iso(first), iso(now)),
+                 None if first is None else iso(first), iso(now), event_after),
             )
             return _info(_fetch(tx, schedule_id))
 
@@ -221,6 +166,8 @@ class Scheduler:
         if not replayed and answer['next_run'] is not None:
             self._plan(answer['id'], parse_iso(answer['next_run']))
             self.tick.wake()
+        if not replayed and on_events:
+            self.events.watch()
         return answer
 
     async def _check_targets(self, request: AddRequest, maker: Maker) -> str | None:
@@ -233,10 +180,14 @@ class Scheduler:
                 project_id = thread['project_id']
             elif project_id != thread['project_id']:
                 raise ScheduleError('invalid', "project_id is not the thread's project")
-        if project_id is not None:
+        named = [name for name in (project_id, request.trigger.get('project_id'))
+                 if name is not None]
+        if named:
             projects = await self.host.call(CallName.PROJECTS_LIST, {}, maker)
-            if project_id not in {project['id'] for project in projects}:
-                raise ScheduleError('not_found', f"no project with id '{project_id}'")
+            known = {project['id'] for project in projects}
+            for name in named:
+                if name not in known:
+                    raise ScheduleError('not_found', f"no project with id '{name}'")
         return project_id
 
     async def _list(self, params: object, caller: Caller) -> list[ScheduleInfo]:
@@ -249,7 +200,7 @@ class Scheduler:
             args = [value for _, value in filters]
         with self.host.transaction() as tx:
             rows = tx.execute(f'{sql} ORDER BY created_at, id', args).fetchall()
-        return [_info(_row(row)) for row in rows]
+        return [_info(to_row(row)) for row in rows]
 
     async def _pause(self, params: object, caller: Caller) -> ScheduleInfo:
         command_id, schedule_id = check_target(params)
@@ -281,7 +232,7 @@ class Scheduler:
 
     async def _run(self, schedule_id: str, now: datetime) -> None:
         with self.host.transaction() as tx:
-            row = _row(tx.execute(f'{SELECT} WHERE id = ?', (schedule_id,)).fetchone())
+            row = to_row(tx.execute(f'{SELECT} WHERE id = ?', (schedule_id,)).fetchone())
         if row is None or row['paused'] or row['next_run'] is None:
             return
         due = parse_iso(row['next_run'])
@@ -315,7 +266,7 @@ class Scheduler:
                 }, maker)
                 return FIRED, row['thread_id'], None
             params = {
-                'id': command_id, 'title': _title(row), 'message': message,
+                'id': command_id, 'title': title(row['title'], row['text']), 'message': message,
                 'project_id': row['project_id'], 'origin': f'schedule:{row["id"]}',
             }
             params.update((field, row[field]) for field in LAUNCH_OPTIONS
