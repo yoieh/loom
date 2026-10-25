@@ -200,6 +200,12 @@ against. It rests on Thread Voice, which already drives T3 as an outside client:
 and the client built from it. What TV §53 observed is marked *seen*; what comes only from
 T3's tool descriptions is marked *schema*, and LM-10 checks it against T3 first.
 
+The user decided two things by voice that day: Loom pairs with full access, as Thread Voice
+does; and, since T3's API can't answer a permission prompt, a T3 thread's prompts are
+answered in T3's own app. That makes the T3 runner the way for a project to stay in T3, not
+the main path: "då känns det också som att vi kanske inte kommer använda så mycket av T3.
+Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the main path.
+
 - **Transport.** T3's MCP endpoint over HTTP: `POST {origin}/mcp`, JSON-RPC 2.0, MCP protocol
   `2025-06-18`, every answer `application/json` (*seen*; an SSE body is accepted too, in case
   T3 changes). The origin is loopback, `http://127.0.0.1:<port>`, and T3 picks the port; the
