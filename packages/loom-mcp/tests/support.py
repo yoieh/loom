@@ -49,6 +49,11 @@ def schedule_info(schedule_id: str = 'sc1', **values: object) -> dict:
             **values}
 
 
+def signal_event(event_id: int = 1, **data: object) -> dict:
+    return {'id': event_id, 'type': 'signal', 'at': AT, 'thread_id': None,
+            'data': {'topic': 'demo.done', 'payload': {'to': 'done'}, 'hops': 0, **data}}
+
+
 class _Handler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
         fake: FakeLoom = self.server.fake

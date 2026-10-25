@@ -8,13 +8,19 @@ from .identity import Caller, Identity
 
 STRING = 'string'
 OBJECT = 'object'
-KINDS = {STRING: (str, 'a string'), OBJECT: (dict, 'an object')}
+INTEGER = 'integer'
+KINDS = {STRING: (str, 'a string'), OBJECT: (dict, 'an object'), INTEGER: (int, 'an integer')}
 
 WORKSPACE = ('Where the thread works: {"strategy": "root"}, {"strategy": "worktree", '
              '"branch"?, "base"?} or {"strategy": "existing_worktree", "path", "branch"}.')
 TRIGGER = ('When it runs: {"type": "at", "at": "2026-10-25T09:00"}, {"type": "interval", '
-           '"everyMs": 3600000} or {"type": "fixed_time", "timeOfDay": "9:00", '
-           '"weekdays": [1, 2, 3, 4, 5]} (0 is Sunday).')
+           '"everyMs": 3600000}, {"type": "fixed_time", "timeOfDay": "9:00", '
+           '"weekdays": [1, 2, 3, 4, 5]} (0 is Sunday), or {"type": "event", "topic": '
+           '"factory.run.status", "project_id"?, "match"?: {"to": "done"}, "hops_max"?, '
+           '"rate_max"?}, which runs once for each matching signal, thread.settled, '
+           'thread.failed, request.opened or schedule.fired.')
+SCHEDULE_TEXT = ('What it posts, launches with or notifies. With an event trigger, '
+                 '{{payload.<field>}} and {{event.id}} in it are filled in from the event.')
 
 NOT_A_LOOM_THREAD = 'this agent is not a Loom thread, so it has no tasks; use launch_thread'
 NEEDS_PROJECT = 'project_id is required outside a Loom thread'
@@ -27,6 +33,7 @@ ON_BUSY = ('With concurrency_key: queue (default) waits, coalesce joins the wait
            'the key.')
 SETTLE = ('on_result: the thread settles after its first completed or failed result instead of '
           'going idle.')
+LAUNCH_ONLY = 'Only with action launch. '
 
 
 class ToolError(Exception):
@@ -106,14 +113,30 @@ TOOLS = (
     Tool('threads', 'List Loom threads and their states, oldest first.', (
         Arg('project_id', STRING, "Only this project's threads."),
     )),
-    Tool('schedule', 'Add a schedule that posts into a thread, launches a thread or notifies.', (
-        Arg('trigger', OBJECT, TRIGGER, True),
-        Arg('text', STRING, 'What it posts, launches with or notifies.', True),
-        Arg('action', STRING, 'post (default), launch or notify.'),
-        Arg('thread_id', STRING, 'The thread a post goes into. Default: this thread.'),
-        Arg('project_id', STRING, 'The project a launch starts its threads in.'),
-        Arg('title', STRING, 'The title of each thread a launch starts.'),
-    )),
+    Tool('emit',
+         'Emit a signal that event schedules can act on. A signal from a Loom thread records '
+         'that thread.', (
+             Arg('topic', STRING,
+                 "What happened, such as factory.run.status. Not one of Loom's own event types.",
+                 True),
+             Arg('payload', OBJECT, 'Any JSON object about it, {} for none.', True),
+             Arg('project_id', STRING, 'The project the signal is about.'),
+             Arg('key', STRING, 'What the signal is about within its topic, such as a run id.'),
+             Arg('cause', INTEGER, 'The id of the event behind this signal.'),
+         )),
+    Tool('schedule',
+         'Add a schedule that posts into a thread, launches a thread or notifies, on a clock '
+         'trigger or an event trigger.', (
+             Arg('trigger', OBJECT, TRIGGER, True),
+             Arg('text', STRING, SCHEDULE_TEXT, True),
+             Arg('action', STRING, 'post (default), launch or notify.'),
+             Arg('thread_id', STRING, 'The thread a post goes into. Default: this thread.'),
+             Arg('project_id', STRING, 'The project a launch starts its threads in.'),
+             Arg('title', STRING, 'The title of each thread a launch starts.'),
+             Arg('concurrency_key', STRING, LAUNCH_ONLY + CONCURRENCY_KEY),
+             Arg('on_busy', STRING, LAUNCH_ONLY + ON_BUSY),
+             Arg('settle', STRING, LAUNCH_ONLY + SETTLE),
+         )),
     Tool('schedules', 'List schedules.'),
     Tool('unschedule', 'Remove a schedule.', (
         Arg('id', STRING, 'The schedule id.', True),
@@ -132,7 +155,7 @@ def check_arguments(tool: Tool, arguments: dict) -> dict:
                 raise ToolError(f'{arg.name} is required')
             continue
         kind, article = KINDS[arg.kind]
-        if not isinstance(value, kind):
+        if not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
             raise ToolError(f'{arg.name} must be {article}')
         values[arg.name] = value
     return values
@@ -162,6 +185,7 @@ class Tools:
             'task_cancel': self._task_cancel,
             'thread_send': self._thread_send,
             'threads': self._threads,
+            'emit': self._emit,
             'schedule': self._schedule,
             'schedules': self._schedules,
             'unschedule': self._unschedule,
@@ -237,11 +261,17 @@ class Tools:
     def _threads(self, client: Client, values: dict) -> object:
         return client.threads_list(values.get('project_id'))
 
+    def _emit(self, client: Client, values: dict) -> object:
+        return _write(lambda command_id: client.signals_emit(
+            values['topic'], values['payload'], project_id=values.get('project_id'),
+            key=values.get('key'), cause=values.get('cause'), id=command_id))
+
     def _schedule(self, client: Client, values: dict) -> object:
         return _write(lambda command_id: client.schedules_add(
             values['trigger'], values['text'], action=values.get('action'),
             thread_id=values.get('thread_id'), project_id=values.get('project_id'),
-            title=values.get('title'), id=command_id))
+            title=values.get('title'), concurrency_key=values.get('concurrency_key'),
+            on_busy=values.get('on_busy'), settle=values.get('settle'), id=command_id))
 
     def _schedules(self, client: Client, values: dict) -> object:
         return client.schedules_list()

@@ -273,7 +273,8 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
 | `task_status {task_id}`, `task_cancel {task_id}` | read or stop a child | same |
 | `thread_send {thread_id, message, mode?}` | a message into a thread | `t3_thread_send` |
 | `threads {project_id?}` | threads and their states | `t3_thread_list` |
-| `schedule {…}`, `schedules {}`, `unschedule {id}` | §7 | `schedule_task` and friends |
+| `emit {topic, payload, project_id?, key?, cause?}` | a signal (§15) | none |
+| `schedule {trigger, text, action?, thread_id?, project_id?, title?, concurrency_key?, on_busy?, settle?}`, `schedules {}`, `unschedule {id}` | §7: a clock or an event trigger (§7, §15); `concurrency_key`, `on_busy` and `settle` go with a launch | `schedule_task` and friends |
 
 - No depth or count limits: a task can delegate, and a thread can have any number of tasks.
   Every thread records where it came from, and Stop reaches all the way down (§4).

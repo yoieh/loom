@@ -2300,7 +2300,7 @@ codex: loom is already registered
 ## `loom-mcp`
 
 `loom-mcp` is the stdio MCP server that gives agents Loom's tools (§9): any agent can launch,
-delegate to, message and schedule threads with one tool call. It is the `loom-mcp` package. It
+delegate to, message and schedule threads, and emit signals, with one tool call. It is the `loom-mcp` package. It
 depends only on `loom-client` and makes each call through `loom_client.Client`, so the server
 checks every call as it checks any client's.
 
@@ -2332,7 +2332,7 @@ line on stdout. stdout carries nothing else; tracebacks go to stderr. When stdin
 |---|---|
 | `initialize` | `{"protocolVersion": <v>, "capabilities": {"tools": {}}, "serverInfo": {"name": "loom", "version": "0.1.0"}}`. `<v>` is the client's `protocolVersion` when it is `2024-11-05`, `2025-03-26`, `2025-06-18` or `2025-11-25`, else `2025-11-25`. |
 | `ping` | `{}` |
-| `tools/list` | `{"tools": [...]}`: the nine tools below, each with a `name`, a `description` and an `inputSchema`. |
+| `tools/list` | `{"tools": [...]}`: the ten tools below, each with a `name`, a `description` and an `inputSchema`. |
 | `tools/call` | `{"content": [{"type": "text", "text": <text>}], "isError": <bool>}`. On success `<text>` is the tool's result as compact JSON; on a tool error it is a one-line message. |
 
 A message without `id` is a notification and gets no answer, whatever its method. It has no
@@ -2347,7 +2347,7 @@ line is read as usual:
 | `method` is missing or not a string | `-32600` | the request's |
 | An unknown method (`unknown method: <method>`) | `-32601` | the request's |
 | `params` is not an object (null counts as missing) | `-32602` | the request's |
-| `tools/call` whose `name` is missing, not a string, or not one of the nine (`unknown tool: <name>`) | `-32602` | the request's |
+| `tools/call` whose `name` is missing, not a string, or not one of the ten (`unknown tool: <name>`) | `-32602` | the request's |
 | `tools/call` whose `arguments` is not an object (missing or null means `{}`) | `-32602` | the request's |
 | An error inside a tool (`internal error`; the traceback goes to stderr) | `-32603` | the request's |
 
@@ -2377,7 +2377,8 @@ it `this agent is not a Loom thread, so it has no tasks; use launch_thread`.
 ### Tools
 
 Each tool makes the call in its row, and its result is the call's result. `?` marks an optional
-argument. Every argument is a string, except `workspace` and `trigger`, which are objects.
+argument. Every argument is a string, except `workspace`, `trigger` and `payload`, which are
+objects, and `cause`, which is an integer.
 
 | Tool | Arguments | Call | Result |
 |---|---|---|---|
@@ -2387,7 +2388,8 @@ argument. Every argument is a string, except `workspace` and `trigger`, which ar
 | `task_cancel` | `task_id` | [`threads.get`](#threadsget), then [`threads.stop`](#threadsstop) | the thread `threads.stop` answers |
 | `thread_send` | `thread_id`, `message`, `mode?` | [`threads.send`](#threadssend) | the thread |
 | `threads` | `project_id?` | [`threads.list`](#threadslist) | the list of threads |
-| `schedule` | `trigger`, `text`, `action?`, `thread_id?`, `project_id?`, `title?` | [`schedules.add`](#schedulesadd) | the new schedule |
+| `emit` | `topic`, `payload`, `project_id?`, `key?`, `cause?` | [`signals.emit`](#signalsemit) | the `signal` event |
+| `schedule` | `trigger`, `text`, `action?`, `thread_id?`, `project_id?`, `title?`, `concurrency_key?`, `on_busy?`, `settle?` | [`schedules.add`](#schedulesadd) | the new schedule |
 | `schedules` | none | [`schedules.list`](#scheduleslist) | the list of schedules |
 | `unschedule` | `id` | [`schedules.remove`](#schedulesremove) with `schedule_id` the `id` | the removed schedule |
 
@@ -2397,6 +2399,13 @@ argument. Every argument is a string, except `workspace` and `trigger`, which ar
 - `task_status` and `task_cancel` act only on the caller's own tasks: the threads whose
   `parent_id` is the caller's thread. On any other thread they answer
   `<task_id> is not a task of this thread`, and `task_cancel` stops nothing.
+- `emit` doesn't look up the caller and sends no thread id: the server records the Loom thread in
+  `LOOM_THREAD` as the signal's `by`, and a signal from an outside thread counts as a person's
+  (see [`signals.emit`](#signalsemit) and [Callers](#callers)).
+- `schedule`'s `trigger` is any trigger `schedules.add` takes, an event trigger included (see
+  [How schedules run](#how-schedules-run)). `concurrency_key`, `on_busy` and `settle` go only
+  with a `launch`; the tool passes them on as given, and the server refuses them with another
+  action.
 - No tool adds a project, changes a project's mode or removes a project, and no tool takes a
   permission mode, `requests` or a command id. A thread a tool starts gets its project's mode
   (§11), and the server tells an agent's calls apart as under
@@ -2409,7 +2418,7 @@ A tool error is a tool result with `isError: true` and a one-line `text`:
 | Problem | Text |
 |---|---|
 | A required argument is missing or null | `<name> is required` |
-| An argument of the wrong JSON type | `<name> must be a string`, or `<name> must be an object` for `workspace` and `trigger` |
+| An argument of the wrong JSON type | `<name> must be a string`, `<name> must be an object` for `workspace`, `trigger` and `payload`, or `<name> must be an integer` for `cause` (`true`, `false` and `5.0` included) |
 | An outside thread's `launch_thread` without `project_id` | `project_id is required outside a Loom thread` |
 | A `launch_thread` without `project_id`, when the caller's thread has no `project_id` string | `cannot tell this thread's project; give project_id` |
 | An outside thread's `delegate`, `task_status` or `task_cancel` | `this agent is not a Loom thread, so it has no tasks; use launch_thread` |
@@ -2423,7 +2432,7 @@ an empty `title`, a `runner` or a trigger, are checked by the server, and its an
 `invalid: <message>`.
 
 **Retries.** Each call that changes something (`launch_thread`, `delegate`, `task_cancel`'s
-stop, `thread_send`, `schedule` and `unschedule`) sends a new command id. When the connection
+stop, `thread_send`, `emit`, `schedule` and `unschedule`) sends a new command id. When the connection
 fails before the answer, it sends the same request once more with the same id, so a call that
 already ran returns its first answer and runs only once (see
 [Command ids](#command-ids-and-safe-retries)). When that fails too, the text is the error's
