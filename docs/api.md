@@ -1993,7 +1993,7 @@ $ loom signals emit demo.done --payload '{"to":"open"}'
 3 2026-10-25T05:06:42.815+00:00 - signal demo.done 0 {"to": "open"}
 $ loom threads events
 1 2026-10-25T05:06:42.640+00:00 - signal demo.done demo 0 {"to": "done", "run": "LM-12"}
-2 2026-10-25T05:06:42.678+00:00 - schedule.fired bda8… notify Run done for 1
+2 2026-10-25T05:06:42.678+00:00 - schedule.fired bda8… notify 1 1 Run done for 1
 3 2026-10-25T05:06:42.815+00:00 - signal demo.done 0 {"to": "open"}
 ```
 

@@ -762,6 +762,37 @@ class HumanOutputTest(CliCase):
             f'3 {AT} - trigger.skipped s1 2 hops',
         ])
 
+    def test_a_fired_event_prints_its_cause_and_hops(self) -> None:
+        out = self.events(
+            event(1, 'schedule.fired', None, schedule_id='s1', action='launch', late=False,
+                  cause=212, hops=1, text='Land it'),
+            event(2, 'schedule.fired', schedule_id='s1', action='notify', by='t1', late=True,
+                  cause=29, hops=2, text='Ping'),
+            event(3, 'schedule.fired', None, schedule_id='s1', action='notify', late=False,
+                  cause=7, hops=0, text='Ping'),
+            event(4, 'schedule.fired', None, schedule_id='s1', action='notify', late=False,
+                  cause='x\x1by', hops=1, text='Ping'),
+            event(5, 'schedule.fired', None, schedule_id='s1', action='notify', late=False,
+                  cause=True, hops=False, text='Ping'))
+        self.assertEqual(out.splitlines(), [
+            f'1 {AT} - schedule.fired s1 launch 212 1 Land it',
+            f'2 {AT} t1 schedule.fired s1 notify t1 late 29 2 Ping',
+            f'3 {AT} - schedule.fired s1 notify 7 0 Ping',
+            f'4 {AT} - schedule.fired s1 notify x\\x1by 1 Ping',
+            f'5 {AT} - schedule.fired s1 notify cause Ping',
+        ])
+
+    def test_a_fired_event_without_cause_or_hops_prints_as_before(self) -> None:
+        out = self.events(
+            event(1, 'schedule.fired', None, schedule_id='s1', action='notify', late=True,
+                  text='Ping'),
+            event(2, 'schedule.fired', None, schedule_id='s1', action='notify', late=True,
+                  cause=None, hops=None, text='Ping'))
+        self.assertEqual(out.splitlines(), [
+            f'1 {AT} - schedule.fired s1 notify late Ping',
+            f'2 {AT} - schedule.fired s1 notify late Ping',
+        ])
+
     def test_emit_prints_one_event_line_or_one_json_line(self) -> None:
         signal = event(9, 'signal', None, topic='demo.done', payload={'to': 'done'}, hops=1,
                        cause=3)
