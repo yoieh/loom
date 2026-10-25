@@ -3,9 +3,10 @@ import json
 import unittest
 from pathlib import Path
 
-from loom_contracts.runners import PermissionRequest, TextOut, ToolUse, TurnResult
+from loom_contracts.runners import MessageEntered, PermissionRequest, TextOut, ToolUse, TurnResult
 from loom_contracts.states import TurnState
 from loom_runner_claude.stream import (
+    INTERRUPT_MARKER,
     BadRequest,
     Init,
     Result,
@@ -30,6 +31,12 @@ PERM = '0d01d654-7a63-489d-ad44-894f8ee1a17e'
 BADMODEL = '0667ac49-2d45-40a3-b2f3-0d4c8c29808f'
 RESUME = '2bb550db-78f6-461c-aa96-47a3900296d9'
 
+STEER_FIRST = (
+    '[Test session for a spike, in the folder /tmp/loom-replay/repo. Change no file and run no '
+    'command outside that folder unless this message says so. Do not call the speak, ask or '
+    'remind tools or any scheduling tool.] Run `sleep 20` with Bash, then reply with the word '
+    'first'
+)
 TOOLS_TEXT = (
     "I ran `echo spike-233`, which printed `spike-233`. There's no `README` in the repo, "
     'so there was nothing to read.\n\ndone'
@@ -63,9 +70,11 @@ EXPECTED: dict[str, list[object]] = {
     ],
     'steer-replay': [
         Init(STEER),
+        MessageEntered(STEER_FIRST),
         ToolUse('toolu_01SteerReplaySleep20Bash', 'Bash', {
             'command': 'sleep 20', 'description': 'Wait 20 seconds',
         }),
+        MessageEntered('Reply with the word second'),
         TextOut('first\n\nsecond'),
         Result(False, 'first\n\nsecond', 'completed'),
     ],
@@ -107,7 +116,7 @@ EXPECTED: dict[str, list[object]] = {
     'resume': [
         Init(RESUME), TextOut('otter'), Result(False, 'otter', 'completed'),
     ],
-    'malformed': [],
+    'malformed': [MessageEntered('Reply with the word second')],
 }
 
 
@@ -169,12 +178,13 @@ class ReplayTest(unittest.TestCase):
         self.assertEqual(started, ['b1ajgv20g'])
         self.assertEqual(ended, started)
 
-    def test_malformed_lines_each_give_nothing(self) -> None:
+    def test_malformed_lines_give_nothing_but_the_replayed_message(self) -> None:
         lines = stream_lines('malformed')
         self.assertGreaterEqual(len(lines), 10)
         for number, line in enumerate(lines, 1):
+            expected = [MessageEntered('Reply with the word second')] if number == 7 else []
             with self.subTest(line=number):
-                self.assertEqual(parse_line(line), [])
+                self.assertEqual(parse_line(line), expected)
 
     def test_streams_hold_no_home_paths(self) -> None:
         for path in STREAMS.glob('*.jsonl'):
@@ -337,6 +347,112 @@ class FieldRulesTest(unittest.TestCase):
     def test_task_started_in_the_foreground_gives_nothing(self) -> None:
         line = {**TASK_STARTED, 'is_backgrounded': False}
         self.assertEqual(parse_line(encode(line)), [])
+
+
+REPLAY = {
+    'type': 'user',
+    'message': {'role': 'user', 'content': 'Reply with the word second'},
+    'isReplay': True,
+}
+SECOND = MessageEntered('Reply with the word second')
+
+
+def replay_of(content: object) -> bytes:
+    return encode({**REPLAY, 'message': {'role': 'user', 'content': content}})
+
+
+def text_block(text: object) -> dict[str, object]:
+    return {'type': 'text', 'text': text}
+
+
+class ReplayedUserTest(unittest.TestCase):
+    def assert_gives_nothing(self, cases: dict[str, bytes]) -> None:
+        self.assertEqual(parse_line(encode(REPLAY)), [SECOND])
+        for case, line in cases.items():
+            with self.subTest(case=case):
+                self.assertEqual(parse_line(line), [])
+
+    def test_a_replayed_string_gives_its_text(self) -> None:
+        self.assertEqual(parse_line(encode(REPLAY)), [SECOND])
+
+    def test_a_replay_of_text_blocks_joins_their_texts_with_no_separator(self) -> None:
+        line = replay_of([text_block('Reply with '), text_block('the word'), text_block(' second')])
+        self.assertEqual(parse_line(line), [SECOND])
+
+    def test_a_replay_with_other_items_gives_the_text_blocks_only(self) -> None:
+        line = replay_of([
+            {'type': 'image', 'source': {'type': 'base64', 'data': 'AAAA'}},
+            text_block('Reply with the word '),
+            {'tool_use_id': 'toolu_1', 'type': 'tool_result', 'content': 'done'},
+            7,
+            None,
+            'loose text',
+            ['text'],
+            text_block('second'),
+        ])
+        self.assertEqual(parse_line(line), [SECOND])
+
+    def test_a_replayed_interrupt_marker_gives_nothing(self) -> None:
+        cases = {}
+        for marker in ('[Request interrupted by user]',
+                       '[Request interrupted by user for tool use]'):
+            cases[f'{marker} as a string'] = replay_of(marker)
+            cases[f'{marker} as a text block'] = replay_of([text_block(marker)])
+        self.assert_gives_nothing(cases)
+
+    def test_a_replay_that_only_quotes_the_interrupt_marker_gives_its_text(self) -> None:
+        text = f'What does {INTERRUPT_MARKER}] mean?'
+        self.assertEqual(parse_line(replay_of(text)), [MessageEntered(text)])
+
+    def test_a_replay_with_no_text_gives_nothing(self) -> None:
+        self.assert_gives_nothing({
+            'empty string': replay_of(''),
+            'empty list': replay_of([]),
+            'empty text block': replay_of([text_block('')]),
+            'no text block': replay_of([
+                {'tool_use_id': 'toolu_1', 'type': 'tool_result', 'content': 'done'},
+                {'type': 'image', 'source': {'type': 'base64', 'data': 'AAAA'}},
+            ]),
+            'unreadable text blocks': replay_of([text_block(None), text_block(7)]),
+        })
+
+    def test_a_replay_without_is_replay_true_gives_nothing(self) -> None:
+        cases = {'missing': encode({k: v for k, v in REPLAY.items() if k != 'isReplay'})}
+        for value in (None, False, 'true', 1):
+            cases[repr(value)] = encode({**REPLAY, 'isReplay': value})
+        self.assert_gives_nothing(cases)
+
+    def test_a_replay_without_a_message_object_gives_nothing(self) -> None:
+        cases = {'missing': encode({k: v for k, v in REPLAY.items() if k != 'message'})}
+        for value in (None, 'Reply with the word second', ['Reply with the word second']):
+            cases[repr(value)] = encode({**REPLAY, 'message': value})
+        self.assert_gives_nothing(cases)
+
+    def test_a_replay_without_string_or_list_content_gives_nothing(self) -> None:
+        cases = {'missing': encode({**REPLAY, 'message': {'role': 'user'}})}
+        for value in (None, 7, {'type': 'text', 'text': 'Reply with the word second'}):
+            cases[repr(value)] = replay_of(value)
+        self.assert_gives_nothing(cases)
+
+    def test_a_text_item_without_a_string_text_adds_nothing(self) -> None:
+        for case, text in (('missing', KeyError), ('null', None), ('number', 7)):
+            item = {'type': 'text'} if text is KeyError else text_block(text)
+            with self.subTest(case=case):
+                line = replay_of([text_block('Reply with the word '), item, text_block('second')])
+                self.assertEqual(parse_line(line), [SECOND])
+
+    def test_an_item_that_is_not_a_text_block_adds_nothing(self) -> None:
+        cases = [
+            ('missing', {'text': 'ignored'}),
+            ('null', {'type': None, 'text': 'ignored'}),
+            ('tool_result', {'type': 'tool_result', 'text': 'ignored'}),
+            ('number', {'type': 7, 'text': 'ignored'}),
+            ('Text', {'type': 'Text', 'text': 'ignored'}),
+        ]
+        for case, item in cases:
+            with self.subTest(case=case):
+                line = replay_of([text_block('Reply with the word '), item, text_block('second')])
+                self.assertEqual(parse_line(line), [SECOND])
 
 
 class ParseLineTest(unittest.TestCase):

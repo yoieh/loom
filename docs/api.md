@@ -646,7 +646,9 @@ failed result. An exit after the turn's result is not a crash: the thread only g
 | `cause` | int | The id of the event behind this message. The message records it and its hops, and raises the thread's when they are more (see [Cause chains](#cause-chains)). Default: none. |
 
 **Result:** the thread as it was when the message was stored, with the send's `cause` and `hops`
-when they raised the thread's. The delivery happens after the answer.
+when they raised the thread's. The delivery happens after the answer. The thread's
+[`message.entered`](#messageentered) event with this call's `id` as `command_id` says when the
+message entered the agent's conversation.
 
 **Errors:** `not_found`; `conflict` when the thread is settled or failed; `invalid` for a bad
 `cause`, as under [`threads.launch`](#threadslaunch).
@@ -1412,10 +1414,10 @@ missing (`schedule_id is required`) or not a string (`schedule_id must be a stri
 ## Events
 
 Every change of a thread's state or audience, every turn's text and tool calls, every turn's
-result, every permission request that opened or closed, every schedule run that fired, every
-signal and every event an event trigger skipped is an event, with an id that only grows. Read
-them with [`threads.events`](#threadsevents). The state in `threads.get` is the truth; events are
-a log to follow, kept 30 days (§4 Events).
+result, every message that entered a thread's conversation, every permission request that opened
+or closed, every schedule run that fired, every signal and every event an event trigger skipped
+is an event, with an id that only grows. Read them with [`threads.events`](#threadsevents). The
+state in `threads.get` is the truth; events are a log to follow, kept 30 days (§4 Events).
 
 ```json
 {"id": 5, "type": "turn.tool", "at": "2026-10-24T18:47:13.004+00:00", "thread_id": "3f2a…", "data": {"tool_use_id": "toolu_fake_1", "name": "Bash", "input": {"command": "true", "description": "Fake tool call 1"}}}
@@ -1424,13 +1426,15 @@ a log to follow, kept 30 days (§4 Events).
 | Field | Type | |
 |---|---|---|
 | `id` | int | Grows by one or more with each event. |
-| `type` | string | One of the thirteen types below. |
+| `type` | string | One of the fourteen types below. |
 | `at` | string | ISO 8601, UTC, with milliseconds. |
 | `thread_id` | string or null | |
 | `data` | object | Depends on `type`. |
 
-A turn in the log runs `thread.state` (`running`), `turn.started`, any number of `turn.tool` and
-`turn.text`, `turn.result`, then `thread.state` (`idle`). A turn that asks for permission also
+A turn in the log runs `thread.state` (`running`), `turn.started`, `message.entered` for the
+message that starts the turn, any number of `turn.tool` and `turn.text`, `turn.result`, then
+`thread.state` (`idle`). A message steered into the running turn adds its own `message.entered`
+mid-turn, before the turn's shared `turn.result`. A turn that asks for permission also
 holds `request.opened`, then `thread.state` with `waiting: true`, and later `request.closed`,
 then `thread.state` with `waiting: false`. Text in events is written by the agent: show it as
 text, never as markup or terminal codes (§11). A client should skip event types it does not know.
@@ -1549,6 +1553,36 @@ The turn ended.
 
 ```json
 {"id": 7, "type": "turn.result", "at": "2026-10-24T18:47:13.017+00:00", "thread_id": "3f2a…", "data": {"state": "completed", "text": "Make the login test pass."}}
+```
+
+### `message.entered`
+
+A message reached the agent's conversation. Until its `message.entered`, a client shows the post
+as waiting to go in (queued, which is not the thread state `queued`); after it, as entered.
+
+| Field | Type | |
+|---|---|---|
+| `command_id` | string | The message's command id: the `id` of the [`threads.send`](#threadssend) call; `<id>:message` for the first message of `threads.launch` or `threads.delegate`; `<child thread id>:result` for a task's result posted to its parent; `<thread id>:continuation:<n>` for the message that resumes a thread after its agent process exited mid-turn. |
+| `text` | string | The message. |
+
+A Claude thread sends it when Claude replays the message into its conversation. So a message
+steered into a running turn enters mid-turn and shares that turn's `turn.result`, and a `queue`
+or `interrupt` message enters when its own turn starts. A runner that cannot steer (Codex)
+emits it when the message starts its turn, right after `turn.started`. A message that never
+enters sends none: one cancelled by a stop or an interrupt, one whose turn failed before it
+started, one handed to an agent process that then exited, or one that was live when `loom serve`
+restarted.
+
+A launch's message, from the launch with id `c1`:
+
+```json
+{"id": 5, "type": "message.entered", "at": "2026-10-25T07:41:09.318+00:00", "thread_id": "9c1d…", "data": {"command_id": "c1:message", "text": "Make the login test pass."}}
+```
+
+A message sent with id `c4` in the default mode, `steer`, into the running turn:
+
+```json
+{"id": 9, "type": "message.entered", "at": "2026-10-25T07:41:21.904+00:00", "thread_id": "9c1d…", "data": {"command_id": "c4", "text": "Skip the slow tests for now."}}
 ```
 
 ### `request.opened`
@@ -1784,7 +1818,9 @@ Codex runs in the sandbox of the thread's permission mode:
 | `full-access` | `danger-full-access` |
 
 Codex never asks, so its threads open no requests. A `steer` message to a running Codex thread
-waits for the turn to end. `interrupt` ends the turn's process and leaves the thread `idle`.
+waits for the turn to end. `interrupt` ends the turn's process and leaves the thread `idle`. A
+Codex thread's message enters its conversation when its turn starts: its `message.entered` comes
+right after that turn's `turn.started`.
 
 ### Output and exit codes
 

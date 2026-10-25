@@ -18,6 +18,7 @@ from loom_contracts.runners import (
     Decision,
     DispatchMode,
     Exited,
+    MessageEntered,
     PermissionMode,
     RequestAnswer,
     Runner,
@@ -55,6 +56,8 @@ OTHER_ID = '01a163a2-40b1-7412-ab12-1043a0b6795a'
 
 MESSAGE = 'Remember the word lynx, run `echo spike-233`, and reply with OK'
 
+REMEMBERED = 'Reply with the word you remembered'
+
 INTRO = 'I’ll run the command in the specified folder and remember “lynx.”'
 
 COMMAND = "/bin/bash -lc 'echo spike-233'"
@@ -91,15 +94,19 @@ def stopped(text: str | None) -> TurnResult:
     return TurnResult(TurnState.STOPPED, text, 'interrupted')
 
 
-FIRST_TURN = [
-    TurnStarted(),
-    TextOut(INTRO),
-    ToolUse('item_1', 'command_execution', {'command': COMMAND}),
-    TextOut('OK'),
-    completed('OK'),
-]
+def first_turn(message: str = MESSAGE) -> list[object]:
+    return [
+        TurnStarted(),
+        MessageEntered(message),
+        TextOut(INTRO),
+        ToolUse('item_1', 'command_execution', {'command': COMMAND}),
+        TextOut('OK'),
+        completed('OK'),
+    ]
 
-RESUME = [TurnStarted(), TextOut('lynx'), completed('lynx')]
+
+def resume_turn(message: str) -> list[object]:
+    return [TurnStarted(), MessageEntered(message), TextOut('lynx'), completed('lynx')]
 
 STARTED = line({'type': 'thread.started', 'thread_id': CODEX_ID})
 
@@ -290,20 +297,20 @@ class StartTest(SessionTest):
         write_record(str(self.data_dir), THREAD_ID, CODEX_ID)
         session = await self.start(FakeProcess(stream_lines('resume')),
                                    thread=make_thread(resume=True))
-        self.assertEqual(await self.turn(session, 'Reply with the word you remembered'), RESUME)
+        self.assertEqual(await self.turn(session, REMEMBERED), resume_turn(REMEMBERED))
         self.assertEqual(self.spawn.argvs, [resume_argv()])
 
     async def test_resume_without_a_record_runs_a_first_turn(self) -> None:
         session = await self.start(FakeProcess(stream_lines('first-turn')),
                                    thread=make_thread(resume=True))
-        self.assertEqual(await self.turn(session), FIRST_TURN)
+        self.assertEqual(await self.turn(session), first_turn())
         self.assertEqual(self.spawn.argvs, [first_argv()])
 
     async def test_no_resume_reads_no_record(self) -> None:
         (self.data_dir / 'codex').mkdir(mode=0o700)
         self.record.mkdir()
         session = await self.start(FakeProcess(stream_lines('first-turn')))
-        self.assertEqual(await self.turn(session), FIRST_TURN)
+        self.assertEqual(await self.turn(session), first_turn())
         self.assertEqual(self.spawn.argvs, [first_argv()])
 
     async def test_unreadable_record_raises_and_spawns_nothing(self) -> None:
@@ -364,7 +371,7 @@ class TurnTest(SessionTest):
 
     async def test_replay_first_turn_and_stay_open(self) -> None:
         session = await self.start(FakeProcess(stream_lines('first-turn')))
-        self.assertEqual(await self.turn(session), FIRST_TURN)
+        self.assertEqual(await self.turn(session), first_turn())
         await eventually(lambda: self.process().returncode == 0)
         await asyncio.sleep(0.1)
         self.assertEqual(self.events.new(), [])
@@ -373,9 +380,9 @@ class TurnTest(SessionTest):
     async def test_second_turn_resumes_the_thread_of_the_first(self) -> None:
         session = await self.start(FakeProcess(stream_lines('first-turn')),
                                    FakeProcess(stream_lines('resume')))
-        self.assertEqual(await self.turn(session), FIRST_TURN)
+        self.assertEqual(await self.turn(session), first_turn())
         second = 'Reply with the word you remembered'
-        self.assertEqual(await self.turn(session, second), RESUME)
+        self.assertEqual(await self.turn(session, second), resume_turn(second))
         self.assertEqual(self.spawn.argvs, [first_argv(), resume_argv()])
         self.assertEqual(self.spawn.argvs[1][7], '01a163a1-4140-78d3-b4ab-ee2d93e984ad')
         self.assertEqual(bytes(self.process(1).stdin.data), second.encode())
@@ -406,6 +413,7 @@ class TurnTest(SessionTest):
         last = 'Both commands ran, but both writes failed: Read-only file system.'
         self.assertEqual(await self.turn(session), [
             TurnStarted(),
+            MessageEntered(MESSAGE),
             TextOut('I’ll try both commands and report whether the read-only environment '
                     'allows them.\n'),
             TextOut(last),
@@ -420,6 +428,7 @@ class TurnTest(SessionTest):
                 'because the filesystem is read-only.')
         self.assertEqual(await self.turn(session), [
             TurnStarted(),
+            MessageEntered(MESSAGE),
             TextOut('I’ll run the two commands and check their results.\n'),
             ToolUse('item_1', 'command_execution', {'command': command}),
             TextOut(last),
@@ -433,7 +442,7 @@ class TurnTest(SessionTest):
         tools = [event for event in events if isinstance(event, ToolUse)]
         self.assertEqual([tool.tool_use_id for tool in tools], ['item_1', 'item_2'])
         self.assertTrue(all(set(tool.input) == {'command'} for tool in tools))
-        self.assertEqual(events[0], TurnStarted())
+        self.assertEqual(events[:2], [TurnStarted(), MessageEntered(MESSAGE)])
         self.assertEqual(events[-1], completed('done'))
 
     async def test_item_ids_count_again_in_a_new_turn(self) -> None:
@@ -477,7 +486,7 @@ class RecordTest(SessionTest):
                 first = [changed(lines[0], change), *lines[1:]]
                 session = await self.start(FakeProcess(first),
                                            FakeProcess(stream_lines('first-turn')))
-                self.assertEqual(await self.turn(session), FIRST_TURN)
+                self.assertEqual(await self.turn(session), first_turn())
                 self.assertFalse(self.record.exists())
                 self.assertFalse((self.data_dir / 'codex').exists())
                 await self.turn(session, 'again')
@@ -489,8 +498,8 @@ class RecordTest(SessionTest):
         (self.data_dir / 'codex').write_bytes(b'')
         session = await self.start(FakeProcess(stream_lines('first-turn')),
                                    FakeProcess(stream_lines('resume')))
-        self.assertEqual(await self.turn(session), FIRST_TURN)
-        self.assertEqual(await self.turn(session, 'again'), RESUME)
+        self.assertEqual(await self.turn(session), first_turn())
+        self.assertEqual(await self.turn(session, 'again'), resume_turn('again'))
         self.assertEqual(self.spawn.argvs, [first_argv(), resume_argv()])
 
     async def test_a_new_thread_id_replaces_the_record(self) -> None:
@@ -510,7 +519,7 @@ class RecordTest(SessionTest):
         await session.close()
         session = await self.start(FakeProcess(stream_lines('resume')),
                                    thread=make_thread(resume=True))
-        self.assertEqual(await self.turn(session, 'again'), RESUME)
+        self.assertEqual(await self.turn(session, 'again'), resume_turn('again'))
         self.assertEqual(self.spawn.argvs, [resume_argv()])
 
 
@@ -537,7 +546,8 @@ class ItemTest(SessionTest):
             for kind in ('item.started', 'item.completed'):
                 lines.append(line({'type': kind, 'item': item}))
         session = await self.start(FakeProcess([*lines, TURN_COMPLETED]))
-        self.assertEqual(await self.turn(session), [TurnStarted(), completed(None)])
+        self.assertEqual(await self.turn(session),
+                         [TurnStarted(), MessageEntered(MESSAGE), completed(None)])
 
     async def test_agent_message_without_text_keeps_the_last_text(self) -> None:
         lines = [STARTED, TURN_STARTED, message_line('OK'), message_line(None, 'item_1'),
@@ -547,7 +557,7 @@ class ItemTest(SessionTest):
                  TURN_COMPLETED]
         session = await self.start(FakeProcess(lines))
         self.assertEqual(await self.turn(session),
-                         [TurnStarted(), TextOut('OK'), completed('OK')])
+                         [TurnStarted(), MessageEntered(MESSAGE), TextOut('OK'), completed('OK')])
 
     async def test_silent_items_emit_nothing(self) -> None:
         lines = [STARTED, TURN_STARTED,
@@ -559,7 +569,47 @@ class ItemTest(SessionTest):
                        'item': {'id': 'item_2', 'type': 'error', 'message': 'x'}}),
                  TURN_COMPLETED]
         session = await self.start(FakeProcess(lines))
-        self.assertEqual(await self.turn(session), [TurnStarted(), completed(None)])
+        self.assertEqual(await self.turn(session),
+                         [TurnStarted(), MessageEntered(MESSAGE), completed(None)])
+
+
+class MessageEnteredTest(SessionTest):
+    async def test_each_turn_enters_its_message_after_turn_started(self) -> None:
+        session = await self.start(FakeProcess(stream_lines('first-turn')),
+                                   FakeProcess(stream_lines('resume')))
+        self.assertEqual(await self.turn(session), first_turn())
+        self.assertEqual(await self.turn(session, REMEMBERED), resume_turn(REMEMBERED))
+        entered = [event for event in self.events.seen if isinstance(event, MessageEntered)]
+        self.assertEqual(entered, [MessageEntered(MESSAGE), MessageEntered(REMEMBERED)])
+
+    async def test_a_second_turn_started_line_enters_no_second_message(self) -> None:
+        lines = [STARTED, TURN_STARTED, TURN_STARTED, message_line('OK'), TURN_STARTED,
+                 TURN_COMPLETED]
+        session = await self.start(FakeProcess(lines))
+        self.assertEqual(await self.turn(session),
+                         [TurnStarted(), MessageEntered(MESSAGE), TextOut('OK'), completed('OK')])
+
+    async def test_a_turn_that_exits_before_turn_started_enters_nothing(self) -> None:
+        session = await self.start(FakeProcess([STARTED], exit_code=3),
+                                   FakeProcess(stream_lines('resume')))
+        self.assertEqual(await self.turn(session), [failed('codex exited with code 3')])
+        self.assertEqual(await self.turn(session, 'again'), resume_turn('again'))
+
+    async def test_a_turn_that_cannot_spawn_enters_nothing(self) -> None:
+        missing = FileNotFoundError(errno.ENOENT, 'No such file or directory', 'codex')
+        session = await self.start(missing, FakeProcess(stream_lines('first-turn')))
+        with self.assertRaises(RunnerStartError):
+            await session.send('lost', DispatchMode.QUEUE)
+        await settle()
+        self.assertEqual(self.events.new(), [])
+        self.assertEqual(await self.turn(session), first_turn())
+
+    async def test_a_lone_surrogate_message_enters_as_send_got_it(self) -> None:
+        message = 'Remember the word lynx \ud800 and reply with OK'
+        session = await self.start(FakeProcess(stream_lines('first-turn')))
+        self.assertEqual(await self.turn(session, message), first_turn(message))
+        self.assertEqual(bytes(self.process().stdin.data),
+                         b'Remember the word lynx ? and reply with OK')
 
 
 class FailureTest(SessionTest):
@@ -569,10 +619,11 @@ class FailureTest(SessionTest):
         text = 'I could not reach the model.'
         self.assertEqual(await self.turn(session), [
             TurnStarted(),
+            MessageEntered(MESSAGE),
             TextOut(text),
             failed('stream disconnected before completion', text),
         ])
-        self.assertEqual(await self.turn(session, 'again'), RESUME)
+        self.assertEqual(await self.turn(session, 'again'), resume_turn('again'))
         self.assertEqual(self.spawn.argvs[1], resume_argv())
 
     async def test_turn_failed_without_a_usable_message(self) -> None:
@@ -589,7 +640,7 @@ class FailureTest(SessionTest):
                 session = await self.start(FakeProcess([STARTED, TURN_STARTED, line(data)],
                                                        exit_code=1))
                 self.assertEqual(await self.turn(session),
-                                 [TurnStarted(), failed('turn failed')])
+                                 [TurnStarted(), MessageEntered(MESSAGE), failed('turn failed')])
 
     async def test_reason_with_the_token_is_redacted_and_cut(self) -> None:
         reason = f'proxy refused {TOKEN} ' + 'x' * 1_000
@@ -609,7 +660,7 @@ class FailureTest(SessionTest):
         message = ('Not inside a trusted directory and --skip-git-repo-check was not '
                    'specified.')
         self.assertEqual(await self.turn(session), [failed(message)])
-        self.assertEqual(await self.turn(session, 'again'), FIRST_TURN)
+        self.assertEqual(await self.turn(session, 'again'), first_turn('again'))
         self.assertEqual(self.spawn.argvs, [first_argv(), first_argv()])
 
     async def test_error_line_reason_is_redacted(self) -> None:
@@ -631,14 +682,14 @@ class FailureTest(SessionTest):
         session = await self.start(FakeProcess([STARTED], exit_code=3),
                                    FakeProcess(stream_lines('resume')))
         self.assertEqual(await self.turn(session), [failed('codex exited with code 3')])
-        self.assertEqual(await self.turn(session, 'again'), RESUME)
+        self.assertEqual(await self.turn(session, 'again'), resume_turn('again'))
         self.assertEqual(self.spawn.argvs, [first_argv(), resume_argv()])
 
     async def test_exit_without_any_line_fails_the_turn(self) -> None:
         session = await self.start(FakeProcess([], exit_code=127),
                                    FakeProcess(stream_lines('first-turn')))
         self.assertEqual(await self.turn(session), [failed('codex exited with code 127')])
-        self.assertEqual(await self.turn(session, 'again'), FIRST_TURN)
+        self.assertEqual(await self.turn(session, 'again'), first_turn('again'))
         self.assertEqual(self.spawn.argvs, [first_argv(), first_argv()])
 
     async def test_exit_after_turn_started_without_a_result_ends_the_session(self) -> None:
@@ -648,7 +699,8 @@ class FailureTest(SessionTest):
                 session = await self.start(FakeProcess(lines, exit_code=code))
                 await session.send(MESSAGE, DispatchMode.QUEUE)
                 self.assertEqual(await self.events.end(),
-                                 [TurnStarted(), TextOut(INTRO), Exited(code)])
+                                 [TurnStarted(), MessageEntered(MESSAGE), TextOut(INTRO),
+                                  Exited(code)])
                 with self.assertRaises(SessionClosed):
                     await session.send('again', DispatchMode.QUEUE)
                 self.assertEqual(len(self.spawn.calls), 1)
@@ -658,7 +710,7 @@ class LinesTest(SessionTest):
     async def test_malformed_lines_are_skipped(self) -> None:
         session = await self.start(FakeProcess(stream_lines('synthetic-malformed')))
         self.assertEqual(await self.turn(session),
-                         [TurnStarted(), TextOut('OK'), completed('OK')])
+                         [TurnStarted(), MessageEntered(MESSAGE), TextOut('OK'), completed('OK')])
 
     async def test_a_line_of_the_limit_is_parsed_and_a_longer_one_dropped(self) -> None:
         exact = message_line('a' * 100)
@@ -668,8 +720,9 @@ class LinesTest(SessionTest):
             FakeProcess([STARTED, TURN_STARTED, exact, longer, TURN_COMPLETED]),
             line_limit=limit,
         )
-        self.assertEqual(await self.turn(session),
-                         [TurnStarted(), TextOut('a' * 100), completed('a' * 100)])
+        self.assertEqual(await self.turn(session), [
+            TurnStarted(), MessageEntered(MESSAGE), TextOut('a' * 100), completed('a' * 100),
+        ])
 
     async def test_a_long_line_in_pieces_is_dropped(self) -> None:
         huge = message_line('c' * 200_000)
@@ -678,7 +731,7 @@ class LinesTest(SessionTest):
             line_limit=100_000,
         )
         self.assertEqual(await self.turn(session),
-                         [TurnStarted(), TextOut('OK'), completed('OK')])
+                         [TurnStarted(), MessageEntered(MESSAGE), TextOut('OK'), completed('OK')])
 
     async def test_last_line_without_a_newline_is_parsed(self) -> None:
         process = FakeProcess([STARTED, TURN_STARTED, message_line('OK')], stay=True)
@@ -712,7 +765,7 @@ class InterruptTest(SessionTest):
         self.assertEqual(self.process().group_sent(), [signal.SIGTERM])
         self.assertEqual(self.process().signals, [])
         self.assertEqual(self.events.new(), [stopped(INTRO)])
-        self.assertEqual(await self.turn(session, 'next'), RESUME)
+        self.assertEqual(await self.turn(session, 'next'), resume_turn('next'))
         self.assertEqual(self.spawn.argvs, [first_argv(), resume_argv()])
 
     async def test_interrupt_before_turn_started(self) -> None:
@@ -778,13 +831,13 @@ class InterruptTest(SessionTest):
         await asyncio.wait_for(session.send('stop and do this', DispatchMode.INTERRUPT), 1)
         self.assertEqual(self.process().group_sent(), [signal.SIGTERM])
         self.assertEqual(await self.events.take(TurnResult), [stopped(INTRO)])
-        self.assertEqual(await self.events.take(TurnResult), RESUME)
+        self.assertEqual(await self.events.take(TurnResult), resume_turn('stop and do this'))
         self.assertEqual(self.spawn.argvs, [first_argv(), resume_argv()])
         self.assertEqual(bytes(self.process(1).stdin.data), b'stop and do this')
 
     async def test_interrupt_mode_without_a_turn_just_starts(self) -> None:
         session = await self.start(FakeProcess(stream_lines('first-turn')))
-        self.assertEqual(await self.turn(session, MESSAGE, DispatchMode.INTERRUPT), FIRST_TURN)
+        self.assertEqual(await self.turn(session, MESSAGE, DispatchMode.INTERRUPT), first_turn())
 
 
 class QueueTest(SessionTest):
@@ -801,9 +854,9 @@ class QueueTest(SessionTest):
         self.assertEqual(len(self.spawn.calls), 1)
         first.feed(*lines[3:])
         first.exit(0)
-        self.assertEqual(await self.events.take(TurnResult), FIRST_TURN[2:])
-        self.assertEqual(await self.events.take(TurnResult), RESUME)
-        self.assertEqual(await self.events.take(TurnResult), RESUME)
+        self.assertEqual(await self.events.take(TurnResult), first_turn()[3:])
+        self.assertEqual(await self.events.take(TurnResult), resume_turn('two'))
+        self.assertEqual(await self.events.take(TurnResult), resume_turn('three'))
         self.assertEqual(self.spawn.argvs, [first_argv(), resume_argv(), resume_argv()])
         self.assertEqual([bytes(process.stdin.data) for process in self.spawn.processes],
                          [MESSAGE.encode(), b'two', b'three'])
@@ -818,14 +871,14 @@ class QueueTest(SessionTest):
                                         ignore_terminate=ignore)
                 session = await self.start(lingering, FakeProcess(stream_lines('resume')),
                                            close_timeout=0.1)
-                self.assertEqual(await self.turn(session), FIRST_TURN)
+                self.assertEqual(await self.turn(session), first_turn())
                 loop = asyncio.get_running_loop()
                 began = loop.time()
                 await asyncio.wait_for(session.send('again', DispatchMode.QUEUE), 2)
                 self.assertGreaterEqual(loop.time() - began, 0.09)
                 self.assertEqual(lingering.group_sent(), expected)
                 self.assertIsNotNone(lingering.returncode)
-                self.assertEqual(await self.events.take(TurnResult), RESUME)
+                self.assertEqual(await self.events.take(TurnResult), resume_turn('again'))
                 self.assertEqual(self.events.new(), [])
 
     async def test_a_process_that_exits_in_time_is_not_signalled(self) -> None:
@@ -838,7 +891,7 @@ class QueueTest(SessionTest):
         late.exit(0)
         await asyncio.wait_for(sending, 1)
         self.assertEqual(late.group_sent(), [])
-        self.assertEqual(await self.events.take(TurnResult), RESUME)
+        self.assertEqual(await self.events.take(TurnResult), resume_turn('again'))
 
 
 class SpawnErrorTest(SessionTest):
@@ -850,7 +903,7 @@ class SpawnErrorTest(SessionTest):
         self.assertEqual(str(caught.exception), 'could not start codex: No such file or directory')
         self.assertIs(caught.exception.__cause__, missing)
         self.assertEqual(self.events.new(), [])
-        self.assertEqual(await self.turn(session), FIRST_TURN)
+        self.assertEqual(await self.turn(session), first_turn())
         self.assertEqual(self.spawn.argvs, [first_argv(), first_argv()])
 
     async def test_text_holds_no_environment_value_or_token(self) -> None:
@@ -896,7 +949,7 @@ class SpawnErrorTest(SessionTest):
         session = await self.start(first, missing)
         await session.send(MESSAGE, DispatchMode.QUEUE)
         await session.send('two', DispatchMode.QUEUE)
-        self.assertEqual(await self.events.take(TurnResult), FIRST_TURN)
+        self.assertEqual(await self.events.take(TurnResult), first_turn())
         first.exit(0)
         self.assertEqual(await self.events.take(TurnResult),
                          [failed('could not start codex: No such file or directory')])
@@ -972,7 +1025,8 @@ class CloseTest(SessionTest):
     async def test_close_after_a_crash_gives_no_second_event(self) -> None:
         session = await self.start(FakeProcess(stream_lines('first-turn')[:2], exit_code=1))
         await session.send(MESSAGE, DispatchMode.QUEUE)
-        self.assertEqual(await self.events.end(), [TurnStarted(), Exited(1)])
+        self.assertEqual(await self.events.end(),
+                         [TurnStarted(), MessageEntered(MESSAGE), Exited(1)])
         await asyncio.wait_for(session.close(), 1)
         self.assertEqual(self.events.new(), [])
 
@@ -989,7 +1043,7 @@ class GroupTest(SessionTest):
                 process = FakeProcess(stream_lines('first-turn'), grandchild=grandchild,
                                       ignore_terminate=ignore)
                 session = await self.start(process, FakeProcess(stream_lines('resume')))
-                self.assertEqual(await self.turn(session), FIRST_TURN)
+                self.assertEqual(await self.turn(session), first_turn())
                 await self.turn(session, 'again')
                 self.assertEqual(process.returncode, 0)
                 self.assertEqual(process.group_sent(), expected)
@@ -1046,9 +1100,9 @@ class RealProcessTest(unittest.IsolatedAsyncioTestCase):
     async def test_two_turns_see_argv_cwd_env_and_stdin(self) -> None:
         session, events = await self.start()
         await session.send(MESSAGE, DispatchMode.QUEUE)
-        self.assertEqual(await events.take(TurnResult, timeout=10), FIRST_TURN)
-        await session.send('Reply with the word you remembered', DispatchMode.QUEUE)
-        self.assertEqual(await events.take(TurnResult, timeout=10), RESUME)
+        self.assertEqual(await events.take(TurnResult, timeout=10), first_turn())
+        await session.send(REMEMBERED, DispatchMode.QUEUE)
+        self.assertEqual(await events.take(TurnResult, timeout=10), resume_turn(REMEMBERED))
         await asyncio.wait_for(session.close(), 10)
         self.assertIn(await events.end(), ([Exited(None)], [Exited(0)]))
         workspace = str(self.workspace)
@@ -1074,7 +1128,7 @@ class RealProcessTest(unittest.IsolatedAsyncioTestCase):
         (self.workspace / 'grandchild').touch()
         session, events = await self.start(close_timeout=0.5)
         await session.send(MESSAGE, DispatchMode.QUEUE)
-        self.assertEqual(await events.take(TurnResult, timeout=10), FIRST_TURN)
+        self.assertEqual(await events.take(TurnResult, timeout=10), first_turn())
         pid = int((self.workspace / 'grandchild.pid').read_text())
         await eventually(lambda: is_gone(pid), timeout=5)
         await asyncio.sleep(0.1)
@@ -1086,11 +1140,11 @@ class RealProcessTest(unittest.IsolatedAsyncioTestCase):
             raw + b'\n' for raw in stream_lines('first-turn')[:3]))
         session, events = await self.start(close_timeout=5.0)
         await session.send(MESSAGE, DispatchMode.QUEUE)
-        self.assertEqual(await events.take(TextOut, timeout=10), FIRST_TURN[:2])
+        self.assertEqual(await events.take(TextOut, timeout=10), first_turn()[:3])
         await asyncio.wait_for(session.interrupt(), 10)
         self.assertEqual(events.new(), [stopped(INTRO)])
-        await session.send('Reply with the word you remembered', DispatchMode.QUEUE)
-        self.assertEqual(await events.take(TurnResult, timeout=10), RESUME)
+        await session.send(REMEMBERED, DispatchMode.QUEUE)
+        self.assertEqual(await events.take(TurnResult, timeout=10), resume_turn(REMEMBERED))
         self.assertEqual(self.spawned(1)['argv'][1:], resume_argv(
             workspace=str(self.workspace), codex_bin=str(self.codex_bin))[1:])
 

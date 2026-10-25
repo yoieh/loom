@@ -9,9 +9,9 @@ from pathlib import Path
 from loom_contracts.calls import Audience, CallName, OnBusy, ProjectInfo, Settle, ThreadInfo
 from loom_contracts.events import EventType
 from loom_contracts.runners import (
-    Capability, Decision, DispatchMode, Exited, PermissionMode, PermissionRequest, RequestAnswer,
-    Runner, RunnerEvent, RunnerHost, RunnerName, RunnerSession, TextOut, ThreadSpec, ToolUse,
-    TurnResult, TurnStarted,
+    Capability, Decision, DispatchMode, Exited, MessageEntered, PermissionMode, PermissionRequest,
+    RequestAnswer, Runner, RunnerEvent, RunnerHost, RunnerName, RunnerSession, TextOut,
+    ThreadSpec, ToolUse, TurnResult, TurnStarted,
 )
 from loom_contracts.states import ThreadState, TurnState
 from loom_contracts.workspaces import WorkspaceStrategy
@@ -125,6 +125,7 @@ class Orchestrator:
         self.lanes = Lanes()
         self._sessions: dict[str, RunnerSession] = {}
         self._pumps: dict[RunnerSession, asyncio.Task] = {}
+        self._outstanding: dict[RunnerSession, list[tuple[str, str]]] = {}
         self._turn_ends: dict[str, asyncio.Future] = {}
         self._stop_waits: dict[str, asyncio.Task] = {}
         self._closing = False
@@ -578,6 +579,7 @@ class Orchestrator:
         self._give_back(thread_id)
 
     async def _close_session(self, session: RunnerSession) -> None:
+        self._outstanding.pop(session, None)
         try:
             await session.close()
         except Exception:
@@ -740,6 +742,7 @@ class Orchestrator:
             await self._close_session(session)
             return
         self._sessions[thread_id] = session
+        self._outstanding[session] = []
         self._pumps[session] = asyncio.ensure_future(self._pump(thread_id, session))
         await self._dispatch_next(thread_id)
 
@@ -748,7 +751,7 @@ class Orchestrator:
         if session is None:
             return
         found = self.store.connection.execute(
-            'SELECT seq, text FROM messages WHERE thread_id = ? '
+            'SELECT seq, text, command_id FROM messages WHERE thread_id = ? '
             'ORDER BY priority DESC, seq LIMIT 1', (thread_id,),
         ).fetchone()
         if found is None:
@@ -763,6 +766,7 @@ class Orchestrator:
         except Exception as error:
             await self._fail(thread_id, error)
             return
+        self._sent(session, found[2], found[1])
         with self.store.transaction() as tx:
             if fetch(tx, thread_id)['state'] in ENDED:
                 return
@@ -791,7 +795,7 @@ class Orchestrator:
         thread_id = row['id']
         session = self._sessions.get(thread_id)
         found = self.store.connection.execute(
-            'SELECT text, mode FROM messages WHERE seq = ?', (seq,),
+            'SELECT text, mode, command_id FROM messages WHERE seq = ?', (seq,),
         ).fetchone()
         if session is None or found is None:
             return
@@ -799,6 +803,7 @@ class Orchestrator:
         try:
             if mode is DispatchMode.STEER and self._capable(row, Capability.STEER):
                 await session.send(found[0], DispatchMode.STEER)
+                self._sent(session, found[2], found[0])
                 with self.store.transaction() as tx:
                     tx.execute('DELETE FROM messages WHERE seq = ?', (seq,))
             elif mode is DispatchMode.INTERRUPT and self._capable(row, Capability.INTERRUPT):
@@ -909,6 +914,8 @@ class Orchestrator:
             self._log(tx, thread_id, event, state if live else None)
             if isinstance(event, PermissionRequest):
                 opened = live and self._open_request(tx, row, event)
+            elif live and isinstance(event, MessageEntered):
+                self._enter(tx, thread_id, session, event.text)
             elif live and (isinstance(event, Exited) and state is ThreadState.RUNNING
                            and not row['stop_requested']):
                 posted = self._crash(tx, row)
@@ -987,6 +994,22 @@ class Orchestrator:
                                 threads.CONTINUATION, DispatchMode.QUEUE, priority=2)
         transition(self.store, tx, thread_id, ThreadState.SLEEPING)
         return thread_id, seq
+
+    def _sent(self, session: RunnerSession, command_id: str, text: str) -> None:
+        outstanding = self._outstanding.get(session)
+        if outstanding is not None:
+            outstanding.append((command_id, text))
+
+    def _enter(self, tx: sqlite3.Connection, thread_id: str, session: RunnerSession,
+               text: str) -> None:
+        outstanding = self._outstanding.get(session)
+        if not outstanding:
+            return
+        index = next((at for at, (_, sent) in enumerate(outstanding) if sent == text), 0)
+        command_id = outstanding[index][0]
+        del outstanding[:index + 1]
+        self.store.append_event(tx, EventType.MESSAGE_ENTERED, thread_id,
+                                {'command_id': command_id, 'text': text})
 
     def _log(self, tx: sqlite3.Connection, thread_id: str, event: RunnerEvent,
              state: ThreadState | None) -> None:

@@ -1,8 +1,10 @@
 import json
 from dataclasses import dataclass
 
-from loom_contracts.runners import PermissionRequest, TextOut, ToolUse, TurnResult
+from loom_contracts.runners import MessageEntered, PermissionRequest, TextOut, ToolUse, TurnResult
 from loom_contracts.states import TurnState
+
+INTERRUPT_MARKER = '[Request interrupted by user'
 
 
 @dataclass(frozen=True)
@@ -33,7 +35,8 @@ class TaskEnded:
 
 
 Parsed = (
-    TextOut | ToolUse | PermissionRequest | Init | Result | BadRequest | TaskStarted | TaskEnded
+    MessageEntered | TextOut | ToolUse | PermissionRequest | Init | Result | BadRequest
+    | TaskStarted | TaskEnded
 )
 
 
@@ -81,6 +84,28 @@ def _assistant(data: dict) -> list[Parsed]:
     return items
 
 
+def _user(data: dict) -> list[Parsed]:
+    if data.get('isReplay') is not True:
+        return []
+    message = data.get('message')
+    if not isinstance(message, dict):
+        return []
+    content = message.get('content')
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = ''.join(
+            block['text'] for block in content
+            if isinstance(block, dict) and block.get('type') == 'text'
+            and isinstance(block.get('text'), str)
+        )
+    else:
+        return []
+    if not text or text.startswith(INTERRUPT_MARKER):
+        return []
+    return [MessageEntered(text)]
+
+
 def _control_request(data: dict) -> list[Parsed]:
     request_id = data.get('request_id')
     request = data.get('request')
@@ -107,6 +132,7 @@ def _result(data: dict) -> list[Parsed]:
 _RULES = {
     'system': _system,
     'assistant': _assistant,
+    'user': _user,
     'control_request': _control_request,
     'result': _result,
 }

@@ -111,7 +111,10 @@ Rules, each checked by a packaging test:
   lock; different threads run in parallel, on one asyncio loop.
 - **Dispatch modes** on `threads.send`: `steer` (into the running turn, §73.13 row 2; the
   default), `queue` (after it), `interrupt` (stop it, then send). A task's result back to its
-  parent jumps ahead of the parent's other queued messages.
+  parent jumps ahead of the parent's other queued messages. A client shows a post as waiting
+  to go in ("queued", which is not the thread state `queued`) until its `message.entered` event,
+  and as entered after it; a steered post enters mid-turn and shares the running turn's
+  `result` (§73.13 row 2).
 - **Stop is intent first.** Stop is recorded and shown at once; the runner's interrupt and the
   final `stopped` state follow as events. Stop on a thread stops everything it started, all the
   way down. An interrupted turn leaves its thread `idle`; when the turn has not ended 5 s after
@@ -119,9 +122,10 @@ Rules, each checked by a packaging test:
   thread is `sleeping`, as is a thread stopped before it started. A stopped child's result is
   not posted to its parent. A thread that is being stopped can't delegate or launch (`conflict`),
   so nothing it starts escapes the stop.
-- **Events.** Each change of state, each turn's text and tool lines, each request and each
-  `result` is an event with a growing id, kept 30 days. The state tables are the truth; events
-  are a log for clients to follow, not something state is rebuilt from.
+- **Events.** Each change of state, each turn's text and tool lines, each message that entered
+  the conversation (`message.entered`), each request and each `result` is an event with a
+  growing id, kept 30 days. The state tables are the truth; events are a log for clients to
+  follow, not something state is rebuilt from.
 
 ## §5 Projects and workspaces
 
@@ -154,7 +158,7 @@ class Runner(Protocol):
     async def start(self, thread: ThreadSpec, host: RunnerHost) -> RunnerSession: ...
 
 class RunnerSession(Protocol):
-    events: AsyncIterator[RunnerEvent]                # turn.started, text, tool, request, result, exited
+    events: AsyncIterator[RunnerEvent]                # turn.started, entered, text, tool, request, result, exited
     async def send(self, message: str, mode: DispatchMode) -> None: ...
     async def respond(self, request_id: str, answer: RequestAnswer) -> None: ...
     async def interrupt(self) -> None: ...
@@ -169,9 +173,11 @@ class RunnerSession(Protocol):
 - **`loom-runner-codex`**: `codex exec --json` per turn and `codex -C <worktree> -s <sandbox>
   exec resume <codex thread id> --json -` after, as §73.4.1 with §73.13 rows 13–17. Its capabilities
   are `interrupt` and `resume`: Codex never asks, so it has no `permission_requests`, and `exec`
-  takes no message mid-turn, so it has no `steer`. It keeps Codex's thread id (from
-  `thread.started`) in `<data_dir>/codex/<loom thread id>`, a file named by Loom's thread id
-  that holds Codex's (directory 0700, file 0600), to resume after a sleep or a restart.
+  takes no message mid-turn, so it has no `steer`. It reports a message as entered when its
+  turn starts, so the message's `message.entered` comes right after `turn.started`. It keeps
+  Codex's thread id (from `thread.started`) in `<data_dir>/codex/<loom thread id>`, a file
+  named by Loom's thread id that holds Codex's (directory 0700, file 0600), to resume after a
+  sleep or a restart.
 - **`loom-runner-t3`**: drives a T3 thread through T3's own API when T3 is installed and
   paired, so a project can keep its threads in T3. Built last.
 - **Environment.** Each agent gets an allowlisted environment (§73.13 row 12) plus

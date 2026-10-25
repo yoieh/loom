@@ -17,6 +17,7 @@ from loom_contracts.runners import (
     Decision,
     DispatchMode,
     Exited,
+    MessageEntered,
     PermissionRequest,
     RequestAnswer,
     Runner,
@@ -330,13 +331,18 @@ class SendTest(SessionTest):
         self.assertEqual(self.written, [user_line(first), user_line('Reply with the word second')])
         self.process.feed(*lines[3:])
         events += await events_until(session, TurnResult)
+        replayed = json.loads(lines[1])['message']['content']
+        self.assertTrue(replayed.startswith('[Test session for a spike'))
+        self.assertTrue(replayed.endswith(first))
         self.assertEqual(events, [
             TurnStarted(),
+            MessageEntered(replayed),
             ToolUse(
                 'toolu_01SteerReplaySleep20Bash',
                 'Bash',
                 {'command': 'sleep 20', 'description': 'Wait 20 seconds'},
             ),
+            MessageEntered('Reply with the word second'),
             TextOut('first\n\nsecond'),
             completed('first\n\nsecond'),
         ])

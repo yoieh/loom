@@ -21,6 +21,7 @@ class EventType(StrEnum):
     SCHEDULE_FIRED = 'schedule.fired'
     SIGNAL = 'signal'
     TRIGGER_SKIPPED = 'trigger.skipped'
+    MESSAGE_ENTERED = 'message.entered'
 
 
 class SkipReason(StrEnum):
@@ -108,6 +109,11 @@ class TriggerSkippedData(TypedDict):
     reason: SkipReason
 
 
+class MessageEnteredData(TypedDict):
+    command_id: str
+    text: str
+
+
 EventData = (
     ThreadStateData
     | ThreadFailedData
@@ -122,6 +128,7 @@ EventData = (
     | ScheduleFiredData
     | SignalData
     | TriggerSkippedData
+    | MessageEnteredData
 )
 
 
@@ -147,4 +154,5 @@ EVENT_DATA: dict[EventType, type] = {
     EventType.SCHEDULE_FIRED: ScheduleFiredData,
     EventType.SIGNAL: SignalData,
     EventType.TRIGGER_SKIPPED: TriggerSkippedData,
+    EventType.MESSAGE_ENTERED: MessageEnteredData,
 }

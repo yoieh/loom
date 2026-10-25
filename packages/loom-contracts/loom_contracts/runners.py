@@ -63,6 +63,11 @@ class TurnStarted:
 
 
 @dataclass(frozen=True)
+class MessageEntered:
+    text: str
+
+
+@dataclass(frozen=True)
 class TextOut:
     text: str
 
@@ -94,7 +99,8 @@ class Exited:
     code: int | None
 
 
-RunnerEvent = TurnStarted | TextOut | ToolUse | PermissionRequest | TurnResult | Exited
+RunnerEvent = (TurnStarted | MessageEntered | TextOut | ToolUse | PermissionRequest
+               | TurnResult | Exited)
 
 
 @runtime_checkable

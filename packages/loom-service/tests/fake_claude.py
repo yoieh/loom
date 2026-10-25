@@ -6,8 +6,10 @@ from pathlib import Path
 
 ENDLESS = 'Never end this turn.'
 ASK = 'Ask for permission.'
-STREAM = (Path(__file__).resolve().parents[2] / 'loom-runner-claude' / 'tests' / 'streams'
-          / 'perm-tool.jsonl')
+STEER = 'Wait for a steer.'
+STREAMS = Path(__file__).resolve().parents[2] / 'loom-runner-claude' / 'tests' / 'streams'
+STREAM = STREAMS / 'perm-tool.jsonl'
+STEER_STREAM = STREAMS / 'steer-replay.jsonl'
 RESPONSES = 'responses.jsonl'
 
 
@@ -151,6 +153,44 @@ def ask(stdin, out, session: str | None) -> None:
     out.flush()
 
 
+def is_tool_use(line: dict) -> bool:
+    message = line.get('message')
+    content = message.get('content') if isinstance(message, dict) else None
+    return (line.get('type') == 'assistant' and isinstance(content, list)
+            and any(isinstance(item, dict) and item.get('type') == 'tool_use'
+                    for item in content))
+
+
+def replayed(out, lines: list[dict], session: str | None, text: str) -> None:
+    for line in lines:
+        if line.get('isReplay') is True:
+            line = {**line, 'message': {**line['message'], 'content': text}}
+        emit(out, with_session(line, session))
+    out.flush()
+
+
+def next_user(stdin) -> str | None:
+    for line in stdin:
+        if control_response(line) is not None:
+            continue
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(data, dict) and data.get('type') == 'user':
+            return message_text(data)
+    return None
+
+
+def steer(stdin, out, session: str | None, text: str) -> None:
+    lines = [json.loads(line) for line in STEER_STREAM.read_text().splitlines() if line.strip()]
+    cut = next(index for index, line in enumerate(lines) if is_tool_use(line)) + 1
+    replayed(out, lines[:cut], session, text)
+    steered = next_user(stdin)
+    if steered is not None:
+        replayed(out, lines[cut:], session, steered)
+
+
 def main() -> None:
     cwd = os.getcwd()
     spawned = {'argv': sys.argv, 'cwd': cwd, 'env': dict(os.environ), 'pid': os.getpid()}
@@ -171,6 +211,9 @@ def main() -> None:
                 continue
             if message_text(data) == ASK:
                 ask(stdin, out, session)
+                continue
+            if message_text(data) == STEER:
+                steer(stdin, out, session, STEER)
                 continue
             number += 1
             turn(out, session, number, message_text(data))
