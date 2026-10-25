@@ -25,3 +25,5 @@ uv run loom projects add "My project" ~/src/my-project
 Then `uv run loom threads launch my-project "First task" "Say hello."` starts a thread, and
 `uv run loom threads events --follow` shows what it does.
 Add `--runner codex` to the launch to start a Codex thread instead.
+
+`uv run loom install` gives Claude Code and Codex agents Loom's tools.

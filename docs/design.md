@@ -239,13 +239,14 @@ class RunnerSession(Protocol):
 
 Starting a session is one tool call for any agent. `loom-mcp` is a stdio MCP server that
 `loom install` registers with Claude Code (user scope) and Codex (`codex mcp add`, with
-`env_vars = ["LOOM_THREAD"]`, §73.13 row 13). It knows its thread from `LOOM_THREAD` when that
-is set and not empty, else from `CLAUDE_CODE_SESSION_ID` when `threads.get` finds that id. An
-agent Loom didn't start (a terminal, T3) still gets the tools and is recorded as an outside
-thread: v1 has no call that registers it, so each `launch_thread` records it in the new thread's
-`origin`, `outside:<CLAUDE_CODE_SESSION_ID>` or else `outside` (a Loom thread's is
-`thread:<id>`). An outside thread has no tasks, so it can't `delegate` or use `task_status` and
-`task_cancel`.
+`env_vars = ["LOOM_THREAD", "LOOM_SOCKET", "XDG_RUNTIME_DIR"]`, §73.13 row 13, because Codex
+passes an MCP server only its table's `env` and `env_vars`, §73.13 item 9). It knows its thread
+from `LOOM_THREAD` when that is set and not empty, else from `CLAUDE_CODE_SESSION_ID` when
+`threads.get` finds that id. An agent Loom didn't start (a terminal, T3) still gets the tools
+and is recorded as an outside thread: v1 has no call that registers it, so each `launch_thread`
+records it in the new thread's `origin`, `outside:<CLAUDE_CODE_SESSION_ID>` or else `outside` (a
+Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `delegate` or use
+`task_status` and `task_cancel`.
 
 | Tool | Does | Like T3's |
 |---|---|---|

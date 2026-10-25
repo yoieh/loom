@@ -1270,6 +1270,7 @@ They go before the command.
 | Command | Call |
 |---|---|
 | `loom serve [--socket PATH] [--data-dir DIR] [--config FILE]` | starts the server, see [`loom serve`](#loom-serve) |
+| `loom install` | registers `loom-mcp` with Claude Code and Codex, see [`loom install`](#loom-install) |
 | `loom threads launch <project_id> <title> <message> [--workspace root\|worktree\|existing_worktree] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--requests caller\|any] [--origin O] [--audience person\|agent] [--id ID]` | `threads.launch` |
 | `loom threads delegate <parent_id> <task> [--workspace ...] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--id ID]` | `threads.delegate` |
 | `loom threads send <thread_id> <message> [--mode steer\|queue\|interrupt] [--id ID]` | `threads.send` |
@@ -1455,6 +1456,8 @@ is the event object, so any language can follow Loom by reading the CLI's stdout
 
 ### Exit codes
 
+`loom serve` and `loom install` have their own; see their sections.
+
 | Code | When |
 |---|---|
 | 0 | Done. |
@@ -1471,12 +1474,98 @@ $ loom --socket /tmp/nothing.sock threads list
 loom: cannot reach Loom at /tmp/nothing.sock: No such file or directory
 ```
 
+### `loom install`
+
+```sh
+uv run loom install
+```
+
+`loom install` registers [`loom-mcp`](#loom-mcp) as the MCP server `loom` with Claude Code at
+user scope and with Codex, so every agent you run, under Loom or not, gets Loom's tools (§9). It
+takes no options and needs no running server.
+
+The command it registers is `<python> -m loom_mcp`, where `<python>` is the interpreter
+`loom install` runs under. With `uv run` that is this checkout's `.venv` python, so run it from
+the checkout you keep, not from a worktree you will remove. When `loom_mcp` can't be found it
+exits 2 with `loom: loom-mcp is not installed` and runs nothing.
+
+It registers in the homes its own environment names. Loom's agents use the `claude_config_dir`
+and `codex_home` of [`loom serve`'s config](#configtoml), so when those keys are set, run it with
+the same values:
+
+```sh
+CLAUDE_CONFIG_DIR=<claude_config_dir> CODEX_HOME=<codex_home> uv run loom install
+```
+
+| Agent | Config file it reads | `loom` missing | `loom` there but different |
+|---|---|---|---|
+| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` when `CLAUDE_CONFIG_DIR` is set and not empty, else `$HOME/.claude.json` | `claude mcp add --scope user loom -- <python> -m loom_mcp` | `claude mcp remove --scope user loom`, then the add |
+| Codex | `$CODEX_HOME/config.toml` when `CODEX_HOME` is set and not empty, else `$HOME/.codex/config.toml` | `codex mcp add loom -- <python> -m loom_mcp`, then the `env_vars` write | `codex mcp remove loom`, then the add, then the `env_vars` write |
+
+- Claude's entry is `mcpServers.loom`. It matches when its `command` and `args` are the
+  registered command. `loom install` only reads Claude's file; `claude` writes it. A file that
+  is missing or not JSON counts as no entry.
+- Codex's entry is the `[mcp_servers.loom]` table. It matches when its `command` and `args` are
+  the registered command and its `env_vars` is
+  `["LOOM_THREAD", "LOOM_SOCKET", "XDG_RUNTIME_DIR"]`. Codex passes an MCP server only its
+  table's `env` and `env_vars`, and `loom-mcp` needs these three to know its thread and find the
+  socket. `codex mcp add` can't set `env_vars`, so `loom install` writes that line into the
+  table itself, as its last key, before any sub-table such as `[mcp_servers.loom.env]`. An
+  entry with the right command but other `env_vars` gets only this write, and `codex` doesn't
+  run.
+- The `env_vars` write changes only that line and keeps the rest of the file, comments
+  included. It checks that the new text parses to the same config plus `env_vars`, then
+  replaces the file through a temp file in the same folder, with the old file's permission
+  bits. When it can't make the change that way (for example a `loom` entry written inline
+  under `[mcp_servers]`), it writes nothing and fails with `codex: cannot set env_vars in
+  <path>`.
+- A `config.toml` that doesn't parse is left as it is: `codex: cannot read <path>: <reason>`,
+  and `codex` doesn't run.
+- A second run changes nothing. When both entries match, no `claude` or `codex` runs, no file
+  is written, and each agent prints `loom is already registered`.
+- `claude` and `codex` are looked up on `PATH`. One that isn't there is skipped. They run with
+  argument lists, at most 60 s each, and get only these variables from `loom install`'s
+  environment, those that are set: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`,
+  `LC_ALL`, `LC_CTYPE`, `TERM`, `TMPDIR`, `TZ`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+  `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR`, `CLAUDE_CONFIG_DIR` and `CODEX_HOME`.
+
+Each agent prints one line. These go to stdout:
+
+- `<agent>: registered loom`
+- `<agent>: loom is already registered`
+- `<agent>: not found, skipped`
+
+Failures go to stderr, and the other agent still runs:
+
+- `<agent>: <command> failed (exit <n>): <detail>`, with the command's words (such as
+  `claude mcp add`) and its stderr, then its stdout, on one line and cut to 500 characters.
+- `<agent>: <command> failed (timed out after 60 s)`
+- `codex: cannot read <path>: <reason>`
+- `codex: cannot set env_vars in <path>`
+
+| Code | When |
+|---|---|
+| 0 | Each agent is registered, was already registered, or was skipped as not found. |
+| 1 | An agent failed. |
+| 2 | `loom-mcp` is not installed, or a usage error. |
+
+```text
+$ uv run loom install
+claude: registered loom
+codex: registered loom
+$ uv run loom install
+claude: loom is already registered
+codex: loom is already registered
+```
+
 ## `loom-mcp`
 
 `loom-mcp` is the stdio MCP server that gives agents Loom's tools (§9): any agent can launch,
 delegate to, message and schedule threads with one tool call. It is the `loom-mcp` package. It
 depends only on `loom-client` and makes each call through `loom_client.Client`, so the server
 checks every call as it checks any client's.
+
+To register it with Claude Code and Codex, run [`loom install`](#loom-install).
 
 ### Running it
 

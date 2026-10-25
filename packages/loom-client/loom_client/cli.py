@@ -11,7 +11,7 @@ from loom_contracts.runners import DispatchMode, PermissionMode, RunnerName
 from loom_contracts.triggers import ScheduleAction, TriggerType
 from loom_contracts.workspaces import WorkspaceStrategy
 
-from . import output
+from . import install, output
 from .api import Client
 from .errors import LoomApiError, LoomConnectionError, LoomProtocolError
 
@@ -305,6 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help='socket path (default $XDG_RUNTIME_DIR/loom/api.sock)')
     serve.add_argument('--data-dir', help='data dir (default $XDG_DATA_HOME/loom)')
     serve.add_argument('--config', help='config file (default $XDG_CONFIG_HOME/loom/config.toml)')
+    commands.add_parser('install', help='register loom-mcp with Claude Code and Codex')
     groups = {}
     for call, (text, add_arguments, _) in COMMANDS.items():
         group, action = command_name(call)
@@ -416,6 +417,8 @@ def main(argv: list[str] | None = None) -> int:
             args = build_parser().parse_args(argv)
             if args.command == 'serve':
                 return _serve(args)
+            if args.command == 'install':
+                return install.install()
             return _run(args)
         except SystemExit as done:
             if done.code is None or isinstance(done.code, int):
