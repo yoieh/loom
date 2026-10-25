@@ -166,8 +166,8 @@ class RunnerSession(Protocol):
   after, as §73.4 with every correction in §73.13's table (rows 1–12, 18). The thread id is the
   session uuid.
 - **`loom-runner-codex`**: `codex exec --json` per turn and `codex -C <worktree> -s <sandbox>
-  exec resume <codex thread id> --json -` after, as §73.4.1 with §73.13 rows 13–17. Its
-  capabilities are `interrupt` and `resume`: Codex never asks, so it has no `permission_requests`, and `exec`
+  exec resume <codex thread id> --json -` after, as §73.4.1 with §73.13 rows 13–17. Its capabilities
+  are `interrupt` and `resume`: Codex never asks, so it has no `permission_requests`, and `exec`
   takes no message mid-turn, so it has no `steer`. It keeps Codex's thread id (from
   `thread.started`) in `<data_dir>/codex/<loom thread id>`, a file named by Loom's thread id
   that holds Codex's (directory 0700, file 0600), to resume after a sleep or a restart.
