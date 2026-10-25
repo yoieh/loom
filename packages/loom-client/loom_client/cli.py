@@ -19,6 +19,7 @@ EXIT_API = 1
 EXIT_USAGE = 2
 EXIT_CONNECTION = 3
 EXIT_INTERRUPT = 130
+EXIT_PIPE = 141
 
 PAGE = 1000
 STDIN = '-'
@@ -426,3 +427,12 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_USAGE
     except KeyboardInterrupt:
         return EXIT_INTERRUPT
+    except BrokenPipeError:
+        try:
+            stdout = sys.stdout.fileno()
+        except (OSError, ValueError):
+            return EXIT_PIPE
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, stdout)
+        os.close(devnull)
+        return EXIT_PIPE

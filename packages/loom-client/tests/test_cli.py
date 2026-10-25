@@ -1,9 +1,13 @@
 import contextlib
+import errno
 import importlib.util
 import io
 import json
 import os
+import select
+import subprocess
 import sys
+import threading
 import unittest
 import uuid
 from unittest import mock
@@ -139,6 +143,21 @@ USAGE_ERRORS = [
     ['--socket'],
     ['serve', '--port', '80'],
 ]
+
+
+class BrokenStdout(io.StringIO):
+    def __init__(self, broken: str) -> None:
+        super().__init__()
+        self.broken = broken
+
+    def write(self, text: str) -> int:
+        if self.broken == 'write':
+            raise BrokenPipeError(errno.EPIPE, 'Broken pipe')
+        return super().write(text)
+
+    def flush(self) -> None:
+        if self.broken == 'flush':
+            raise BrokenPipeError(errno.EPIPE, 'Broken pipe')
 
 
 class CliCase(FakeServerCase):
@@ -368,6 +387,17 @@ class ExitTest(CliCase):
                     mock.patch.object(Client, 'call', side_effect=KeyboardInterrupt):
                 code, out, err = self.run_cli(*argv)
                 self.assertEqual((code, out, err), (130, '', ''))
+
+    def test_a_closed_stdout_exits_141_with_nothing_on_stderr(self) -> None:
+        self.answer(ok([thread_info()]))
+        for broken in ('write', 'flush'):
+            with self.subTest(broken=broken):
+                out, err = BrokenStdout(broken), io.StringIO()
+                with self.assertRaises(OSError):
+                    out.fileno()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = cli.main(['--socket', str(self.socket), 'threads', 'list'])
+                self.assertEqual((code, err.getvalue()), (141, ''))
 
 
 class EventsTest(CliCase):
@@ -815,6 +845,61 @@ class RetryHintTest(CliCase):
         for argv in self.write_commands():
             with self.subTest(argv=argv):
                 self.assertEqual(self.run_cli(*argv), (1, '', 'loom: invalid: bad input\n'))
+
+
+class BrokenPipeTest(FakeServerCase):
+    TIMEOUT = 10.0
+    maxDiff = None
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.closed = threading.Event()
+        self.addCleanup(self.closed.set)
+
+    def stop(self, process: subprocess.Popen) -> None:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        process.stdout.close()
+        process.stderr.close()
+
+    def close_after_one_line(self, argv: list[str]) -> tuple[int, bytes]:
+        process = subprocess.Popen(
+            [sys.executable, '-m', 'loom_client', '--socket', str(self.socket), *argv],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env={'PATH': os.environ.get('PATH', '')})
+        self.addCleanup(self.stop, process)
+        ready, _, _ = select.select([process.stdout], [], [], self.TIMEOUT)
+        self.assertTrue(ready, 'no line on stdout')
+        self.assertTrue(process.stdout.readline())
+        process.stdout.close()
+        self.closed.set()
+        code = process.wait(timeout=self.TIMEOUT)
+        return code, process.stderr.read()
+
+    def test_events_cut_off_by_a_closed_stdout_exit_141_with_nothing_on_stderr(self) -> None:
+        def reply(request: dict):
+            if request['params']['after'] == 0:
+                yield from ok([event(number) for number in range(1, cli.PAGE + 1)])
+                return
+            self.closed.wait(self.TIMEOUT)
+            yield from ok([event(number) for number in range(cli.PAGE + 1, cli.PAGE + 301)])
+
+        self.answer_with(reply)
+        code, err = self.close_after_one_line(['threads', 'events'])
+        self.assertEqual((code, err), (141, b''))
+
+    def test_a_follow_cut_off_by_a_closed_stdout_exits_141_with_nothing_on_stderr(self) -> None:
+        def reply(request: dict):
+            chunks = stream(*[event(number) for number in range(1, 302)])
+            yield from chunks[:2]
+            self.closed.wait(self.TIMEOUT)
+            yield b''.join(chunks[2:-1])
+            yield CLOSE
+
+        self.answer_with(reply)
+        code, err = self.close_after_one_line(['--json', 'threads', 'events', '--follow'])
+        self.assertEqual((code, err), (141, b''))
 
 
 if __name__ == '__main__':
