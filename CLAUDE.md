@@ -31,8 +31,8 @@ lasting fact here changes.
     such a run edits a `pyproject.toml`'s dependencies and `uv.lock`.
   - Tests use the stdlib `unittest` only (`IsolatedAsyncioTestCase` for async
     code). There are no dev dependencies.
-  - Loom runs `claude`, `codex` and `git` as child processes; they are not
-    Python dependencies.
+  - Loom runs `claude`, `codex`, `t3` and `git` as child processes; they are
+    not Python dependencies.
 - **Test command:** `uv run python -m unittest discover -s packages -p 'test_*.py' -t .`
   (add `-v` for names); one file is
   `uv run python -m unittest packages.<name>.tests.test_<module>`. Tests use temp

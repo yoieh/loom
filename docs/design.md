@@ -212,9 +212,10 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   `2025-06-18`, every answer `application/json` (*seen*; an SSE body is accepted too, in case
   T3 changes). The origin is loopback, `http://127.0.0.1:<port>`, and T3 picks the port; the
   runner reads it from `<t3_home>/userdata/server-runtime.json` (`origin`). One `initialize`
-  and `notifications/initialized` per runner, whose `Mcp-Session-Id` goes on every later call;
-  T3 answers 400 (`-32600`) without it and 404 with an empty body for an unknown one, and
-  then the runner initializes again and retries once (*seen*; *seen*, T3 0.1.2). A tool's
+  and `notifications/initialized` per session (each start makes its own MCP client), whose
+  `Mcp-Session-Id` goes on every later call; T3 answers 400 (`-32600`) without it and 404
+  with an empty body for an unknown one, and then the runner initializes again and retries
+  once (*seen*; *seen*, T3 0.1.2). A tool's
   result is its JSON as `content[0].text`, and also as `structuredContent` unless it is
   `isError` (*seen*, T3 0.1.2). The client is stdlib `http.client`, run with
   `asyncio.to_thread`, with a 10 s timeout per call. Loom only connects out to loopback and
@@ -284,6 +285,12 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   project at <path>"; Loom never creates T3 projects. Loom makes the workspace itself (§5) and
   passes `{type: "root"}` for a project's root or `{type: "existing_worktree", worktreePath,
   branch}` for a worktree it made, which is a git worktree of the same repo, as T3 requires.
+  Since `ThreadSpec` carries neither the main checkout nor the branch, the runner asks git,
+  with an argument list and an allowlisted environment: `git -C <workspace_path> rev-parse
+  --path-format=absolute --show-toplevel --git-common-dir` gives the checkout and the shared
+  `.git`, whose parent is the main checkout, matched against `workspaceRoot`. When the two
+  are the same, the workspace is the root; else `git -C <workspace_path> symbolic-ref --short
+  HEAD` gives the worktree's branch, and a detached worktree fails the start.
   T3 accepts a worktree made the way Loom makes one (`git worktree add -b <branch> <path>
   <base>`), and the thread's `worktreePath` and `branch` then name it (*seen*, T3 0.1.2).
 - **Model.** With no `model`, the runner passes T3's `defaultModelSelection` from
@@ -302,20 +309,26 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   reads as before, with `thread.archived` `true`, so the runner checks that field (*seen*,
   T3 0.1.2).
 - **Send and interrupt.** `t3_thread_send {threadId, message, mode, clientRequestId}`, with
-  `steer` → `steer`, `queue` → `queue` and `interrupt` → `restart`; the `clientRequestId` is
-  derived from the Loom command id (§4), so a retry sends once. A second send with the same
-  `clientRequestId` answers the same `messageId` and `runId` and enters no second message
-  (*seen*, T3 0.1.2; TV §53 found no retry key on 0.1.0). A send answers `{threadId,
-  messageId, runId, status, delivery}`, and its user message's `messageId` ends in
-  `thread-send:<clientRequestId>`. A `steer` during a run answers `delivery` `steered` with
+  `steer` → `steer`, `queue` → `queue` and `interrupt` → `restart`. `RunnerSession.send`
+  carries no Loom command id (§4), so the runner makes a new `clientRequestId` (a uuid4) per
+  `send` or `interrupt` call, and reuses it only for the MCP client's one retry after T3
+  dropped the MCP session (400 `-32600`, or 404). It never retries after a timeout or a
+  connection error, since T3 may already have acted. So a message Loom sends again after its
+  own crash, between the send and deleting the message row, may enter twice, as it may for
+  Claude and Codex threads; passing the command id to `send` needs a new issue. A second
+  send with the same `clientRequestId` answers the same `messageId` and `runId` and enters
+  no second message (*seen*, T3 0.1.2; TV §53 found no retry key on 0.1.0). A send answers
+  `{threadId, messageId, runId, status, delivery}`, and its user message's `messageId` ends
+  in `thread-send:<clientRequestId>`. A `steer` during a run answers `delivery` `steered` with
   that run's `runId`, and its message joins the run (*seen*, T3 0.1.2). `interrupt` is
   `t3_thread_interrupt {threadId, clientRequestId}`, which answers `{threadId, runId, status:
   "interrupt_requested"}`. A second call with the same `clientRequestId` gave the same answer
   and no second interrupt item (*seen*, T3 0.1.2).
 - **Events.** T3's MCP sends no stream, so a session polls `t3_thread_read {view: "activity",
   afterPosition}`: every second while the thread is `running` or `waiting` or has a queued
-  run, and every 15 s otherwise, so a turn the user starts in T3's own app is seen too. The
-  answer is `{thread, recentRuns, items, nextPosition, hasMore}` (*seen*, T3 0.1.2):
+  run, and for up to 30 reads after a `send` until its run shows, and every 15 s otherwise,
+  so a turn the user starts in T3's own app is seen too. The answer is `{thread,
+  recentRuns, items, nextPosition, hasMore}` (*seen*, T3 0.1.2):
   - **Position.** `afterPosition` is exclusive. `nextPosition` is the last item's
     `position`, and `null` when no item is new, so the session keeps its last position.
   - **The thread.** `thread` holds `status`, `activeRunId`, `latestRunId`, `runCount`,
@@ -339,8 +352,9 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   *seen*; *seen*, T3 0.1.2); a `dynamic_tool` item is `tool`; a run that ends `completed`,
   `failed` or `interrupted` is `result`, completed, failed or stopped. A failed run's
   provider error comes twice, first as an `assistant_message` and then as an `error` item
-  with `status` `failed` and `title` "Provider error" (*seen*, T3 0.1.2). The streams are
-  the replay tests (§3; see Tests).
+  with `status` `failed` and `title` "Provider error" (*seen*, T3 0.1.2). The runner reports
+  the first as `text`, as T3 shows it, and gives the `error` item's text as the failed
+  result's reason. The streams are the replay tests (§3; see Tests).
 - **Capabilities:** `steer`, `interrupt` and `resume`, not `permission_requests`.
   `t3_pending_request_respond` is described as "Answer a pending user-input request using
   the existing runtime response command. This cannot approve a permission request."
