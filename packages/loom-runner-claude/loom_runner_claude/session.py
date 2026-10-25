@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import copy
 import dataclasses
 import os
 import signal
@@ -380,7 +381,7 @@ class ClaudeSession:
                     self._open_turn()
                     self._emit(TurnStarted())
             case PermissionRequest():
-                self._requests[item.request_id] = item.input
+                self._requests[item.request_id] = copy.deepcopy(item.input)
                 self._emit(item)
             case BadRequest():
                 with contextlib.suppress(SessionClosed):
