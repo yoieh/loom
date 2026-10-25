@@ -2,6 +2,7 @@ import unittest
 from enum import StrEnum
 from typing import get_args, get_type_hints
 
+from loom_contracts.calls import Audience
 from loom_contracts.events import EVENT_DATA, Event, EventData, EventType
 from loom_contracts.runners import Decision
 from loom_contracts.states import ThreadState, TurnState
@@ -10,6 +11,7 @@ from loom_contracts.triggers import ScheduleAction
 DATA: dict[str, tuple[set[str], set[str]]] = {
     'thread.state': ({'state'}, {'waiting', 'reason'}),
     'thread.failed': ({'reason'}, set()),
+    'thread.updated': ({'audience', 'previous_audience'}, set()),
     'turn.started': (set(), set()),
     'turn.text': ({'text'}, set()),
     'turn.tool': ({'tool_use_id', 'name', 'input'}, set()),
@@ -60,6 +62,8 @@ class EventDataTest(unittest.TestCase):
         expected = {
             ('thread.state', 'state'): ThreadState,
             ('thread.state', 'waiting'): bool,
+            ('thread.updated', 'audience'): Audience,
+            ('thread.updated', 'previous_audience'): Audience,
             ('turn.result', 'state'): TurnState,
             ('request.closed', 'decision'): Decision,
             ('schedule.fired', 'action'): ScheduleAction,

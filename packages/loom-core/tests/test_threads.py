@@ -3,7 +3,7 @@ import unittest
 import uuid
 from pathlib import Path
 
-from loom_contracts.calls import ThreadInfo
+from loom_contracts.calls import Audience, ThreadInfo
 from loom_contracts.events import EventType
 from loom_contracts.states import ThreadState
 
@@ -179,6 +179,12 @@ class ThreadInfoTest(ThreadsTest):
         self.assertEqual((info['runner'], info['permission_mode'], info['branch'],
                           info['model'], info['reason'], info['origin']),
                          ('claude', 'auto', 'main', 'opus', 'r', 'voice'))
+        self.assertIs(info['audience'], Audience.AGENT)
+        self.assertEqual(list(info)[list(info).index('origin') + 1], 'audience')
+
+    def test_info_carries_the_stored_audience(self) -> None:
+        thread_id = self.insert(audience='person')
+        self.assertIs(thread_info(self.row(thread_id))['audience'], Audience.PERSON)
 
     def test_select_orders_by_created_at_then_id_and_filters(self) -> None:
         first = self.insert(created_at='2026-10-24T10:00:00.000+00:00')
@@ -189,6 +195,19 @@ class ThreadInfoTest(ThreadsTest):
         self.assertEqual(ids, [*tied, first, other])
         self.assertEqual([row['id'] for row in threads.select(self.store.connection, 'other')],
                          [other])
+
+    def test_select_filters_by_audience_and_project(self) -> None:
+        person = self.insert(audience='person')
+        agent = self.insert()
+        other = self.insert(project_id='other', audience='person')
+        select = threads.select
+        connection = self.store.connection
+        self.assertEqual({row['id'] for row in select(connection, None, Audience.PERSON)},
+                         {person, other})
+        self.assertEqual([row['id'] for row in select(connection, None, Audience.AGENT)],
+                         [agent])
+        self.assertEqual([row['id'] for row in select(connection, 'loom', Audience.PERSON)],
+                         [person])
 
 
 if __name__ == '__main__':

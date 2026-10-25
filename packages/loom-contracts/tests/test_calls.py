@@ -8,6 +8,7 @@ import loom_contracts
 from loom_contracts.calls import (
     CALL_PARAMS,
     ApiError,
+    Audience,
     CallName,
     ProjectInfo,
     ScheduleInfo,
@@ -27,15 +28,16 @@ from loom_contracts.workspaces import Workspace
 PARAMS: dict[str, tuple[set[str], set[str]]] = {
     'threads.launch': (
         {'id', 'title', 'message', 'project_id'},
-        {'workspace', 'runner', 'model', 'requests', 'origin'},
+        {'workspace', 'runner', 'model', 'requests', 'origin', 'audience'},
     ),
     'threads.delegate': ({'id', 'parent_id', 'task'}, {'workspace', 'runner', 'model'}),
     'threads.send': ({'id', 'thread_id', 'message'}, {'mode'}),
-    'threads.list': (set(), {'project_id'}),
+    'threads.list': (set(), {'project_id', 'audience'}),
     'threads.get': ({'thread_id'}, set()),
     'threads.stop': ({'id', 'thread_id'}, set()),
     'threads.settle': ({'id', 'thread_id'}, set()),
-    'threads.events': (set(), {'after', 'thread_id', 'follow'}),
+    'threads.update': ({'id', 'thread_id', 'audience'}, set()),
+    'threads.events': (set(), {'after', 'thread_id', 'follow', 'audience'}),
     'requests.respond': ({'id', 'request_id', 'decision'}, {'message'}),
     'schedules.add': (
         {'id', 'trigger', 'text'}, {'action', 'thread_id', 'project_id', 'title'},
@@ -56,6 +58,12 @@ class CallNameTest(unittest.TestCase):
     def test_values(self) -> None:
         self.assertTrue(issubclass(CallName, StrEnum))
         self.assertEqual({call.value for call in CallName}, set(PARAMS))
+
+
+class AudienceTest(unittest.TestCase):
+    def test_values(self) -> None:
+        self.assertTrue(issubclass(Audience, StrEnum))
+        self.assertEqual([item.value for item in Audience], ['person', 'agent'])
 
 
 class CallParamsTest(unittest.TestCase):
@@ -82,12 +90,17 @@ class CallParamsTest(unittest.TestCase):
             ('threads.launch', 'project_id'): str,
             ('threads.launch', 'workspace'): Workspace,
             ('threads.launch', 'runner'): RunnerName,
+            ('threads.launch', 'audience'): Audience,
             ('threads.delegate', 'parent_id'): str,
             ('threads.delegate', 'workspace'): Workspace,
             ('threads.delegate', 'runner'): RunnerName,
             ('threads.send', 'mode'): DispatchMode,
             ('threads.list', 'project_id'): str,
+            ('threads.list', 'audience'): Audience,
+            ('threads.update', 'thread_id'): str,
+            ('threads.update', 'audience'): Audience,
             ('threads.events', 'after'): int,
+            ('threads.events', 'audience'): Audience,
             ('requests.respond', 'decision'): Decision,
             ('schedules.add', 'trigger'): Trigger,
             ('schedules.add', 'action'): ScheduleAction,
@@ -126,11 +139,16 @@ class RecordTest(unittest.TestCase):
             frozenset({
                 'id', 'title', 'runner', 'project_id', 'workspace_path', 'branch', 'model',
                 'permission_mode', 'state', 'waiting', 'reason', 'parent_id', 'origin',
-                'created_at',
+                'audience', 'created_at',
             }),
         )
         self.assertEqual(ThreadInfo.__optional_keys__, frozenset())
         self.assertIs(get_type_hints(ThreadInfo)['permission_mode'], PermissionMode)
+        self.assertIs(get_type_hints(ThreadInfo)['audience'], Audience)
+
+    def test_thread_info_has_audience_right_after_origin(self) -> None:
+        names = list(ThreadInfo.__annotations__)
+        self.assertEqual(names[names.index('origin') + 1], 'audience')
 
     def test_schedule_info_keys(self) -> None:
         self.assertEqual(

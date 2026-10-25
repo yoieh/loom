@@ -2,7 +2,7 @@ import sqlite3
 from collections.abc import Mapping
 from datetime import timedelta
 
-from loom_contracts.calls import ThreadInfo
+from loom_contracts.calls import Audience, ThreadInfo
 from loom_contracts.events import EventType
 from loom_contracts.runners import PermissionMode, RunnerName
 from loom_contracts.states import ThreadState
@@ -43,7 +43,7 @@ MODE_ORDER = (
 COLUMNS = (
     'id', 'title', 'runner', 'project_id', 'workspace_strategy', 'workspace_path', 'branch',
     'base', 'model', 'permission_mode', 'requests', 'state', 'waiting', 'reason', 'parent_id',
-    'origin', 'has_session', 'stop_requested', 'created_at', 'updated_at',
+    'origin', 'has_session', 'stop_requested', 'created_at', 'updated_at', 'audience',
 )
 
 
@@ -60,11 +60,15 @@ def fetch(tx: sqlite3.Connection, thread_id: str) -> sqlite3.Row:
     return found[0]
 
 
-def select(tx: sqlite3.Connection, project_id: str | None = None) -> list[sqlite3.Row]:
-    if project_id is None:
-        return _rows(tx, 'SELECT * FROM threads ORDER BY created_at, id')
-    return _rows(tx, 'SELECT * FROM threads WHERE project_id = ? ORDER BY created_at, id',
-                 (project_id,))
+def select(tx: sqlite3.Connection, project_id: str | None = None,
+           audience: Audience | None = None) -> list[sqlite3.Row]:
+    found = {'project_id': project_id, 'audience': audience}
+    where = [f'{column} = ?' for column, value in found.items() if value is not None]
+    sql = 'SELECT * FROM threads'
+    if where:
+        sql += ' WHERE ' + ' AND '.join(where)
+    return _rows(tx, sql + ' ORDER BY created_at, id',
+                 tuple(str(value) for value in found.values() if value is not None))
 
 
 def stop_targets(tx: sqlite3.Connection, thread_id: str) -> list[sqlite3.Row]:
@@ -160,6 +164,7 @@ def thread_info(row: sqlite3.Row) -> ThreadInfo:
         'reason': row['reason'],
         'parent_id': row['parent_id'],
         'origin': row['origin'],
+        'audience': Audience(row['audience']),
         'created_at': row['created_at'],
     }
 
@@ -175,7 +180,7 @@ def insert(store: Store, tx: sqlite3.Connection, fields: Mapping[str, object]) -
     now = iso(store.clock())
     values = {column: None for column in COLUMNS}
     values.update(state=ThreadState.QUEUED, waiting=0, has_session=0, stop_requested=0,
-                  created_at=now, updated_at=now)
+                  created_at=now, updated_at=now, audience=Audience.AGENT)
     values.update(fields)
     tx.execute(
         f'INSERT INTO threads ({", ".join(COLUMNS)}) VALUES ({", ".join("?" for _ in COLUMNS)})',

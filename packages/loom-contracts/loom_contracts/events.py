@@ -1,6 +1,7 @@
 from enum import StrEnum
 from typing import NotRequired, TypedDict
 
+from .calls import Audience
 from .runners import Decision
 from .states import ThreadState, TurnState
 from .triggers import ScheduleAction
@@ -9,6 +10,7 @@ from .triggers import ScheduleAction
 class EventType(StrEnum):
     THREAD_STATE = 'thread.state'
     THREAD_FAILED = 'thread.failed'
+    THREAD_UPDATED = 'thread.updated'
     TURN_STARTED = 'turn.started'
     TURN_TEXT = 'turn.text'
     TURN_TOOL = 'turn.tool'
@@ -26,6 +28,11 @@ class ThreadStateData(TypedDict):
 
 class ThreadFailedData(TypedDict):
     reason: str
+
+
+class ThreadUpdatedData(TypedDict):
+    audience: Audience
+    previous_audience: Audience
 
 
 class TurnStartedData(TypedDict):
@@ -71,6 +78,7 @@ class ScheduleFiredData(TypedDict):
 EventData = (
     ThreadStateData
     | ThreadFailedData
+    | ThreadUpdatedData
     | TurnStartedData
     | TurnTextData
     | TurnToolData
@@ -92,6 +100,7 @@ class Event(TypedDict):
 EVENT_DATA: dict[EventType, type] = {
     EventType.THREAD_STATE: ThreadStateData,
     EventType.THREAD_FAILED: ThreadFailedData,
+    EventType.THREAD_UPDATED: ThreadUpdatedData,
     EventType.TURN_STARTED: TurnStartedData,
     EventType.TURN_TEXT: TurnTextData,
     EventType.TURN_TOOL: TurnToolData,
