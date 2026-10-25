@@ -209,8 +209,9 @@ the peer's process id and walks up its parent chain in `/proc`, at most 64 proce
 
 - A process running as the same user can get round it: for example one that leaves Loom's process
   tree and unsets `LOOM_THREAD`, or one that writes Loom's store directly.
-- Agents Loom did not start, such as a T3 thread or Claude Code in a terminal, are not seen as
-  agents. They count as the user.
+- Agents Loom did not start, such as Claude Code in a terminal, are not seen as agents, and
+  neither is the agent of a T3 thread, which T3 runs (see [T3 threads](#t3-threads)). They
+  count as the user.
 - `projects.remove` is not refused: it only removes the project's entry, and Loom refuses it
   while the project has a live thread.
 
@@ -345,7 +346,7 @@ Most calls answer with a thread, a project or a schedule.
 |---|---|---|
 | `id` | string | The thread id, a uuid. For a Claude thread it is also the agent's session id; a Codex thread's is not (see [Codex threads](#codex-threads)). |
 | `title` | string | |
-| `runner` | string | `claude` or `codex` (`t3` later). |
+| `runner` | string | `claude`, `codex` or `t3`. |
 | `project_id` | string | |
 | `workspace_path` | string | Where the agent works. |
 | `branch` | string or null | The git branch. For a `root` workspace it is filled in when the thread starts. |
@@ -457,7 +458,7 @@ Starts a new top-level thread in a project with a first message.
 | `title` | string, required | Not empty. |
 | `message` | string, required | The first message. Not empty. |
 | `workspace` | object | Default `{"strategy": "worktree"}`. See [Workspaces](#workspaces). |
-| `runner` | string | Default `"claude"`. `claude` and `codex` are served; `t3` answers `invalid`, `runner t3 is not available`. |
+| `runner` | string | Default `"claude"`. `claude`, `codex` and `t3` are served. A `t3` thread needs `loom t3 pair` first (see [T3 threads](#t3-threads)). |
 | `model` | string | Not empty. Default: the agent's own. |
 | `requests` | string | Who may answer the thread's permission prompts (§8 Requests): `"any"` (default), any caller but the thread itself, or `"caller"`, only the caller that launched it. A delegated child keeps both. See [Who may answer a request](#who-may-answer-a-request). A null answers `invalid`, `requests must not be null`; any other value `requests must be one of caller, any`. |
 | `origin` | string | Who started the thread, for clients to show. |
@@ -1737,8 +1738,9 @@ package is missing. `loom --socket PATH serve` passes `--socket` on too.
 | `--data-dir` | `$XDG_DATA_HOME/loom`, else `~/.local/share/loom`. Mode 0700. |
 | `--config` | `$XDG_CONFIG_HOME/loom/config.toml`, else `~/.config/loom/config.toml`. A missing file means all defaults. |
 
-The data dir holds the store `loom.db` (mode 0600), the `worktrees/` Loom makes, and the
-`agent-token` file you put there. `loom.db` also holds the schedules and their runs (the
+The data dir holds the store `loom.db` (mode 0600), the `worktrees/` Loom makes, the
+`agent-token` file you put there, the [`t3-client.json`](#t3-clientjson) that `loom t3 pair`
+writes, and `t3/`, where Loom keeps each T3 thread's id (see [T3 threads](#t3-threads)). `loom.db` also holds the schedules and their runs (the
 `schedules` and `schedule_runs` tables). The scheduler starts with the server, once it listens,
 and stops when the server stops. Runs missed while the server was down follow the
 [missed-run rules](#how-schedules-run) on the first pass after it starts.
@@ -1759,6 +1761,8 @@ or more; every other value is a string.
 | `request_timeout` | `600` | Seconds a permission request may stay open before Loom denies it (see [`requests.respond`](#requestsrespond)). Loom checks every second. |
 | `codex_bin` | `codex` | The Codex program to run. When its directory holds `node`, that directory goes on the end of the agent's `PATH`. |
 | `codex_home` | none | Given to Codex as `CODEX_HOME`. |
+| `t3_home` | `~/.t3` | T3's home. Loom reads `userdata/server-runtime.json` there for T3's address and version, and `userdata/settings.json` for its default model. |
+| `t3_bin` | `<t3_home>/runtime/versions/<serverVersion>/t3` | The `t3` program that `loom t3 pair` and `loom t3 unpair` run. `<serverVersion>` comes from `server-runtime.json`. |
 
 ```toml
 claude_bin = "/usr/local/bin/claude"
@@ -1786,6 +1790,20 @@ it.
 Loom gives the same token to Codex only as `CLIPROXY_API_KEY`, and never gives Codex the
 `ANTHROPIC_*` variables.
 
+### `t3-client.json`
+
+`<data_dir>/t3-client.json` holds Loom's pairing with T3: one JSON object with `origin`,
+`access_token`, `expires_at`, `session_id`, `client_id` and `scope`. `loom t3 pair` writes it with
+mode 0600, and `loom t3 unpair` deletes it (see [`loom t3`](#loom-t3)). Loom reads it each time
+it starts a T3 thread, with the same checks as `agent-token`: a regular file with mode 0600, at
+most 64 KiB, in UTF-8. When it is missing, a T3 thread fails to start as not paired; when it
+breaks a rule, the server writes one line `loom: warning: not using <path>: <why>` to stderr,
+never the file's content, and the thread fails the same way.
+
+The token goes only in the `Authorization` header of a request to the paired `origin`, a
+loopback address, and only while T3's `server-runtime.json` names that same origin. It never goes
+into a log, an argument, an event or a reason.
+
 ### The agent's environment
 
 Each agent gets only `HOME`, `LANG`, `LOGNAME`, `PATH`, `SHELL`, `USER` and `XDG_RUNTIME_DIR` from
@@ -1797,6 +1815,9 @@ the server's environment, those that are set, plus:
 - The Claude settings above (§6 Environment). A message never goes in the agent's arguments.
 - For a Codex thread: `CODEX_HOME` from `codex_home` and `CLIPROXY_API_KEY` from the token, with
   `codex_bin`'s directory appended to `PATH` when it holds `node`.
+
+A T3 thread gets no environment from Loom, since T3 runs its agent. Loom never gives T3 the
+`agent-token` or the `ANTHROPIC_*` variables.
 
 ### Codex threads
 
@@ -1821,6 +1842,47 @@ Codex never asks, so its threads open no requests. A `steer` message to a runnin
 waits for the turn to end. `interrupt` ends the turn's process and leaves the thread `idle`. A
 Codex thread's message enters its conversation when its turn starts: its `message.entered` comes
 right after that turn's `turn.started`.
+
+### T3 threads
+
+The runner value `t3` is served by `threads.launch` and `threads.delegate` (`--runner t3` in the
+CLI). It drives a thread in the T3 app that runs on this machine, through T3's MCP API, and needs
+`loom t3 pair` once (see [`loom t3`](#loom-t3)).
+
+- **Project.** Loom uses the T3 project whose workspace root is the project's path, and never
+  creates one. With none, the thread fails with `t3: no T3 project at <path>`. Loom still makes
+  the thread's workspace itself (see [Workspaces](#workspaces)); a worktree must be on a branch.
+- **Thread id.** T3 picks its own id. Loom keeps it in `<data_dir>/t3/<loom thread id>` (the folder
+  mode 0700, each file 0600) and reads it to resume the thread after it sleeps or the server
+  restarts. A T3 thread that is gone or archived in T3 fails the resume.
+- **Model.** With no `model`, the thread uses T3's default model. A `model` of the form
+  `<instance>/<model>` sets both; a bare model keeps the default's instance.
+- **Permission prompts** are answered in T3's app, not through Loom: a T3 thread opens no
+  requests and has no `request.opened` events. While a prompt is open the turn stays running.
+- **Messages.** A `steer` message joins the running turn, and a `queue` message waits for it to
+  end. `interrupt` asks T3 to interrupt the turn, which ends `stopped`, and the message then
+  starts the next turn.
+- **Events.** T3 sends no stream, so Loom asks it for new activity every second while a turn
+  runs and every 15 s while the thread is idle. A turn the user starts in T3's app is seen too,
+  with its `turn.started`, `message.entered`, `turn.text`, `turn.tool` and `turn.result`.
+- **Sleep and stop.** T3 owns the agent. When a T3 thread sleeps, closes or the server stops,
+  Loom only stops asking; the T3 thread is never stopped or archived. `threads.stop` interrupts
+  a running turn.
+- **Callers.** The agent runs under T3, not under Loom, so it has no `LOOM_THREAD`. When it calls
+  Loom it counts as the user (see [Callers](#callers)).
+
+A failed start or turn gives one reason line, cut to 200 characters, with the token replaced by
+`[redacted]`:
+
+| Reason | When |
+|---|---|
+| `t3: not paired (run loom t3 pair)` | `t3-client.json` is missing, broken or expired, or T3 answers 401. |
+| `t3: T3 is not running at the paired address` | `<t3_home>/userdata/server-runtime.json` is missing or names another address. |
+| `t3: no T3 project at <path>` | No T3 project has the project's path as its root. |
+| `t3: no model: <why>` | No `model` and no usable default in `<t3_home>/userdata/settings.json`. |
+| `t3: git: <why>` | Git can't tell the workspace's checkout or branch, such as a detached worktree. |
+| `t3: timeout: ...`, `t3: unreachable: ...` | T3 did not answer within 10 s, or the connection failed. The call is not sent again, since T3 may have acted on it. |
+| `t3: <code>: <message>` | T3's own error, such as `t3: thread_not_found: ...`. |
 
 ### Output and exit codes
 
@@ -1868,6 +1930,7 @@ They go before the command.
 |---|---|
 | `loom serve [--socket PATH] [--data-dir DIR] [--config FILE]` | starts the server, see [`loom serve`](#loom-serve) |
 | `loom install` | registers `loom-mcp` with Claude Code and Codex, see [`loom install`](#loom-install) |
+| `loom t3 pair\|unpair\|status [--data-dir DIR] [--config FILE]` | pairs Loom with T3, removes the pairing or shows it, see [`loom t3`](#loom-t3) |
 | `loom threads launch <project_id> <title> <message> [--workspace root\|worktree\|existing_worktree] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--requests caller\|any] [--origin O] [--audience person\|agent] [--concurrency-key K] [--on-busy queue\|coalesce] [--settle on_result] [--cause EVENT_ID] [--id ID]` | `threads.launch` |
 | `loom threads delegate <parent_id> <task> [--workspace ...] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--concurrency-key K] [--on-busy queue\|coalesce] [--id ID]` | `threads.delegate` |
 | `loom threads send <thread_id> <message> [--mode steer\|queue\|interrupt] [--cause EVENT_ID] [--id ID]` | `threads.send` |
@@ -2194,7 +2257,7 @@ is the event object, so any language can follow Loom by reading the CLI's stdout
 
 ### Exit codes
 
-`loom serve` and `loom install` have their own; see their sections.
+`loom serve`, `loom install` and `loom t3` have their own; see their sections.
 
 | Code | When |
 |---|---|
@@ -2295,6 +2358,61 @@ codex: registered loom
 $ uv run loom install
 claude: loom is already registered
 codex: loom is already registered
+```
+
+### `loom t3`
+
+```sh
+uv run loom t3 pair [--data-dir DIR] [--config FILE]
+uv run loom t3 unpair [--data-dir DIR] [--config FILE]
+uv run loom t3 status [--data-dir DIR] [--config FILE]
+```
+
+`loom t3` pairs Loom with the T3 app that runs on this machine, so that `--runner t3` threads
+can start (see [T3 threads](#t3-threads)). It replaces itself with
+`python -m loom_runner_t3 <action>` (same interpreter), passing on only the options given, and
+needs no running server. When `loom_runner_t3` can't be found it exits 2 with
+`loom: loom-runner-t3 is not installed`, and when it can't start it, with
+`loom: cannot start loom-runner-t3: <why>`. `--socket` does not apply.
+
+| Option | Default |
+|---|---|
+| `--data-dir` | `$XDG_DATA_HOME/loom`, else `~/.local/share/loom`, as for `loom serve`. |
+| `--config` | `$XDG_CONFIG_HOME/loom/config.toml`, else `~/.config/loom/config.toml`. A missing file means the defaults. Only `t3_home` and `t3_bin` are read (see [`config.toml`](#configtoml)). |
+
+- `pair` asks T3 for full access with no browser, approved with the `t3` program, and writes
+  [`t3-client.json`](#t3-clientjson) (mode 0600). It prints
+  `Paired as 'Loom' (full access, <n> days). Remove it with loom t3 unpair or in T3 Settings → Connections.`
+  Pairing again replaces the file, then revokes the old session; when that revoke fails it
+  warns and still exits 0. A failure is one line `loom: t3: pairing failed: <step>: <why>`, or
+  `loom: t3: T3 is not running (no origin in its server-runtime.json)`, and writes no file.
+- `unpair` revokes the session in T3, deletes the file and prints `Unpaired.`. With no file it
+  prints `Not paired.` and exits 0. When the revoke fails, or the file has no usable session id,
+  the file is deleted anyway and stderr gets
+  `loom: t3: could not revoke the session (<why>); remove 'Loom' in T3 Settings → Connections`,
+  exit 1.
+- `status`, when paired, prints `Paired with T3 at <origin>: <n> days left.`, and under 7 days
+  also `Warning: the pairing ends in <n> days; run loom t3 pair to renew it.`. Not paired, it
+  prints `Not paired. Run loom t3 pair.`; expired, `The pairing expired on <YYYY-MM-DD>. Run loom
+  t3 pair.` (a local date); both exit 1. A file it can't use gives one line `loom: t3: <why>`
+  on stderr, exit 1.
+
+`<n>` is the whole days left, rounded down. A pairing is expired from its `expires_at` on. The
+output of the `t3` program, which holds the pairing code, is never shown.
+
+| Code | When |
+|---|---|
+| 0 | Done: paired, unpaired, not paired on `unpair`, or paired on `status`. |
+| 1 | Failed: one stderr line `loom: t3: <reason>`; or `status` found no pairing or an expired one. |
+| 2 | A usage error, an empty `--data-dir` or `--config`, a config file that is not valid TOML or has a `t3_home` or `t3_bin` that is not a string (`loom: <path>: <problem>`), or `loom-runner-t3` missing. |
+
+```text
+$ uv run loom t3 status
+Not paired. Run loom t3 pair.
+$ uv run loom t3 pair
+Paired as 'Loom' (full access, 30 days). Remove it with loom t3 unpair or in T3 Settings → Connections.
+$ uv run loom t3 status
+Paired with T3 at http://127.0.0.1:3773: 29 days left.
 ```
 
 ## `loom-mcp`

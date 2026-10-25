@@ -202,6 +202,10 @@ USAGE_ERRORS = [
     ['signal', 'emit', 'demo.done', '--payload', '5'],
     ['--socket'],
     ['serve', '--port', '80'],
+    ['t3'],
+    ['t3', 'nope'],
+    ['t3', 'status', '--socket', '/r/api.sock'],
+    ['t3', 'pair', 'extra'],
 ]
 
 
@@ -411,8 +415,9 @@ class UsageTest(CliCase):
 
     def test_help_lists_the_commands_and_exits_0(self) -> None:
         for argv, names in (
-            (['--help'], ['serve', 'install', 'threads', 'projects', 'schedules', 'requests',
-                          'signals']),
+            (['--help'], ['serve', 'install', 't3', 'threads', 'projects', 'schedules',
+                          'requests', 'signals']),
+            (['t3', '--help'], ['pair', 'unpair', 'status']),
             (['threads', '--help'],
              ['launch', 'delegate', 'send', 'list', 'get', 'stop', 'settle', 'update',
               'events']),
@@ -1001,6 +1006,58 @@ class ServeTest(CliCase):
                 contextlib.redirect_stderr(err):
             self.assertEqual(cli.main(['serve']), 2)
         self.assertEqual(err.getvalue(), 'loom: cannot start loom-service: Permission denied\n')
+
+
+class T3Test(CliCase):
+    def t3(self, *argv: str, found: bool = True) -> tuple[int, str, mock.Mock]:
+        err = io.StringIO()
+        spec = importlib.util.find_spec('loom_client') if found else None
+        with mock.patch('importlib.util.find_spec', return_value=spec) as find_spec, \
+                mock.patch('os.execv') as execv, contextlib.redirect_stderr(err):
+            code = cli.main(list(argv))
+        find_spec.assert_called_once_with('loom_runner_t3')
+        return code, err.getvalue(), execv
+
+    def test_each_action_replaces_itself_with_the_runner_and_only_the_options_given(self) -> None:
+        for action in ('pair', 'unpair', 'status'):
+            for options in ([], ['--data-dir', 'data'], ['--config', '/c/config.toml'],
+                            ['--data-dir', 'data', '--config', '/c/config.toml'],
+                            ['--config', '/c/config.toml', '--data-dir', 'data']):
+                with self.subTest(action=action, options=options):
+                    _, _, execv = self.t3('t3', action, *options)
+                    given = dict(zip(options[::2], options[1::2]))
+                    expected = [sys.executable, '-m', 'loom_runner_t3', action]
+                    for flag in ('--data-dir', '--config'):
+                        if flag in given:
+                            expected += [flag, given[flag]]
+                    execv.assert_called_once_with(sys.executable, expected)
+
+    def test_the_global_socket_is_not_passed_on(self) -> None:
+        _, _, execv = self.t3('--socket', '/g.sock', 't3', 'status')
+        execv.assert_called_once_with(
+            sys.executable, [sys.executable, '-m', 'loom_runner_t3', 'status'])
+
+    def test_t3_without_the_runner_exits_2(self) -> None:
+        code, err, execv = self.t3('t3', 'status', found=False)
+        self.assertEqual((code, err), (2, 'loom: loom-runner-t3 is not installed\n'))
+        execv.assert_not_called()
+
+    def test_an_exec_that_fails_exits_2(self) -> None:
+        err = io.StringIO()
+        with mock.patch('os.execv', side_effect=PermissionError(13, 'Permission denied')), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(cli.main(['t3', 'status']), 2)
+        self.assertEqual(err.getvalue(),
+                         'loom: cannot start loom-runner-t3: Permission denied\n')
+
+    def test_no_action_or_an_unknown_one_is_a_usage_error(self) -> None:
+        for argv in (['t3'], ['t3', 'nope'], ['t3', '--data-dir', 'data']):
+            with self.subTest(argv=argv):
+                err = io.StringIO()
+                with mock.patch('os.execv') as execv, contextlib.redirect_stderr(err):
+                    self.assertEqual(cli.main(argv), 2)
+                execv.assert_not_called()
+                self.assertIn('usage: loom t3', err.getvalue())
 
 
 class RetryHintTest(CliCase):

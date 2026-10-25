@@ -1,0 +1,29 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/oauth/mcp/decision",
+    "body": {
+      "authorization": {
+        "response_type": "code",
+        "client_id": "replay-client-id",
+        "redirect_uri": "http://127.0.0.1/loom/callback",
+        "code_challenge": "replay-code-challenge",
+        "code_challenge_method": "S256",
+        "state": "replay-state",
+        "resource": "http://127.0.0.1:41773/mcp"
+      },
+      "decision": {
+        "_tag": "pairing-code",
+        "access": "full-access",
+        "code": "replay-pairing-code"
+      }
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "redirectTo": "http://127.0.0.1/loom/callback?code=replay-authorization-code&state=replay-state&iss=http%3A%2F%2F127.0.0.1%3A41773"
+  }
+}

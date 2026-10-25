@@ -1,0 +1,25 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "body": {
+      "jsonrpc": "2.0",
+      "method": "tools/list",
+      "params": {},
+      "id": 8023905
+    }
+  },
+  "status": 400,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 8023905,
+    "error": {
+      "code": -32600,
+      "message": "MCP-Session-Id header is required; send initialize to start a session",
+      "_tag": "InvalidRequest"
+    }
+  }
+}

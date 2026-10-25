@@ -1,0 +1,35 @@
+{
+  "argv": [
+    "/tmp/loom-replay/t3-home/runtime/versions/0.1.2/t3",
+    "auth",
+    "pairing",
+    "create",
+    "--scope",
+    "orchestration:read",
+    "--scope",
+    "orchestration:operate",
+    "--scope",
+    "settings:write",
+    "--scope",
+    "source-control:write",
+    "--ttl",
+    "5m",
+    "--label",
+    "Loom t3-record",
+    "--json",
+    "--base-dir",
+    "/tmp/loom-replay/t3-home"
+  ],
+  "stdout": {
+    "id": "00000000-0000-4000-8006-000000000001",
+    "credential": "replay-pairing-code",
+    "label": "Loom t3-record",
+    "scopes": [
+      "orchestration:read",
+      "orchestration:operate",
+      "settings:write",
+      "source-control:write"
+    ],
+    "expiresAt": "2026-10-25T19:48:57.981Z"
+  }
+}

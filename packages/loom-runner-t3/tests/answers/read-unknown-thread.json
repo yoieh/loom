@@ -1,0 +1,36 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "body": {
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "name": "t3_thread_read",
+        "arguments": {
+          "threadId": "mcp:00000000-0000-4000-8000-000000000004",
+          "view": "activity",
+          "afterPosition": null
+        }
+      },
+      "id": 8023895
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 8023895,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"_tag\":\"OrchestratorMcpFailure\",\"code\":\"thread_not_found\",\"message\":\"Thread mcp:00000000-0000-4000-8000-000000000004 is no longer available.\"}"
+        }
+      ],
+      "isError": true
+    }
+  }
+}

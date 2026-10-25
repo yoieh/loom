@@ -1,0 +1,33 @@
+{
+  "argv": [
+    "/tmp/loom-replay/t3-home/runtime/versions/0.1.2/t3",
+    "auth",
+    "session",
+    "list",
+    "--json",
+    "--base-dir",
+    "/tmp/loom-replay/t3-home"
+  ],
+  "stdout": [
+    {
+      "sessionId": "00000000-0000-4000-8002-000000000001",
+      "method": "bearer-access-token",
+      "scopes": [
+        "orchestration:read",
+        "orchestration:operate",
+        "settings:write",
+        "source-control:write"
+      ],
+      "subject": "mcp-client",
+      "client": {
+        "label": "Loom t3-record",
+        "ipAddress": "127.0.0.1",
+        "deviceType": "bot"
+      },
+      "connected": false,
+      "issuedAt": "2026-10-25T19:43:58.067Z",
+      "expiresAt": "2026-11-24T19:43:58.067Z",
+      "lastConnectedAt": null
+    }
+  ]
+}

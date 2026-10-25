@@ -1,0 +1,42 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "body": {
+      "jsonrpc": "2.0",
+      "method": "initialize",
+      "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {
+          "name": "Loom t3-record",
+          "version": "0"
+        }
+      },
+      "id": 7447779
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json",
+    "mcp-session-id": "00000000-0000-4000-8003-000000000001"
+  },
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 7447779,
+    "result": {
+      "protocolVersion": "2025-06-18",
+      "capabilities": {
+        "logging": {},
+        "tools": {
+          "listChanged": true
+        },
+        "completions": {}
+      },
+      "serverInfo": {
+        "name": "T3 Code",
+        "version": "0.1.2"
+      }
+    }
+  }
+}

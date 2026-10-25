@@ -1,0 +1,52 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "body": {
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "name": "t3_project_list",
+        "arguments": {}
+      },
+      "id": 7469570
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 7469570,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"projects\": [\n    {\n      \"id\": \"mcp:00000000-0000-4000-8001-000000000001\",\n      \"title\": \"Loom\",\n      \"workspaceRoot\": \"/tmp/loom-replay/project\",\n      \"repositoryIdentity\": null,\n      \"faviconPath\": null,\n      \"projectIcon\": null,\n      \"defaultModelSelection\": null,\n      \"defaultThreadEnvMode\": null,\n      \"autoPull\": false,\n      \"scripts\": [],\n      \"createdAt\": \"2026-10-23T21:40:15.188Z\",\n      \"updatedAt\": \"2026-10-23T21:40:15.188Z\",\n      \"deletedAt\": null\n    }\n  ],\n  \"nextCursor\": null\n}"
+        }
+      ],
+      "structuredContent": {
+        "projects": [
+          {
+            "id": "mcp:00000000-0000-4000-8001-000000000001",
+            "title": "Loom",
+            "workspaceRoot": "/tmp/loom-replay/project",
+            "repositoryIdentity": null,
+            "faviconPath": null,
+            "projectIcon": null,
+            "defaultModelSelection": null,
+            "defaultThreadEnvMode": null,
+            "autoPull": false,
+            "scripts": [],
+            "createdAt": "2026-10-23T21:40:15.188Z",
+            "updatedAt": "2026-10-23T21:40:15.188Z",
+            "deletedAt": null
+          }
+        ],
+        "nextCursor": null
+      },
+      "isError": false
+    }
+  }
+}

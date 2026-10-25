@@ -24,6 +24,12 @@ EXIT_PIPE = 141
 PAGE = 1000
 STDIN = '-'
 SERVICE = 'loom_service'
+T3_RUNNER = 'loom_runner_t3'
+T3_ACTIONS = {
+    'pair': 'pair Loom with the T3 that is running',
+    'unpair': 'revoke the pairing and delete it',
+    'status': 'say whether Loom is paired and for how long',
+}
 
 GROUPS = {
     'threads': ('start, message and follow agent threads', ()),
@@ -408,6 +414,13 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument('--data-dir', help='data dir (default $XDG_DATA_HOME/loom)')
     serve.add_argument('--config', help='config file (default $XDG_CONFIG_HOME/loom/config.toml)')
     commands.add_parser('install', help='register loom-mcp with Claude Code and Codex')
+    t3 = commands.add_parser('t3', help='pair Loom with T3, unpair it or show the pairing')
+    t3_actions = t3.add_subparsers(dest='action', required=True, metavar='action')
+    for action, text in T3_ACTIONS.items():
+        command = t3_actions.add_parser(action, help=text)
+        command.add_argument('--data-dir', help='data dir (default $XDG_DATA_HOME/loom)')
+        command.add_argument('--config',
+                             help='config file (default $XDG_CONFIG_HOME/loom/config.toml)')
     groups = {}
     for call, (text, add_arguments, _) in COMMANDS.items():
         group, action = command_name(call)
@@ -422,24 +435,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _serve(args: argparse.Namespace) -> int:
-    if importlib.util.find_spec(SERVICE) is None:
-        sys.stderr.write('loom: loom-service is not installed\n')
+def _replace(module: str, args: list[str], options: tuple[tuple[str, str | None], ...]) -> int:
+    name = module.replace('_', '-')
+    if importlib.util.find_spec(module) is None:
+        sys.stderr.write(f'loom: {name} is not installed\n')
         return EXIT_USAGE
-    options = []
-    socket = args.serve_socket if args.serve_socket is not None else args.socket
-    for flag, value in (('--socket', socket), ('--data-dir', args.data_dir),
-                        ('--config', args.config)):
+    for flag, value in options:
         if value is not None:
-            options += [flag, value]
+            args += [flag, value]
     sys.stdout.flush()
     sys.stderr.flush()
-    argv = [sys.executable, '-m', SERVICE, 'serve', *options]
     try:
-        os.execv(sys.executable, argv)
+        os.execv(sys.executable, [sys.executable, '-m', module, *args])
     except OSError as error:
-        sys.stderr.write(f'loom: cannot start loom-service: {error.strerror or error}\n')
+        sys.stderr.write(f'loom: cannot start {name}: {error.strerror or error}\n')
     return EXIT_USAGE
+
+
+def _serve(args: argparse.Namespace) -> int:
+    socket = args.serve_socket if args.serve_socket is not None else args.socket
+    return _replace(SERVICE, ['serve'], (('--socket', socket), ('--data-dir', args.data_dir),
+                                         ('--config', args.config)))
+
+
+def _t3(args: argparse.Namespace) -> int:
+    return _replace(T3_RUNNER, [args.action], (('--data-dir', args.data_dir),
+                                               ('--config', args.config)))
 
 
 class Printer:
@@ -521,6 +542,8 @@ def main(argv: list[str] | None = None) -> int:
             args = build_parser().parse_args(argv)
             if args.command == 'serve':
                 return _serve(args)
+            if args.command == 't3':
+                return _t3(args)
             if args.command == 'install':
                 return install.install()
             return _run(args)

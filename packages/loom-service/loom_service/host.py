@@ -8,8 +8,9 @@ from typing import Protocol, TextIO
 from .config import Config
 
 ENV_KEYS = ('HOME', 'LANG', 'LOGNAME', 'PATH', 'SHELL', 'USER', 'XDG_RUNTIME_DIR')
-SETTINGS = ('claude_bin', 'claude_config_dir', 'agent_base_url', 'codex_bin', 'codex_home')
-TOKEN = 'agent-token'
+SETTINGS = ('claude_bin', 'claude_config_dir', 'agent_base_url', 'codex_bin', 'codex_home',
+            't3_home', 't3_bin')
+SECRETS = {'agent-token': 'agent-token', 't3-client': 't3-client.json'}
 MAX_SECRET = 65_536
 
 
@@ -36,9 +37,10 @@ class Host:
         return env
 
     def secret(self, name: str) -> str | None:
-        if name != TOKEN:
+        file_name = SECRETS.get(name) if isinstance(name, str) else None
+        if file_name is None:
             return None
-        return self._read_token(Path(self.data_dir) / TOKEN)
+        return self._read_token(Path(self.data_dir) / file_name)
 
     def _warn(self, message: str) -> None:
         self._log.write(f'loom: warning: {message}\n')

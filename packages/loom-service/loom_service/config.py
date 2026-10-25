@@ -26,6 +26,8 @@ class Config:
     request_timeout: int = 600
     codex_bin: str | None = None
     codex_home: str | None = None
+    t3_home: str | None = None
+    t3_bin: str | None = None
 
 
 KEYS = tuple(field.name for field in dataclasses.fields(Config))

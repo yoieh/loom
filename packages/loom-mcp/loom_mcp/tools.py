@@ -67,7 +67,7 @@ class Tool:
 def _runner_args() -> tuple[Arg, ...]:
     return (
         Arg('workspace', OBJECT, WORKSPACE),
-        Arg('runner', STRING, 'The agent that runs it: claude or codex.'),
+        Arg('runner', STRING, 'The agent that runs it: claude, codex or t3.'),
         Arg('model', STRING, "The agent's model. Default: the agent's own."),
     )
 

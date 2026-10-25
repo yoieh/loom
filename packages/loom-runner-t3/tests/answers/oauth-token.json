@@ -1,0 +1,17 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/oauth/mcp/token",
+    "body": "grant_type=authorization_code&code=replay-authorization-code&redirect_uri=http%3A%2F%2F127.0.0.1%2Floom%2Fcallback&client_id=replay-client-id&code_verifier=replay-code-verifier&resource=http%3A%2F%2F127.0.0.1%3A41773%2Fmcp"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "access_token": "replay-access-token",
+    "token_type": "Bearer",
+    "expires_in": 2592000,
+    "scope": "orchestration:read orchestration:operate settings:write source-control:write"
+  }
+}

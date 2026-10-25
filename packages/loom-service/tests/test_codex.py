@@ -103,15 +103,6 @@ class LaunchTest(CodexCase):
         results = await self.wait_events(conn, 'turn.result', child['id'])
         self.assertEqual(results[0]['data'], {'state': 'completed', 'text': 'check it'})
 
-    async def test_the_t3_runner_is_still_refused(self) -> None:
-        conn = await self.connect()
-        await self.add_project(conn)
-        refused = await conn.call('threads.launch', id=conn.new_id(), title='T3',
-                                  project_id='repo', message='hi', runner='t3')
-        self.assertEqual(refused['error'],
-                         {'code': 'invalid', 'message': 'runner t3 is not available'})
-        self.assertEqual(await conn.ok('threads.list', project_id='repo'), [])
-
 
 class ResumeTest(CodexCase):
     async def test_a_thread_put_to_sleep_resumes_its_codex_thread(self) -> None:

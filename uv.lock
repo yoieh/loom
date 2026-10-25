@@ -10,6 +10,7 @@ members = [
     "loom-mcp",
     "loom-runner-claude",
     "loom-runner-codex",
+    "loom-runner-t3",
     "loom-scheduler",
     "loom-service",
 ]
@@ -75,6 +76,17 @@ dependencies = [
 requires-dist = [{ name = "loom-contracts", editable = "packages/loom-contracts" }]
 
 [[package]]
+name = "loom-runner-t3"
+version = "0.1.0"
+source = { editable = "packages/loom-runner-t3" }
+dependencies = [
+    { name = "loom-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "loom-contracts", editable = "packages/loom-contracts" }]
+
+[[package]]
 name = "loom-scheduler"
 version = "0.1.0"
 source = { editable = "packages/loom-scheduler" }
@@ -93,6 +105,7 @@ dependencies = [
     { name = "loom-core" },
     { name = "loom-runner-claude" },
     { name = "loom-runner-codex" },
+    { name = "loom-runner-t3" },
     { name = "loom-scheduler" },
 ]
 
@@ -101,5 +114,6 @@ requires-dist = [
     { name = "loom-core", editable = "packages/loom-core" },
     { name = "loom-runner-claude", editable = "packages/loom-runner-claude" },
     { name = "loom-runner-codex", editable = "packages/loom-runner-codex" },
+    { name = "loom-runner-t3", editable = "packages/loom-runner-t3" },
     { name = "loom-scheduler", editable = "packages/loom-scheduler" },
 ]

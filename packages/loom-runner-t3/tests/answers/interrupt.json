@@ -1,0 +1,40 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "body": {
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "name": "t3_thread_interrupt",
+        "arguments": {
+          "threadId": "mcp:00000000-0000-4000-8000-000000000001",
+          "clientRequestId": "00000000-0000-4000-8004-000000000002"
+        }
+      },
+      "id": 7656325
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 7656325,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"threadId\":\"mcp:00000000-0000-4000-8000-000000000001\",\"runId\":\"run:thread:mcp%3A00000000-0000-4000-8000-000000000001:ordinal:2\",\"status\":\"interrupt_requested\"}"
+        }
+      ],
+      "structuredContent": {
+        "threadId": "mcp:00000000-0000-4000-8000-000000000001",
+        "runId": "run:thread:mcp%3A00000000-0000-4000-8000-000000000001:ordinal:2",
+        "status": "interrupt_requested"
+      },
+      "isError": false
+    }
+  }
+}

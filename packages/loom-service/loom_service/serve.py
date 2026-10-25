@@ -15,6 +15,7 @@ from loom_core.slots import available_memory, default_agents_max
 from loom_core.store import Store
 from loom_runner_claude import ClaudeRunner
 from loom_runner_codex import CodexRunner
+from loom_runner_t3 import T3Runner
 from loom_scheduler import Scheduler
 
 from .config import Config, StartError, config_path, data_dir_path, load_config, socket_path
@@ -71,7 +72,7 @@ async def start(socket: Path, data_dir: Path, config: Config, *,
         raise StartError(f'cannot open the store in {data_dir}: {error}') from None
     projects = Projects(store, default_mode=config.permission_mode)
     host = Host(data_dir, socket, config, environ, log)
-    runners = {'claude': ClaudeRunner(), 'codex': CodexRunner()}
+    runners = {'claude': ClaudeRunner(), 'codex': CodexRunner(), 't3': T3Runner()}
     orchestrator = Orchestrator(store, projects, runners, host,
                                 agents_max=agents_max, idle_after=config.idle_after,
                                 request_timeout=config.request_timeout)

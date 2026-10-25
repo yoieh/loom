@@ -1,0 +1,94 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "body": {
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "name": "t3_thread_read",
+        "arguments": {
+          "threadId": "mcp:00000000-0000-4000-8000-000000000001",
+          "view": "activity",
+          "afterPosition": 8
+        }
+      },
+      "id": 8034839
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 8034839,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"thread\":{\"threadId\":\"mcp:00000000-0000-4000-8000-000000000001\",\"projectId\":\"mcp:00000000-0000-4000-8001-000000000001\",\"title\":\"Loom t3-record A (idle launch)\",\"createdBy\":\"agent\",\"creationSource\":\"mcp\",\"status\":\"interrupted\",\"latestRunId\":\"run:thread:mcp%3A00000000-0000-4000-8000-000000000001:ordinal:2\",\"activeRunId\":null,\"providerInstanceId\":\"claude-proxy\",\"model\":\"claude-opus-5-5\",\"runtimeMode\":\"approval-required\",\"interactionMode\":\"default\",\"linkedPullRequest\":null,\"pullRequests\":[],\"titleRegeneration\":null,\"branch\":null,\"worktreePath\":null,\"parentThreadId\":null,\"relationshipToParent\":null,\"runCount\":2,\"itemCount\":9,\"pendingRequestCount\":0,\"archived\":true,\"settled\":false,\"settledAt\":null,\"snoozed\":false,\"snoozedUntil\":null,\"createdAt\":\"2026-10-25T19:44:54.907Z\",\"updatedAt\":\"2026-10-25T19:53:54.735Z\"},\"recentRuns\":[{\"runId\":\"run:thread:mcp%3A00000000-0000-4000-8000-000000000001:ordinal:2\",\"ordinal\":2,\"status\":\"interrupted\",\"providerInstanceId\":\"claude-proxy\",\"model\":\"claude-opus-5-5\",\"requestedAt\":\"2026-10-25T19:47:33.239Z\",\"startedAt\":\"2026-10-25T19:47:33.291Z\",\"completedAt\":\"2026-10-25T19:47:36.887Z\"},{\"runId\":\"run:thread:mcp%3A00000000-0000-4000-8000-000000000001:ordinal:1\",\"ordinal\":1,\"status\":\"completed\",\"providerInstanceId\":\"claude-proxy\",\"model\":\"claude-opus-5-5\",\"requestedAt\":\"2026-10-25T19:45:16.275Z\",\"startedAt\":\"2026-10-25T19:45:16.355Z\",\"completedAt\":\"2026-10-25T19:45:19.631Z\"}],\"items\":[],\"nextPosition\":null,\"hasMore\":false}"
+        }
+      ],
+      "structuredContent": {
+        "thread": {
+          "threadId": "mcp:00000000-0000-4000-8000-000000000001",
+          "projectId": "mcp:00000000-0000-4000-8001-000000000001",
+          "title": "Loom t3-record A (idle launch)",
+          "createdBy": "agent",
+          "creationSource": "mcp",
+          "status": "interrupted",
+          "latestRunId": "run:thread:mcp%3A00000000-0000-4000-8000-000000000001:ordinal:2",
+          "activeRunId": null,
+          "providerInstanceId": "claude-proxy",
+          "model": "claude-opus-5-5",
+          "runtimeMode": "approval-required",
+          "interactionMode": "default",
+          "linkedPullRequest": null,
+          "pullRequests": [],
+          "titleRegeneration": null,
+          "branch": null,
+          "worktreePath": null,
+          "parentThreadId": null,
+          "relationshipToParent": null,
+          "runCount": 2,
+          "itemCount": 9,
+          "pendingRequestCount": 0,
+          "archived": true,
+          "settled": false,
+          "settledAt": null,
+          "snoozed": false,
+          "snoozedUntil": null,
+          "createdAt": "2026-10-25T19:44:54.907Z",
+          "updatedAt": "2026-10-25T19:53:54.735Z"
+        },
+        "recentRuns": [
+          {
+            "runId": "run:thread:mcp%3A00000000-0000-4000-8000-000000000001:ordinal:2",
+            "ordinal": 2,
+            "status": "interrupted",
+            "providerInstanceId": "claude-proxy",
+            "model": "claude-opus-5-5",
+            "requestedAt": "2026-10-25T19:47:33.239Z",
+            "startedAt": "2026-10-25T19:47:33.291Z",
+            "completedAt": "2026-10-25T19:47:36.887Z"
+          },
+          {
+            "runId": "run:thread:mcp%3A00000000-0000-4000-8000-000000000001:ordinal:1",
+            "ordinal": 1,
+            "status": "completed",
+            "providerInstanceId": "claude-proxy",
+            "model": "claude-opus-5-5",
+            "requestedAt": "2026-10-25T19:45:16.275Z",
+            "startedAt": "2026-10-25T19:45:16.355Z",
+            "completedAt": "2026-10-25T19:45:19.631Z"
+          }
+        ],
+        "items": [],
+        "nextPosition": null,
+        "hasMore": false
+      },
+      "isError": false
+    }
+  }
+}

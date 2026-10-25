@@ -197,8 +197,10 @@ class RunnerSession(Protocol):
 Written 2026-10-25 with the user, through Bertil, so that LM-10 has a contract to build
 against. It rests on Thread Voice, which already drives T3 as an outside client: its
 `docs/design-stage5.md` §53 (cited here as TV §53) holds the spike that paired with T3 0.1.0
-and the client built from it. What TV §53 observed is marked *seen*; what comes only from
-T3's tool descriptions is marked *schema*, and LM-10 checks it against T3 first.
+and the client built from it. What TV §53 observed is marked *seen*. What LM-10 checked
+with scratch threads on 2026-10-25, against the T3 0.1.2 running on this machine, is marked
+*seen*, T3 0.1.2; its recordings are the replay fixtures (see Tests). A fact that comes
+only from a T3 tool description says so in its bullet.
 
 The user decided two things by voice that day: Loom pairs with full access, as Thread Voice
 does; and, since T3's API can't answer a permission prompt, a T3 thread's prompts are
@@ -210,9 +212,12 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   `2025-06-18`, every answer `application/json` (*seen*; an SSE body is accepted too, in case
   T3 changes). The origin is loopback, `http://127.0.0.1:<port>`, and T3 picks the port; the
   runner reads it from `<t3_home>/userdata/server-runtime.json` (`origin`). One `initialize`
-  and `notifications/initialized` per runner, whose `Mcp-Session-Id` goes on every later call;
-  T3 answers 400 (`-32600`) without it and 404 for an unknown one, and then the runner
-  initializes again and retries once (*seen*). The client is stdlib `http.client`, run with
+  and `notifications/initialized` per session (each start makes its own MCP client), whose
+  `Mcp-Session-Id` goes on every later call; T3 answers 400 (`-32600`) without it and 404
+  with an empty body for an unknown one, and then the runner initializes again and retries
+  once (*seen*; *seen*, T3 0.1.2). A tool's
+  result is its JSON as `content[0].text`, and also as `structuredContent` unless it is
+  `isError` (*seen*, T3 0.1.2). The client is stdlib `http.client`, run with
   `asyncio.to_thread`, with a 10 s timeout per call. Loom only connects out to loopback and
   still binds nothing (§11).
 - **The origin check.** Before every call the runner reads `server-runtime.json` and sends
@@ -220,28 +225,47 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   to another address (TV §53 Security). The check is made again on the next call.
 - **Logging in.** Each call carries `Authorization: Bearer <access_token>`. The token is an
   MCP client session: 30 days, no refresh (*seen*). A 401 (`invalid_mcp_credential`) means not
-  paired; the user pairs again.
+  paired (*seen*, T3 0.1.2); the user pairs again.
 - **Pairing**, once, with `loom t3 pair`, which runs `python -m loom_runner_t3 pair` as
   `loom serve` runs `loom-service` (§8). It is T3's MCP OAuth, approved headlessly with no
   browser, as Thread Voice's `pair-t3` does (TV §53, item 1):
   1. register `client_name` "Loom" at `/oauth/mcp/register`, with one loopback redirect URI
      (`token_endpoint_auth_method: none`). Nothing ever listens on it: Loom reads the redirect
-     from T3's answer and never follows it, so it binds no port to pick one. It tries
-     `http://127.0.0.1/loom/callback` first; if T3 wants a port, a fixed one is written in;
-  2. PKCE `S256`: `GET /oauth/mcp/authorize`, then `POST /oauth/mcp/approval`;
-  3. run `t3 auth pairing create` with the four full-access scopes (`orchestration:read`,
-     `orchestration:operate`, `settings:write`, `source-control:write`), `--ttl 5m`,
-     `--label "Loom pairing"` and `--json`. The `t3` CLI is the setting `t3_bin`, by default
-     `<t3_home>/runtime/versions/<serverVersion>/t3`; its output, which holds the code, is
-     never shown;
-  4. `POST /oauth/mcp/decision` with the code (`access: full-access`); check that the
-     `redirectTo` it answers has the same `state`, `iss` and redirect URI;
-  5. exchange the code at `/oauth/mcp/token` within 60 s, and find the new session's id in
-     `t3 auth session list --json` by its label.
+     from T3's answer and never follows it, so it binds no port to pick one. The URI is
+     `http://127.0.0.1/loom/callback`, with no port, which T3 accepts: it answers 201 with
+     the `client_id` (*seen*, T3 0.1.2);
+  2. PKCE `S256`: `GET /oauth/mcp/authorize`, which answers 302 to `/connect-agent`, then
+     `POST /oauth/mcp/approval` with the same fields, which answers 200 `{clientName,
+     redirectHost, environmentHost}` (*seen*, T3 0.1.2);
+  3. run `t3 auth pairing create --scope orchestration:read --scope orchestration:operate
+     --scope settings:write --scope source-control:write --ttl 5m --label "Loom pairing"
+     --json --base-dir <t3_home>`. `--scope` is repeated, once per scope, and the four
+     full-access scopes replace T3's default set of 16. `--base-dir` points `t3` at T3's
+     home; the environment variable `T3CODE_HOME` does the same, and with neither it uses
+     `~/.t3` (*seen*, T3 0.1.2). The `t3` CLI is the setting `t3_bin`, by default
+     `<t3_home>/runtime/versions/<serverVersion>/t3`. Its output is one JSON object, `{id,
+     credential, label, scopes, expiresAt}`, and the code is `credential` (*seen*, T3
+     0.1.2). The output is never shown;
+  4. `POST /oauth/mcp/decision` with `{authorization, decision: {_tag: "pairing-code",
+     access: "full-access", code}}`, where `authorization` holds step 2's fields. Check that
+     the `redirectTo` it answers, the redirect URI with `code`, `state` and `iss` in its query,
+     has the same `state`, `iss` and redirect URI (*seen*, T3 0.1.2);
+  5. exchange the code at `/oauth/mcp/token` within 60 s (form-encoded, with the
+     `code_verifier`). It answers `{access_token, token_type: "Bearer", expires_in: 2592000,
+     scope}`. Then find the new session's id in `t3 auth session list --json`, a JSON array of
+     `{sessionId, method, scopes, subject, client: {label, ipAddress, deviceType}, connected,
+     issuedAt, expiresAt, lastConnectedAt}`. Loom's session has `client.label` "Loom",
+     `subject` `mcp-client` and `method` `bearer-access-token` (*seen*, T3 0.1.2). The label is
+     the registered `client_name`, not the pairing label: Thread Voice's session is labelled
+     "Thread Voice", and its pairing label is "Thread Voice pairing". A label can repeat, so
+     the session is the one with Loom's label whose `sessionId` was not in the list before
+     step 1, as Thread Voice's `pair-t3` finds it.
 
   It prints "Paired as 'Loom' (full access, 30 days). Remove it with `loom t3 unpair` or in T3
   Settings → Connections." Pairing again revokes the old session. `loom t3 unpair` revokes
-  the stored session (`t3 auth session revoke <id>`) and deletes the file; `loom t3 status`
+  the stored session and deletes the file. The revoke is `t3 auth session revoke --base-dir
+  <t3_home> <session-id>`, with the id as its one positional argument; it prints "Revoked
+  session <id>." and exits 0, and the token then gets 401 (*seen*, T3 0.1.2). `loom t3 status`
   says whether Loom is paired and how many days are left, and warns under 7.
 - **The secret** is `<data_dir>/t3-client.json`, mode 0600: `{origin, access_token,
   expires_at, session_id, client_id, scope}`. The runner gets it as `RunnerHost.secret
@@ -251,50 +275,110 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
 - **Settings.** `t3_home` (default `~/.t3`) and `t3_bin` (above), through `RunnerHost.setting`.
 - **Access.** The pairing asks for full access, T3's ceiling, so Loom can start a T3 thread in
   a project of any mode. Every launch passes `runtimeMode` as the thread's `permission_mode`,
-  so the ceiling never widens a thread (§11); T3 honours a lower mode (*seen*).
+  so the ceiling never widens a thread (§11); T3 honours a lower mode (*seen*; *seen*, T3
+  0.1.2, with `approval-required`).
 - **Thread ids.** T3 picks its own (`mcp:<uuid>`, *seen*). As for Codex, the runner keeps it in
   `<data_dir>/t3/<loom thread id>` (directory 0700, file 0600).
 - **Projects and workspaces.** A Loom project uses the T3 project whose `workspaceRoot` is the
-  same path, found with `t3_project_list`. If there is none, the start fails with "no T3
+  same path, found with `t3_project_list`, whose `projects` each have an `id` (`mcp:<uuid>`)
+  and a `workspaceRoot` (*seen*, T3 0.1.2). If there is none, the start fails with "no T3
   project at <path>"; Loom never creates T3 projects. Loom makes the workspace itself (§5) and
   passes `{type: "root"}` for a project's root or `{type: "existing_worktree", worktreePath,
-  branch}` for a worktree it made, which is a git worktree of the same repo, as T3 requires
-  (*schema*).
+  branch}` for a worktree it made, which is a git worktree of the same repo, as T3 requires.
+  Since `ThreadSpec` carries neither the main checkout nor the branch, the runner asks git,
+  with an argument list and an allowlisted environment: `git -C <workspace_path> rev-parse
+  --path-format=absolute --show-toplevel --git-common-dir` gives the checkout and the shared
+  `.git`, whose parent is the main checkout, matched against `workspaceRoot`. When the two
+  are the same, the workspace is the root; else `git -C <workspace_path> symbolic-ref --short
+  HEAD` gives the worktree's branch, and a detached worktree fails the start.
+  T3 accepts a worktree made the way Loom makes one (`git worktree add -b <branch> <path>
+  <base>`), and the thread's `worktreePath` and `branch` then name it (*seen*, T3 0.1.2).
 - **Model.** With no `model`, the runner passes T3's `defaultModelSelection` from
   `<t3_home>/userdata/settings.json`, read-only, since a launch with none fails in a project
   with no default (*seen*). A `model` of the form `<instance>/<model>` sets both; a bare model
   keeps the default's instance.
 - **Start.** A new thread is `t3_thread_launch {projectId, title, workspaceStrategy,
-  runtimeMode, modelSelection}` with no message, so it starts idle (*schema*), and its id is
-  stored at once; the first message then goes through `send`. A launch has no retry key, so it
-  is never retried by itself: a crash between the launch and storing the id leaves at most one
-  empty, idle T3 thread. `resume` reads the stored id and checks it with `t3_thread_read`; a
-  thread that is gone or archived in T3 fails the start.
+  runtimeMode, modelSelection}` with no message, so it starts idle: the launch answers
+  `{threadId, projectId, modelSelection, runId: null, status: null}`, and the thread is `idle`
+  with `runCount` 0 and no items (*seen*, T3 0.1.2). Its id is stored at once; the first
+  message then goes through `send`. A launch has no retry key, so it is never retried by
+  itself: a crash between the launch and storing the id leaves at most one empty, idle T3
+  thread. `resume` reads the stored id and checks it with `t3_thread_read`; a thread that is
+  gone or archived in T3 fails the start. A thread T3 doesn't know is an `isError` result
+  with code `thread_not_found` ("Thread <id> is no longer available."). An archived thread
+  reads as before, with `thread.archived` `true`, so the runner checks that field (*seen*,
+  T3 0.1.2).
 - **Send and interrupt.** `t3_thread_send {threadId, message, mode, clientRequestId}`, with
-  `steer` → `steer`, `queue` → `queue` and `interrupt` → `restart`; the `clientRequestId` is
-  derived from the Loom command id (§4), so a retry sends once (*schema*; TV §53 found no retry
-  key on 0.1.0). `interrupt` is `t3_thread_interrupt {threadId, clientRequestId}`.
+  `steer` → `steer`, `queue` → `queue` and `interrupt` → `restart`. `RunnerSession.send`
+  carries no Loom command id (§4), so the runner makes a new `clientRequestId` (a uuid4) per
+  `send` or `interrupt` call, and reuses it only for the MCP client's one retry after T3
+  dropped the MCP session (400 `-32600`, or 404). It never retries after a timeout or a
+  connection error, since T3 may already have acted. So a message Loom sends again after its
+  own crash, between the send and deleting the message row, may enter twice, as it may for
+  Claude and Codex threads; passing the command id to `send` needs a new issue. A second
+  send with the same `clientRequestId` answers the same `messageId` and `runId` and enters
+  no second message (*seen*, T3 0.1.2; TV §53 found no retry key on 0.1.0). A send answers
+  `{threadId, messageId, runId, status, delivery}`, and its user message's `messageId` ends
+  in `thread-send:<clientRequestId>`. A `steer` during a run answers `delivery` `steered` with
+  that run's `runId`, and its message joins the run (*seen*, T3 0.1.2). `interrupt` is
+  `t3_thread_interrupt {threadId, clientRequestId}`, which answers `{threadId, runId, status:
+  "interrupt_requested"}`. A second call with the same `clientRequestId` gave the same answer
+  and no second interrupt item (*seen*, T3 0.1.2).
 - **Events.** T3's MCP sends no stream, so a session polls `t3_thread_read {view: "activity",
-  afterPosition}`: every second while the thread is `running` or has a queued run, and every
-  15 s while it is idle, so a turn the user starts in T3's own app is seen too. A run that
-  starts is `turn.started`; a `user_message` item is `entered`; a completed assistant item is
-  `text` (T3 shows it only when complete, *seen*); a tool item is `tool`; a run that ends is
-  `result`, completed, failed or stopped. The exact item and run state names come from a
-  stream LM-10 records from a real T3 thread first, which also becomes the replay tests (§3).
+  afterPosition}`: every second while the thread is `running` or `waiting` or has a queued
+  run, and for up to 30 reads after a `send` until its run shows, and every 15 s otherwise,
+  so a turn the user starts in T3's own app is seen too. The answer is `{thread,
+  recentRuns, items, nextPosition, hasMore}` (*seen*, T3 0.1.2):
+  - **Position.** `afterPosition` is exclusive. `nextPosition` is the last item's
+    `position`, and `null` when no item is new, so the session keeps its last position.
+  - **The thread.** `thread` holds `status`, `activeRunId`, `latestRunId`, `runCount`,
+    `itemCount`, `pendingRequestCount` and `archived`. Its `status` is `idle` before the
+    first run, and after that the latest run's state.
+  - **Runs.** `recentRuns` lists the runs newest first, each `{runId, ordinal, status,
+    providerInstanceId, model, requestedAt, startedAt, completedAt}`. A run id is
+    `run:thread:<thread id, with : as %3A>:ordinal:<n>`. The run states are `running`,
+    `waiting` (seen in one read, after the run's assistant message and before `completed`),
+    `completed`, `interrupted` and `failed`. A send's answer can also say `starting`, and
+    TV §53 saw `queued` for a send behind a running turn.
+  - **Items.** Each item has `position`, `itemId`, `runId`, `messageId`, `type`, `status`,
+    `title` and `text`, with `textTruncated` and `nextTextOffset` for a text cut short. The
+    types are `user_message`, `assistant_message`, `reasoning`, `dynamic_tool` (a tool call,
+    whose `text` is a JSON object with `toolName`, `input` and `output`; for `Read` its
+    `title` is "Read <path>"), `checkpoint`, `run_interrupt_request`, `run_interrupt_result`
+    and `error`.
+
+  A run that starts (a new `activeRunId`) is `turn.started`; a `user_message` item is
+  `entered`; a completed `assistant_message` is `text` (T3 shows it only when complete,
+  *seen*; *seen*, T3 0.1.2); a `dynamic_tool` item is `tool`; a run that ends `completed`,
+  `failed` or `interrupted` is `result`, completed, failed or stopped. A failed run's
+  provider error comes twice, first as an `assistant_message` and then as an `error` item
+  with `status` `failed` and `title` "Provider error" (*seen*, T3 0.1.2). The runner reports
+  the first as `text`, as T3 shows it, and gives the `error` item's text as the failed
+  result's reason. The streams are the replay tests (§3; see Tests).
 - **Capabilities:** `steer`, `interrupt` and `resume`, not `permission_requests`.
-  `t3_pending_request_respond` "cannot approve a permission request" (*schema*), so a T3
-  thread's permission prompts and questions are answered in T3, by the user, as today. While
-  one is open (`pendingRequestCount`) the thread stays `running`.
+  `t3_pending_request_respond` is described as "Answer a pending user-input request using
+  the existing runtime response command. This cannot approve a permission request."
+  (*schema*: only T3 0.1.2's `tools/list` says so), so a T3 thread's permission prompts and
+  questions are answered in T3, by the user, as today. While one is open
+  (`pendingRequestCount`) the thread stays `running`. No recorded case opened one:
+  `pendingRequestCount` stayed 0, even for a `Read` in an `approval-required` thread.
 - **Sleep and close.** T3 owns the agent's process. `close` only stops polling and emits
   `exited`; it never stops, settles or archives the T3 thread. Stop (§4) uses `interrupt`.
+  T3 has a tool that archives a thread, `t3_thread_organize {action: "archive"}`, and none
+  that deletes one (*seen*, T3 0.1.2); Loom doesn't call it.
 - **Errors** are one line, `t3: <code>: <message>`, cut to 200 characters, from T3's `isError`
-  results (*seen*). A 401 is "t3: not paired (run loom t3 pair)"; a failed origin check is
-  "t3: T3 is not running at the paired address". At start they are start errors; during a
-  turn they end it `failed`. A missing or expired `t3-client` secret fails the start with the
-  same not-paired text, and Loom without T3 works as before.
+  results (*seen*), such as `{_tag: "OrchestratorMcpFailure", code: "thread_not_found",
+  message}` (*seen*, T3 0.1.2). A 401 is "t3: not paired (run loom t3 pair)"; a failed origin
+  check is "t3: T3 is not running at the paired address". At start they are start errors;
+  during a turn they end it `failed`. A missing or expired `t3-client` secret fails the start
+  with the same not-paired text, and Loom without T3 works as before.
 - **Tests** never reach a real T3: the MCP client takes its HTTP call as an argument, so tests
-  pass a fake, and pairing runs against a fake `t3` CLI. The recorded stream above, with
-  tokens and ids replaced, is played into a session as the other runners' replay tests are.
+  pass a fake, and pairing runs against a fake `t3` CLI. LM-10's recordings of T3 0.1.2 are
+  checked in with tokens and ids replaced. `packages/loom-runner-t3/tests/streams/` holds one
+  `t3_thread_read` stream per case (`idle-launch`, `turn`, `tool`, `interrupt`, `steer`,
+  `failed`), and `packages/loom-runner-t3/tests/answers/` holds one HTTP exchange or `t3`
+  CLI output each. `streams/README.md` gives each case's steps and every placeholder. The
+  streams are played into a session as the other runners' replay tests are.
 
 ## §7 The scheduler
 

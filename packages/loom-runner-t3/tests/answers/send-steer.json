@@ -1,0 +1,44 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "body": {
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "name": "t3_thread_send",
+        "arguments": {
+          "threadId": "mcp:00000000-0000-4000-8000-000000000002",
+          "message": "Reply with the single word ok.",
+          "mode": "steer",
+          "clientRequestId": "00000000-0000-4000-8004-000000000003"
+        }
+      },
+      "id": 7967122
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 7967122,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"threadId\":\"mcp:00000000-0000-4000-8000-000000000002\",\"messageId\":\"message:mcp:client%3A00000000-0000-4000-8002-000000000001:thread-send:00000000-0000-4000-8004-000000000003\",\"runId\":\"run:thread:mcp%3A00000000-0000-4000-8000-000000000002:ordinal:3\",\"status\":\"running\",\"delivery\":\"steered\"}"
+        }
+      ],
+      "structuredContent": {
+        "threadId": "mcp:00000000-0000-4000-8000-000000000002",
+        "messageId": "message:mcp:client%3A00000000-0000-4000-8002-000000000001:thread-send:00000000-0000-4000-8004-000000000003",
+        "runId": "run:thread:mcp%3A00000000-0000-4000-8000-000000000002:ordinal:3",
+        "status": "running",
+        "delivery": "steered"
+      },
+      "isError": false
+    }
+  }
+}

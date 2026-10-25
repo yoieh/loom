@@ -1,0 +1,24 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/oauth/mcp/approval",
+    "body": {
+      "response_type": "code",
+      "client_id": "replay-client-id",
+      "redirect_uri": "http://127.0.0.1/loom/callback",
+      "code_challenge": "replay-code-challenge",
+      "code_challenge_method": "S256",
+      "state": "replay-state",
+      "resource": "http://127.0.0.1:41773/mcp"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "clientName": "Loom t3-record",
+    "redirectHost": "127.0.0.1",
+    "environmentHost": "127.0.0.1:41773"
+  }
+}
