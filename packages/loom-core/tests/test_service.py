@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import json
 import sqlite3
 import unittest
@@ -261,6 +262,22 @@ class CallerTest(ServiceTest):
         self.assertEqual(UNKNOWN, Caller(None, False))
         for caller in (PERSON, AGENT, UNKNOWN):
             self.assertIsNone(caller.schedule_id)
+
+    async def test_a_caller_is_scheduled_exactly_when_it_has_a_schedule_id(self) -> None:
+        self.assertEqual([field.name for field in dataclasses.fields(Caller)],
+                         ['thread_id', 'verified', 'schedule_id'])
+        with self.assertRaises(TypeError):
+            Caller(scheduled=True)
+        for caller in (PERSON, AGENT, UNKNOWN):
+            with self.subTest(caller=caller):
+                self.assertIs(caller.scheduled, False)
+        for caller in SCHEDULED:
+            with self.subTest(caller=caller):
+                self.assertIs(caller.scheduled, True)
+                with self.assertRaises(AttributeError):
+                    caller.scheduled = False
+        with self.assertRaises(AttributeError):
+            PERSON.scheduled = True
 
     async def test_scheduled_callers_may_not_add_projects(self) -> None:
         before = self.projects.list()

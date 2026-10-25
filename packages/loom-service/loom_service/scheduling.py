@@ -29,8 +29,7 @@ class ServiceHost:
         return self.store.append_event(tx, type, thread_id, data)
 
     async def call(self, call: str, params: dict, maker: Maker) -> object:
-        caller = Caller(thread_id=maker.by, verified=maker.verified,
-                        scheduled=maker.schedule_id is not None, schedule_id=maker.schedule_id)
+        caller = Caller(thread_id=maker.by, verified=maker.verified, schedule_id=maker.schedule_id)
         try:
             return await self.service.method(call)(params, caller)
         except LoomError as error:

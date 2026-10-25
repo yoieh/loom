@@ -88,10 +88,7 @@ class StoppingCallerTest(LaunchStoppingTest):
 
     async def test_a_schedule_of_a_stopping_thread_can_launch(self) -> None:
         thread_id, _ = await self.stopping()
-        for caller in (Caller(thread_id=thread_id, scheduled=True, schedule_id='s1'),
-                       Caller(thread_id=thread_id, schedule_id='s1')):
-            with self.subTest(caller=caller):
-                await self.assert_launches(caller)
+        await self.assert_launches(Caller(thread_id=thread_id, schedule_id='s1'))
 
 
 class StoppingRetryTest(LaunchStoppingTest):

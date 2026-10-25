@@ -11,7 +11,7 @@ from loom_core.store import MAX_EVENTS
 from .fakes import FakeRunner, wait_for
 from .test_service import AGENT, PERSON, ServiceTest
 
-SCHEDULE = Caller(scheduled=True, schedule_id='s1')
+SCHEDULE = Caller(schedule_id='s1')
 NOT_NULL = 'audience must not be null'
 NOT_ONE_OF = 'audience must be one of person, agent'
 BAD_VALUES = ((None, NOT_NULL), ('people', NOT_ONE_OF), (1, NOT_ONE_OF))

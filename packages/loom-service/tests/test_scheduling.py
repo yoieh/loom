@@ -127,7 +127,7 @@ class HostTest(ScheduleCase):
         self.assertEqual(await self.host().call('projects.list', {}, Maker('t8', True, None)),
                          [])
         self.assertEqual(seen, [('projects.list', Caller(thread_id='t9', verified=False,
-                                                         scheduled=True, schedule_id='s9')),
+                                                         schedule_id='s9')),
                                 ('projects.list', Caller(thread_id='t8'))])
 
     async def test_call_refuses_projects_add_for_every_schedule(self) -> None:
@@ -272,7 +272,7 @@ class CallerTest(ScheduleCase):
         scheduled = [(call, caller) for call, caller in seen if caller.schedule_id is not None]
         self.assertIn('threads.send', [call for call, _ in scheduled])
         self.assertEqual({caller for _, caller in scheduled},
-                         {Caller(thread_id=thread['id'], scheduled=True, schedule_id=added['id'])})
+                         {Caller(thread_id=thread['id'], schedule_id=added['id'])})
 
     async def test_a_persons_schedule_runs_with_no_thread_and_its_id(self) -> None:
         conn = await self.connect()
@@ -284,7 +284,7 @@ class CallerTest(ScheduleCase):
         scheduled = [(call, caller) for call, caller in seen if caller.schedule_id is not None]
         self.assertIn('threads.send', [call for call, _ in scheduled])
         self.assertEqual({caller for _, caller in scheduled},
-                         {Caller(scheduled=True, schedule_id=added['id'])})
+                         {Caller(schedule_id=added['id'])})
 
     async def test_a_scheduled_launch_queues_after_a_persons(self) -> None:
         conn = await self.connect()
