@@ -231,9 +231,9 @@ Most calls answer with a thread, a project or a schedule.
 
 | Field | Type | |
 |---|---|---|
-| `id` | string | The thread id, a uuid. It is also the agent's session id. |
+| `id` | string | The thread id, a uuid. For a Claude thread it is also the agent's session id; a Codex thread's is not (see [Codex threads](#codex-threads)). |
 | `title` | string | |
-| `runner` | string | `claude` (`codex` and `t3` come later). |
+| `runner` | string | `claude` or `codex` (`t3` later). |
 | `project_id` | string | |
 | `workspace_path` | string | Where the agent works. |
 | `branch` | string or null | The git branch. For a `root` workspace it is filled in when the thread starts. |
@@ -337,7 +337,7 @@ Starts a new top-level thread in a project with a first message.
 | `title` | string, required | Not empty. |
 | `message` | string, required | The first message. Not empty. |
 | `workspace` | object | Default `{"strategy": "worktree"}`. See [Workspaces](#workspaces). |
-| `runner` | string | Default `"claude"`, the only runner served now; `codex` or `t3` answers `invalid`, `runner codex is not available`. |
+| `runner` | string | Default `"claude"`. `claude` and `codex` are served; `t3` answers `invalid`, `runner t3 is not available`. |
 | `model` | string | Not empty. Default: the agent's own. |
 | `requests` | string | `"any"` (default) or `"caller"`: who may answer the thread's permission prompts (§8 Requests). Stored now, used once `requests.respond` is served. |
 | `origin` | string | Who started the thread, for clients to show. |
@@ -1202,13 +1202,12 @@ the server's environment, those that are set, plus:
 ### Codex threads
 
 The runner value `codex` is served by `threads.launch` and `threads.delegate` (`--runner codex`
-in the CLI). This replaces the older notes that `codex` comes later and that it answers
-`runner codex is not available`; `t3` still answers `invalid`, `runner t3 is not available`.
+in the CLI).
 
 A Codex thread's `id` is Loom's uuid, not Codex's session id. Codex picks its own thread id (its
-`thread.started` line), which Loom keeps in `<data_dir>/codex/<thread id>` (the folder mode 0700,
-each file 0600) to resume the thread after it sleeps or the server restarts. The data dir's
-`codex/` folder holds these records.
+`thread.started` line), which Loom keeps in `<data_dir>/codex/<loom thread id>`: the file is
+named by Loom's thread id and holds Codex's thread id (the folder mode 0700, each file 0600).
+Loom reads it to resume the thread after it sleeps or the server restarts.
 
 Codex runs in the sandbox of the thread's permission mode:
 
