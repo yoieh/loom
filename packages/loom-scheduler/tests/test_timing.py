@@ -14,7 +14,7 @@ EVERY_MS = 'trigger.everyMs must be an integer from 60000 to 31536000000'
 TIME_OF_DAY = 'trigger.timeOfDay must be H:MM or HH:MM, from 0:00 to 23:59'
 WEEKDAYS = 'trigger.weekdays must be a list of integers from 0 (Sunday) to 6 (Saturday)'
 AT = 'trigger.at must be an ISO 8601 date and time'
-TYPES = 'trigger.type must be one of at, interval, fixed_time'
+TYPES = 'trigger.type must be one of at, interval, fixed_time, event'
 
 
 def stockholm() -> ZoneInfo | None:

@@ -196,7 +196,9 @@ class RunnerSession(Protocol):
     machine's local time zone. `weekdays` are 0 to 6 with 0 Sunday, as T3's, and missing or
     empty means every day;
   - `{"type":"webhook"}`: later, once Loom can be reached from outside (with Thread Voice's
-    relay, its §74). It then needs a per-schedule secret.
+    relay, its §74). It then needs a per-schedule secret;
+  - `{"type":"event","topic":...}`: once for each matching event, with its loop guards (§15
+    Event triggers). The first three are clock triggers.
 - **Actions**: `post` (into a thread, which wakes it), `launch` (a new thread with the prompt,
   T3's `bindToCurrentThread: false`; it can carry a concurrency key with `on_busy`, and
   `settle: "on_result"`, which it passes on to `threads.launch`, §15), or `notify` (only a
@@ -211,10 +213,10 @@ class RunnerSession(Protocol):
   than 10 minutes late is skipped and logged. Never a burst of catch-up runs. A run is late
   when it starts more than 60 s after it was due: a late `post` or `launch` begins with
   `This run is late: it was due at <due>.`, and `schedule.fired` carries `late`.
-- **Overlap.** A `post` or `launch` run whose previous run's turn is still going is skipped and
-  logged, not queued. "Still going" means the thread the schedule's last fired run posted into
-  or launched is `queued`, `starting` or `running`, so a turn someone else started in a posted
-  thread counts too. Posts use dispatch mode `queue`.
+- **Overlap.** For a clock trigger, a `post` or `launch` run whose previous run's turn is still
+  going is skipped and logged, not queued. "Still going" means the thread the schedule's last
+  fired run posted into or launched is `queued`, `starting` or `running`, so a turn someone else
+  started in a posted thread counts too. Posts use dispatch mode `queue`.
 
 ## §8 The API
 
@@ -383,11 +385,15 @@ only the parts below.
   "project_id":"glantfolk","match":{"to":"done"}}` fires its action (§7) for each matching
   `signal`, `thread.settled`, `thread.failed`, `request.opened` or `schedule.fired`. A prompt
   can use `{{payload.<field>}}` and `{{event.id}}`. Clock triggers stay for what really is about
-  time, such as one daily check that no event was missed.
+  time, such as one daily check that no event was missed. `hops_max` and `rate_max` (below) are
+  optional trigger fields that may only lower the defaults, so an agent's schedule can't loosen
+  them. Each matching event runs: the overlap rule (§7) is for clock triggers, and an event run is
+  never late.
 - **Cause chains.** Every launch, send and signal records `cause` (the event behind it) and
   `hops` (its cause's hops + 1). A trigger skips an event at `hops_max` (default 8) and an event
-  from a thread it launched itself, and fires at most `rate_max` times an hour (default 30), so
-  agents that start agents can't loop. Each skip is a `trigger.skipped` event. The rules:
+  from a thread it launched itself, or its own `schedule.fired`, and fires at most `rate_max`
+  times an hour (default 30), so agents that start agents can't loop. Each skip is a
+  `trigger.skipped` event, and the first rate skip in an hour also sends one `notify`. The rules:
   - An event's hops are its `data.hops` when that is an integer (a `signal`, a `schedule.fired`
     of an event run), else its thread's hops at the time they are read, else 0.
   - A call with `cause: E` gets `hops(E) + 1`; from an agent thread, at least that thread's hops,
@@ -415,5 +421,6 @@ only the parts below.
   with no thread reaches a `person` follower of `threads.events` only when it is a
   `schedule.fired`, so a `person` follower gets no `signal` or `trigger.skipped`; an `agent`
   follower gets every event with no thread.
-- **Missed events.** Events are stored (§4), and the scheduler keeps a cursor, so after a
-  restart each matching event since the cursor fires once.
+- **Missed events.** Events are stored (§4), and the scheduler keeps a cursor per schedule, in
+  the `schedules` table, so after a restart each matching event since the cursor fires once. The
+  cursor starts at the newest event when the schedule is added.

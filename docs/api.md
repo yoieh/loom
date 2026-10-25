@@ -36,7 +36,8 @@ shortened; everything else comes from a real run. The command ids `c1`, `c2`, �
 the changes ran in; each read shows the state at its point in that run, and `projects.remove`
 succeeded once both threads were settled. The `schedules.*` examples, those of `threads.update`
 and the `audience` filters, those of concurrency keys and `thread.settled`, those of
-permission requests, and those of signals and cause chains, come from later runs of their own.
+permission requests, those of signals and cause chains, and those of event triggers, come from
+later runs of their own.
 
 ## Transport
 
@@ -226,6 +227,9 @@ the schedule's maker and the schedule's id:
   So `projects.add` and `projects.set_mode` refuse it (§11), and a schedule can't widen a
   project's mode.
 - The checks `schedules.add` makes on its `thread_id` and `project_id` run as the caller itself.
+- An [event trigger](#how-schedules-run) also reads events with `threads.events` and looks up
+  their threads with `threads.get`. These reads carry neither the maker nor the schedule id, and
+  answer the same to any caller.
 
 Any caller may list, pause or remove any schedule.
 
@@ -385,7 +389,7 @@ Most calls answer with a thread, a project or a schedule.
 | `settle` | string or null | `on_result` when each thread it launches settles after its first result, or null. |
 | `by` | string or null | The agent thread that made it; null when a person did (see [Calls a schedule makes](#calls-a-schedule-makes)). |
 | `paused` | bool | `true` once `schedules.pause` stopped it. |
-| `next_run` | string or null | When it is next due, ISO 8601, UTC. null when it is paused, and once an `at` has had its one run. |
+| `next_run` | string or null | When it is next due, ISO 8601, UTC. null when it is paused, once an `at` has had its one run, and always for an `event` trigger. |
 | `created_at` | string | ISO 8601, UTC. |
 
 ### Permission modes
@@ -1103,19 +1107,23 @@ Refused signals:
 
 A schedule runs a text on a trigger, with one of three actions (§7). The scheduler starts and
 stops with `loom serve`. It wakes when the first schedule is due, and at least every 30 s, so it
-notices a jump of the clock, such as a laptop waking from sleep.
+notices a jump of the clock, such as a laptop waking from sleep. While it has an event trigger, it
+also wakes each time Loom stores new events.
 
-**Triggers.** `trigger.type` is one of these three:
+**Triggers.** `trigger.type` is one of these four:
 
 | Trigger | Due | Checks |
 |---|---|---|
 | `{"type": "at", "at": "2026-10-25T09:00"}` | Once, at `at`. A time in the past is due at once. | `at` is an ISO 8601 date and time. Without an offset it is in the machine's local time zone. |
 | `{"type": "interval", "everyMs": 3600000}` | First `everyMs` after the schedule is added, then `everyMs` after each run or skip. | `everyMs` is an integer from 60000 (60 s) to 31536000000 (365 days). |
 | `{"type": "fixed_time", "timeOfDay": "9:00", "weekdays": [1, 2, 3, 4, 5]}` | At `timeOfDay` on each listed day, in the machine's local time zone. | `timeOfDay` is `H:MM` or `HH:MM`, from `0:00` to `23:59`. `weekdays` are 0 to 6, 0 is Sunday and 6 is Saturday; missing or `[]` means every day. |
+| `{"type": "event", "topic": "factory.run.status", "project_id": "demo", "match": {"to": "done"}}` | Once for each event that matches it, from when the schedule is added (see Event triggers below). Its `next_run` is always null. | `topic` is a signal topic, as [`signals.emit`](#signalsemit) takes, or one of `thread.settled`, `thread.failed`, `request.opened` and `schedule.fired`. The optional `project_id` names a project. The optional `match` is an object of at most 20 fields and 4,096 bytes as compact UTF-8 JSON. The optional `hops_max` is an integer from 1 to 8 (default 8) and `rate_max` one from 1 to 30 (default 30), so they can only lower the limits. |
 
 `{"type": "webhook"}` is part of `v1`, but `schedules.add` refuses it with `invalid` until Loom
 can be reached from outside (§7). An interval is timed from when its last run ran or was
-skipped, not from when it was due, so it never catches up with a burst.
+skipped, not from when it was due, so it never catches up with a burst. `at`, `interval` and
+`fixed_time` are clock triggers; the rules for late and missed runs and for overlap below are
+theirs.
 
 **Actions.** `action` is one of these three:
 
@@ -1155,25 +1163,81 @@ once, never a burst:
 - A `fixed_time` run more than 10 minutes late is skipped and logged (`skipped_late`), and the
   schedule goes on at its next time. One exactly 10 minutes late still runs, late.
 
-**Overlap.** Before a `post` or `launch` run, the scheduler gets the thread the schedule's last
-fired run posted into or launched. When that thread is `queued`, `starting` or `running`, the run
-is skipped and logged (`skipped_busy`), not queued. For a `post`, a turn someone else started in
-the thread counts too. `notify` runs are never skipped this way.
+**Overlap.** For a clock trigger, before a `post` or `launch` run, the scheduler gets the thread
+the schedule's last fired run posted into or launched. When that thread is `queued`, `starting`
+or `running`, the run is skipped and logged (`skipped_busy`), not queued. For a `post`, a turn
+someone else started in the thread counts too. `notify` runs are never skipped this way.
+
+**Event triggers.** An `event` trigger runs its schedule's action once for each event that
+matches it (§15 Event triggers):
+
+- **Topic.** A topic of `thread.settled`, `thread.failed`, `request.opened` or `schedule.fired`
+  matches events of that type. Any other topic matches [`signal`](#signal) events with that
+  `topic`.
+- **The event's thread** is its `thread_id`, or for a signal, its `by`. The scheduler looks it up
+  with `threads.get`; a thread that no longer exists counts as none.
+- **Project.** With `project_id`, an event matches only when its project is that one: a
+  signal's `project_id`; else its thread's project; else, for a `schedule.fired` with no thread,
+  the project of the schedule that fired; else none, which never matches.
+- **Match.** The event's payload is a signal's `payload`, or any other event's `data`. With
+  `match`, an event matches only when each field of `match` is in the payload with an equal JSON
+  value. Two values are equal when their compact JSON with sorted keys is the same text, so `1`
+  and `true`, and `1` and `1.0`, differ. A field the payload lacks never matches, also when
+  `match` asks for null.
+- **Filling.** A matching event's text has `{{event.id}}` replaced with the event's id, and
+  `{{payload.<field>}}` (a field of letters, digits, `_` and `-`) with that payload field: a
+  string as it is, a number, bool, list or object as its compact JSON, and a missing or null
+  field as nothing. Each value is cut to its first 2,000 characters (§11). A filled value is not
+  read again, so `{{event.id}}` inside a payload stays as it is, and so does any other `{{…}}`.
+  Clock runs fill nothing.
+- **Skips.** A matching event is skipped, checked in this order, and each skip is logged with a
+  [`trigger.skipped`](#triggerskipped) event:
+  - `own`: its thread was launched by this schedule (its `origin` is `schedule:<schedule id>`), or
+    it is this schedule's own `schedule.fired`;
+  - `hops`: its hops (see [Cause chains](#cause-chains)) are `hops_max` or more, so with the
+    default 8, an event with hops 8 is skipped and one with hops 7 runs;
+  - `rate`: the schedule fired `rate_max` times in the last 60 minutes (a run exactly 60 minutes
+    old no longer counts). The first such skip in 60 minutes also sends a `notify`
+    [`schedule.fired`](#schedulefired), with the schedule's thread (or none) and the text
+    `Schedule <schedule id> fired <rate_max> times in the last hour, so it skipped event
+    <event id>.` So a schedule sends at most one such notify an hour.
+- **Running.** A `post` sends the filled text with `threads.send`, `mode: "queue"` and the
+  event's id as `cause`. A `launch` calls `threads.launch` with the filled text, the event's id as
+  `cause`, `origin` `schedule:<schedule id>`, and a title from the schedule's `title`, else the
+  filled text's first non-empty line, cut at 80 characters. So what it starts has the event's
+  hops + 1. A `notify` makes no call. The run's `schedule.fired` holds the filled text, `cause`
+  and `hops`.
+- **No overlap rule, never late.** Each matching event runs, even while the last thread is still
+  going; `rate_max`, `hops_max` and a concurrency key are what bound a burst. An event run has no
+  late line and `late: false`.
+- **The cursor.** Each event schedule keeps the id of the last event it handled. It starts at the
+  newest event when the schedule is added, so an older event never runs it. Events are handled
+  oldest first, and for each event the schedules oldest first. After a restart, each matching
+  event after a schedule's cursor runs once, and one at or before it never runs again. Events are
+  kept 30 days (§4), so a schedule catches up on at most that much.
+- **Failures.** A run whose call fails with a Loom error is logged as `failed`, and the schedule
+  goes on with the next event. When the scheduler itself fails (the store, say), the schedule
+  stays at the event before and tries it again after 5 s.
 
 **Runs.** Each run is a row in the `schedule_runs` table of `loom.db`: when it was due, when it
-ran, whether it was late, the thread it posted into or launched, and its outcome. Rows older than
-30 days are deleted each time the server starts, and removing a schedule deletes its rows. No `v1`
-call reads them.
+ran, whether it was late, the thread it posted into or launched, its outcome, and for an event
+trigger the event it ran for (`event_id`, with the event's time as when it was due). Rows older
+than 30 days are deleted each time the server starts, and removing a schedule deletes its rows.
+No `v1` call reads them.
 
 | Outcome | When |
 |---|---|
-| `fired` | The run posted, launched or notified. Only these send `schedule.fired`. |
+| `fired` | The run posted, launched or notified. Only these, and an event trigger's first `skipped_rate` in an hour, send `schedule.fired`. |
 | `skipped_late` | A `fixed_time` run more than 10 minutes late. |
-| `skipped_busy` | A `post` or `launch` whose last thread is still going (see Overlap). |
-| `failed` | The call failed, for example because the thread was settled. The row keeps the error message, cut at 500 characters. The run is not tried again; the schedule goes on at its next time. |
+| `skipped_busy` | A `post` or `launch` of a clock trigger whose last thread is still going (see Overlap). |
+| `skipped_own` | An event from a thread the schedule launched, or the schedule's own `schedule.fired` (see Event triggers). |
+| `skipped_hops` | An event whose hops reached the trigger's `hops_max`. |
+| `skipped_rate` | An event past the trigger's `rate_max` in the last hour. |
+| `failed` | The call failed, for example because the thread was settled. The row keeps the error message, cut at 500 characters. The run is not tried again; the schedule goes on at its next time, or with its next event. |
 
 **No run twice.** A `post` or `launch` run calls with the command id `schedule:<schedule
-id>:<due>`, with `<due>` in ISO 8601, UTC. When Loom stops after the call and before the run's
+id>:<due>`, with `<due>` in ISO 8601, UTC, or for an event trigger `schedule:<schedule
+id>:event:<event id>`. When Loom stops after the call and before the run's
 row is written, the run is tried again with the same id, so the server returns the first answer
 instead of posting or launching again (see [Command ids](#command-ids-and-safe-retries)). A
 restart never repeats a run.
@@ -1188,7 +1252,7 @@ Adds a schedule (§7). See [How schedules run](#how-schedules-run) for the trigg
 | Param | Type | |
 |---|---|---|
 | `id` | string, required | Command id. |
-| `trigger` | object, required | An `at`, `interval` or `fixed_time` trigger. |
+| `trigger` | object, required | An `at`, `interval`, `fixed_time` or `event` trigger. |
 | `text` | string, required | Not empty. What it posts, launches with or notifies. |
 | `action` | string | `post` (default), `launch` or `notify`. |
 | `thread_id` | string | For `post`, the thread to post into; for `notify`, the thread it is about. Default: the caller's own thread. Not with `launch`. |
@@ -1202,8 +1266,9 @@ A param given as null is refused. The thread and the project must exist when the
 added.
 
 **Result:** the new [schedule](#schedule). Its `by` is the caller's thread, or null for a person,
-and its `next_run` is its first due time. A schedule due already, such as an `at` in the past,
-runs right after the answer.
+and its `next_run` is its first due time, or null for an `event` trigger. A schedule due already,
+such as an `at` in the past, runs right after the answer. An `event` trigger keeps only its own
+fields.
 
 **Errors:**
 
@@ -1214,13 +1279,22 @@ runs right after the answer.
 | `trigger` is not an object | `invalid` | `trigger must be an object` |
 | No `trigger.type` | `invalid` | `trigger.type is required` |
 | A `webhook` trigger | `invalid` | `webhook triggers are not served yet` |
-| Another `trigger.type` | `invalid` | `trigger.type must be one of at, interval, fixed_time` |
+| Another `trigger.type` | `invalid` | `trigger.type must be one of at, interval, fixed_time, event` |
 | No `at`, `everyMs` or `timeOfDay` for its type | `invalid` | `trigger.<field> is required` |
 | A bad `at` | `invalid` | `trigger.at must be an ISO 8601 date and time` |
 | A bad `everyMs` | `invalid` | `trigger.everyMs must be an integer from 60000 to 31536000000` |
 | A bad `timeOfDay` | `invalid` | `trigger.timeOfDay must be H:MM or HH:MM, from 0:00 to 23:59` |
 | `weekdays` is null | `invalid` | `trigger.weekdays must not be null` |
 | A bad `weekdays` | `invalid` | `trigger.weekdays must be a list of integers from 0 (Sunday) to 6 (Saturday)` |
+| No `topic` for an `event` trigger, or a null one | `invalid` | `trigger.topic is required` |
+| A `topic` that is not a string or not a valid signal topic, or a Loom event type other than the four, such as `turn.text` or `signal` | `invalid` | `trigger.topic must be a signal topic or one of thread.settled, thread.failed, request.opened, schedule.fired` |
+| The trigger's `project_id`, `match`, `hops_max` or `rate_max` is null | `invalid` | `trigger.<field> must not be null` |
+| The trigger's `project_id` is not a string | `invalid` | `trigger.project_id must be a string` |
+| `match` is not an object | `invalid` | `trigger.match must be a JSON object` |
+| `match` has more than 20 fields | `invalid` | `trigger.match must have at most 20 fields` |
+| `match` is over 4,096 bytes as compact UTF-8 JSON | `invalid` | `trigger.match must be at most 4096 bytes as JSON` |
+| `hops_max` is not an integer from 1 to 8 | `invalid` | `trigger.hops_max must be an integer from 1 to 8` |
+| `rate_max` is not an integer from 1 to 30 | `invalid` | `trigger.rate_max must be an integer from 1 to 30` |
 | No `text` | `invalid` | `text is required` |
 | An empty or non-string `text` | `invalid` | `text must be a non-empty string` |
 | A bad `action` | `invalid` | `action must be one of post, launch, notify` |
@@ -1238,7 +1312,7 @@ runs right after the answer.
 | A bad `settle` | `invalid` | `settle must be one of on_result` |
 | `project_id` is not the thread's | `invalid` | `project_id is not the thread's project` |
 | The thread does not exist | `not_found` | `no thread with id '<thread_id>'` |
-| The project does not exist | `not_found` | `no project with id '<project_id>'` |
+| The project, or the trigger's `project_id`, does not exist | `not_found` | `no project with id '<project_id>'` |
 | The `id` was used for another call | `conflict` | `id was already used for <call>` |
 
 ```json
@@ -1257,6 +1331,18 @@ Monday at 08:00 UTC, because the clocks go back an hour that night:
 ```json
 {"v": "v1", "call": "schedules.add", "params": {"id": "e11", "trigger": {"type": "interval", "everyMs": 3600000}, "text": "x"}}
 {"ok":false,"error":{"code":"invalid","message":"thread_id is required to post from outside a thread"}}
+```
+
+In another run with a project `demo`, a schedule that launches a thread for each
+`factory.run.status` signal about `demo` with `"to": "done"`, and two refused ones:
+
+```json
+{"v": "v1", "call": "schedules.add", "params": {"id": "c5", "trigger": {"type": "event", "topic": "factory.run.status", "project_id": "demo", "match": {"to": "done"}}, "text": "Land run {{payload.run}}: it is {{payload.to}} (event {{event.id}}).", "action": "launch", "project_id": "demo", "settle": "on_result"}}
+{"ok":true,"result":{"id":"4ec6…","trigger":{"type":"event","topic":"factory.run.status","project_id":"demo","match":{"to":"done"}},"action":"launch","text":"Land run {{payload.run}}: it is {{payload.to}} (event {{event.id}}).","thread_id":null,"project_id":"demo","title":null,"concurrency_key":null,"on_busy":null,"settle":"on_result","by":null,"paused":false,"next_run":null,"created_at":"2026-10-25T05:07:40.889+00:00"}}
+{"v": "v1", "call": "schedules.add", "params": {"id": "c6", "trigger": {"type": "event", "topic": "turn.text"}, "text": "x", "action": "notify"}}
+{"ok":false,"error":{"code":"invalid","message":"trigger.topic must be a signal topic or one of thread.settled, thread.failed, request.opened, schedule.fired"}}
+{"v": "v1", "call": "schedules.add", "params": {"id": "c6", "trigger": {"type": "event", "topic": "demo.done", "hops_max": 9}, "text": "x", "action": "notify"}}
+{"ok":false,"error":{"code":"invalid","message":"trigger.hops_max must be an integer from 1 to 8"}}
 ```
 
 ### `schedules.list`
@@ -1326,9 +1412,10 @@ missing (`schedule_id is required`) or not a string (`schedule_id must be a stri
 ## Events
 
 Every change of a thread's state or audience, every turn's text and tool calls, every turn's
-result, every permission request that opened or closed, every schedule run that fired and every
-signal is an event, with an id that only grows. Read them with [`threads.events`](#threadsevents). The state
-in `threads.get` is the truth; events are a log to follow, kept 30 days (§4 Events).
+result, every permission request that opened or closed, every schedule run that fired, every
+signal and every event an event trigger skipped is an event, with an id that only grows. Read
+them with [`threads.events`](#threadsevents). The state in `threads.get` is the truth; events are
+a log to follow, kept 30 days (§4 Events).
 
 ```json
 {"id": 5, "type": "turn.tool", "at": "2026-10-24T18:47:13.004+00:00", "thread_id": "3f2a…", "data": {"tool_use_id": "toolu_fake_1", "name": "Bash", "input": {"command": "true", "description": "Fake tool call 1"}}}
@@ -1514,18 +1601,23 @@ A request nobody answered, with `request_timeout = 3`:
 
 A schedule's run fired: it posted, launched or notified (see
 [How schedules run](#how-schedules-run)). It is sent once for each fired run, and never for a
-run that was skipped or failed.
+run that was skipped or failed, except for the one `notify` an hour that an event trigger's
+`rate_max` skip sends.
 
 The event's `thread_id` is the thread the run posted into or launched. For a `notify` it is the
-schedule's `thread_id`, or null when the schedule has none.
+schedule's `thread_id`, or null when the schedule has none. This holds for an event trigger's
+runs too, and for the `notify` its `rate_max` skip sends (see Event triggers under
+[How schedules run](#how-schedules-run)).
 
 | Field | Type | |
 |---|---|---|
 | `schedule_id` | string | |
 | `action` | string | `post`, `launch` or `notify`. |
-| `text` | string | The schedule's text, without the late line. |
-| `late` | bool | Always there. `true` when the run started more than 60 s after it was due (§7). |
+| `text` | string | The schedule's text, without the late line. For an event trigger's run, the text as filled from the event. |
+| `late` | bool | Always there. `true` when the run started more than 60 s after it was due (§7). Always `false` for an event trigger's run. |
 | `by` | string | The agent thread that made the schedule. Left out when a person made it. |
+| `cause` | int | Only for an event trigger's run, and its rate `notify`: the id of the event it ran for or skipped. |
+| `hops` | int | Only with `cause`: that event's hops + 1 (see [Cause chains](#cause-chains)), the same as the thread a `launch` starts. |
 
 An agent's reminder, added six minutes after its `at`, so it ran at once and late:
 
@@ -1537,6 +1629,14 @@ A person's `launch`, on time, names the thread it started:
 
 ```json
 {"id": 18, "type": "schedule.fired", "at": "2026-10-24T22:32:00.039+00:00", "thread_id": "7865…", "data": {"schedule_id": "f842…", "action": "launch", "text": "Check the nightly build.\nSay what broke.", "late": false}}
+```
+
+An event trigger's `launch` (the `schedules.add` example `c5`) ran for the signal 212, and a
+trigger with `rate_max` 1 skipped event 29, so it sent its one notify of the hour:
+
+```json
+{"id": 214, "type": "schedule.fired", "at": "2026-10-25T05:07:41.001+00:00", "thread_id": "0c9b…", "data": {"schedule_id": "4ec6…", "action": "launch", "text": "Land run LM-12: it is done (event 212).", "late": false, "cause": 212, "hops": 1}}
+{"id": 35, "type": "schedule.fired", "at": "2026-10-25T05:07:04.354+00:00", "thread_id": null, "data": {"schedule_id": "71c0…", "action": "notify", "text": "Schedule 71c0… fired 1 times in the last hour, so it skipped event 29.", "late": false, "cause": 29, "hops": 2}}
 ```
 
 ### `signal`
@@ -1564,14 +1664,25 @@ filter there).
 
 ### `trigger.skipped`
 
-An event trigger sends it when it skips an event that matches it (§15 Cause chains). Its
-`thread_id` is null.
+An event trigger sends it when it skips an event that matches it (§15 Cause chains), once per
+schedule and event; see Event triggers under [How schedules run](#how-schedules-run). Its
+`thread_id` is null. The skip's run is logged as `skipped_<reason>`, and the schedule goes on with
+the next event.
 
 | Field | Type | |
 |---|---|---|
 | `schedule_id` | string | The schedule whose trigger skipped. |
 | `event_id` | int | The event it skipped. |
-| `reason` | string | `own` when the event came from a thread the schedule launched (or from its own run), `hops` when the event's hops reached the trigger's limit, `rate` when the trigger fired its most this hour. |
+| `reason` | string | `own` when the event came from a thread the schedule launched (or is its own `schedule.fired`), `hops` when the event's hops reached the trigger's `hops_max`, `rate` when the trigger fired `rate_max` times in the last hour. The first is checked first. |
+
+Two `launch` schedules on `thread.settled` start each other's next step, and each skips the
+`thread.settled` of the threads it launched. Event 200 is where their chain stopped, at an event
+with hops 8, and event 240 an `own` skip in a later chain:
+
+```json
+{"id": 200, "type": "trigger.skipped", "at": "2026-10-25T05:07:11.947+00:00", "thread_id": null, "data": {"schedule_id": "8a73…", "event_id": 198, "reason": "hops"}}
+{"id": 240, "type": "trigger.skipped", "at": "2026-10-25T05:07:42.155+00:00", "thread_id": null, "data": {"schedule_id": "8a73…", "event_id": 238, "reason": "own"}}
+```
 
 A `person` follower never gets it.
 
@@ -1734,7 +1845,7 @@ They go before the command.
 | `loom projects set-mode <project_id> <mode> [--id ID]` | `projects.set_mode` |
 | `loom projects remove <project_id> [--id ID]` | `projects.remove` |
 | `loom projects list` | `projects.list` |
-| `loom schedules add <text> (--at DATETIME \| --every SECONDS \| --time H:MM [--weekdays LIST]) [--action post\|launch\|notify] [--thread T] [--project P] [--title T] [--id ID]` | `schedules.add` |
+| `loom schedules add <text> (--at DATETIME \| --every SECONDS \| --time H:MM [--weekdays LIST] \| --event TOPIC [--event-project P] [--match JSON]) [--action post\|launch\|notify] [--thread T] [--project P] [--title T] [--id ID]` | `schedules.add` |
 | `loom schedules list [--thread T] [--project P]` | `schedules.list` |
 | `loom schedules pause <schedule_id> [--id ID]` | `schedules.pause` |
 | `loom schedules remove <schedule_id> [--id ID]` | `schedules.remove` |
@@ -1757,6 +1868,9 @@ They go before the command.
   - `--time H:MM` sends `{"type": "fixed_time", "timeOfDay": H:MM}`. With `--weekdays LIST`,
     comma-separated whole numbers with 0 for Sunday (as `1,2,3,4,5` for Monday to Friday), it
     also sends `"weekdays"`. `--weekdays` without `--time` is a usage error.
+  - `--event TOPIC` sends `{"type": "event", "topic": TOPIC}`. With `--event-project P` it also
+    sends `"project_id"`, and with `--match JSON`, a JSON object, `"match"`. Either of them
+    without `--event`, or a `--match` that is not JSON or not an object, is a usage error.
 
   The server checks the values (the 60 s floor, weekdays 0 to 6, the form of the time) and
   answers `invalid`, exit 1. `--action`, `--thread`, `--project` and `--title` send `action`,
@@ -1856,6 +1970,22 @@ $ loom schedules add "Ping." --every 30 --action notify
 loom: invalid: trigger.everyMs must be an integer from 60000 to 31536000000
 $ loom schedules add "Ping." --every 60
 loom: invalid: thread_id is required to post from outside a thread
+```
+
+An event trigger, in the run of the `schedules.add` example `c5`. The first signal matches it,
+the second does not, and event 2 is its run:
+
+```text
+$ loom schedules add 'Run {{payload.to}} for {{event.id}}' --event demo.done --match '{"to":"done"}' --action notify
+bda8…  active  notify  on demo.done  -  Run {{payload.to}} for {{event.id}}
+$ loom signals emit demo.done --payload '{"to":"done","run":"LM-12"}' --project demo
+1 2026-10-25T05:06:42.640+00:00 - signal demo.done demo 0 {"to": "done", "run": "LM-12"}
+$ loom signals emit demo.done --payload '{"to":"open"}'
+3 2026-10-25T05:06:42.815+00:00 - signal demo.done 0 {"to": "open"}
+$ loom threads events
+1 2026-10-25T05:06:42.640+00:00 - signal demo.done demo 0 {"to": "done", "run": "LM-12"}
+2 2026-10-25T05:06:42.678+00:00 - schedule.fired bda8… notify Run done for 1
+3 2026-10-25T05:06:42.815+00:00 - signal demo.done 0 {"to": "open"}
 ```
 
 Audiences, in another run with a project `demo-repo`, an agent thread `0844…` and a thread
@@ -2003,12 +2133,12 @@ is the event object, so any language can follow Loom by reading the CLI's stdout
 - Without it, a short human form, with two spaces between fields. A thread is one line: id,
   state (and `waiting`), project, title, and the reason when there is one. `threads get` prints
   one `field: value` line per field. A project is one line: id, mode (or `default`), root and
-  title. A schedule is one line: id, state (`paused` when paused, else its `next_run`, else
-  `done`), action, trigger (`at <at>`, `every <seconds>s`, `<timeOfDay>` or
-  `<timeOfDay> on <weekdays>`), the thread or else the project it targets, and its title, else
-  its text. An event is one line: id, time, thread (or `-`), type and its data fields, with single
-  spaces. A null prints as `-`. A field an event lacks is left out: a `request.closed` line
-  shows `request_id`, `decision` and, when it has one, `reason`
+  title. A schedule is one line: id, state (`paused` when paused, `active` for an `event`
+  trigger, else its `next_run`, else `done`), action, trigger (`at <at>`, `every <seconds>s`,
+  `<timeOfDay>`, `<timeOfDay> on <weekdays>` or `on <topic>`), the thread or else the project it
+  targets, and its title, else its text. An event is one line: id, time, thread (or `-`), type
+  and its data fields, with single spaces. A null prints as `-`. A field an event lacks is left
+  out: a `request.closed` line shows `request_id`, `decision` and, when it has one, `reason`
   (`request.closed r1 deny timeout`). A `request.opened` line shows `request_id`, `tool_name`,
   `description` and `input`, not `expires_at`. A `signal` line shows `topic`, `project_id`,
   `key`, `hops` and `payload`, and a `trigger.skipped` line `schedule_id`, `event_id` and

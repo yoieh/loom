@@ -1,7 +1,13 @@
+import json
 import re
 from datetime import UTC, date, datetime, timedelta, tzinfo
 
-from loom_contracts.triggers import MIN_INTERVAL_MS, TriggerType
+from loom_contracts.calls import MAX_TOPIC, TOPIC_PATTERN
+from loom_contracts.events import EventType
+from loom_contracts.triggers import (
+    HOPS_MAX, MAX_MATCH, MAX_MATCH_FIELDS, MIN_INTERVAL_MS, RATE_MAX, TRIGGER_EVENT_TYPES,
+    TriggerType,
+)
 
 from .host import ScheduleError
 
@@ -9,9 +15,13 @@ MAX_INTERVAL_MS = 365 * 24 * 60 * 60 * 1000
 LATE_AFTER = timedelta(seconds=60)
 SKIP_AFTER = timedelta(minutes=10)
 SEARCH_DAYS = 8
-SERVED_TYPES = (TriggerType.AT, TriggerType.INTERVAL, TriggerType.FIXED_TIME)
+SERVED_TYPES = (TriggerType.AT, TriggerType.INTERVAL, TriggerType.FIXED_TIME, TriggerType.EVENT)
+EVENT_LIMITS = (('hops_max', HOPS_MAX), ('rate_max', RATE_MAX))
 
 _TIME_OF_DAY = re.compile(r'([01]?[0-9]|2[0-3]):([0-5][0-9])')
+_TOPIC = re.compile(TOPIC_PATTERN)
+_TOPIC_MESSAGE = ('trigger.topic must be a signal topic or one of '
+                  f'{", ".join(TRIGGER_EVENT_TYPES)}')
 
 
 def iso(at: datetime) -> str:
@@ -77,6 +87,61 @@ def _weekdays(value: object) -> list[int]:
     return value
 
 
+def _not_null(trigger: dict, field: str) -> object:
+    value = trigger[field]
+    if value is None:
+        raise _invalid(f'trigger.{field} must not be null')
+    return value
+
+
+def _topic(value: object) -> str:
+    if not isinstance(value, str):
+        raise _invalid(_TOPIC_MESSAGE)
+    if value in TRIGGER_EVENT_TYPES:
+        return value
+    if (not 1 <= len(value) <= MAX_TOPIC or _TOPIC.fullmatch(value) is None
+            or value in tuple(EventType)):
+        raise _invalid(_TOPIC_MESSAGE)
+    return value
+
+
+def _match(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise _invalid('trigger.match must be a JSON object')
+    if len(value) > MAX_MATCH_FIELDS:
+        raise _invalid(f'trigger.match must have at most {MAX_MATCH_FIELDS} fields')
+    try:
+        size = len(json.dumps(value, separators=(',', ':'), ensure_ascii=False).encode())
+    except (TypeError, ValueError, RecursionError):
+        raise _invalid('trigger.match must be a JSON object') from None
+    if size > MAX_MATCH:
+        raise _invalid(f'trigger.match must be at most {MAX_MATCH} bytes as JSON')
+    return value
+
+
+def _limit(value: object, field: str, most: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= most:
+        raise _invalid(f'trigger.{field} must be an integer from 1 to {most}')
+    return value
+
+
+def _event_trigger(trigger: dict) -> dict:
+    stored: dict[str, object] = {
+        'type': TriggerType.EVENT.value, 'topic': _topic(_required(trigger, 'topic')),
+    }
+    if 'project_id' in trigger:
+        project_id = _not_null(trigger, 'project_id')
+        if not isinstance(project_id, str):
+            raise _invalid('trigger.project_id must be a string')
+        stored['project_id'] = project_id
+    if 'match' in trigger:
+        stored['match'] = _match(_not_null(trigger, 'match'))
+    for field, most in EVENT_LIMITS:
+        if field in trigger:
+            stored[field] = _limit(_not_null(trigger, field), field, most)
+    return stored
+
+
 def check_trigger(trigger: object, tz: tzinfo | None) -> dict:
     if trigger is None:
         raise _invalid('trigger is required')
@@ -88,6 +153,8 @@ def check_trigger(trigger: object, tz: tzinfo | None) -> dict:
     if not isinstance(kind, str) or kind not in SERVED_TYPES:
         raise _invalid(f'trigger.type must be one of {", ".join(SERVED_TYPES)}')
     kind = TriggerType(kind)
+    if kind is TriggerType.EVENT:
+        return _event_trigger(trigger)
     if kind is TriggerType.AT:
         at = _required(trigger, 'at')
         parse_at(at, tz)
@@ -122,6 +189,8 @@ def next_fixed_time(trigger: dict, after: datetime, tz: tzinfo | None) -> dateti
 
 def first_run(trigger: dict, added: datetime, tz: tzinfo | None) -> datetime | None:
     kind = trigger['type']
+    if kind == TriggerType.EVENT:
+        return None
     if kind == TriggerType.AT:
         return parse_at(trigger['at'], tz)
     if kind == TriggerType.INTERVAL:
@@ -131,7 +200,7 @@ def first_run(trigger: dict, added: datetime, tz: tzinfo | None) -> datetime | N
 
 def run_after(trigger: dict, now: datetime, tz: tzinfo | None) -> datetime | None:
     kind = trigger['type']
-    if kind == TriggerType.AT:
+    if kind in (TriggerType.AT, TriggerType.EVENT):
         return None
     if kind == TriggerType.INTERVAL:
         return now + timedelta(milliseconds=trigger['everyMs'])

@@ -87,6 +87,8 @@ def _schedule_state(schedule: dict) -> str | None:
         return 'paused'
     if paused is not False or 'next_run' not in schedule:
         return None
+    if _field(schedule.get('trigger'), 'type') == TriggerType.EVENT:
+        return 'active'
     next_run = schedule['next_run']
     if next_run is None:
         return 'done'
@@ -114,6 +116,9 @@ def _trigger_text(trigger: object) -> str | None:
         if not isinstance(weekdays, list) or not all(_whole(day) for day in weekdays):
             return None
         return f'{time} on {",".join(str(day) for day in weekdays)}'
+    if kind == TriggerType.EVENT:
+        topic = trigger.get('topic')
+        return f'on {topic}' if isinstance(topic, str) else None
     return None
 
 

@@ -90,6 +90,14 @@ COMMANDS = [
      'schedules.add',
      {'trigger': {'type': 'interval', 'everyMs': 60000}, 'text': 'Go', 'action': 'launch',
       'project_id': 'demo'}),
+    (['schedules', 'add', 'x', '--event', 'demo.done', '--event-project', 'p', '--match',
+      '{"to":"done"}'], 'schedules.add',
+     {'trigger': {'type': 'event', 'topic': 'demo.done', 'project_id': 'p',
+                  'match': {'to': 'done'}}, 'text': 'x'}),
+    (['schedules', 'add', 'Look', '--event', 'thread.settled', '--action', 'launch',
+      '--project', 'demo'], 'schedules.add',
+     {'trigger': {'type': 'event', 'topic': 'thread.settled'}, 'text': 'Look',
+      'action': 'launch', 'project_id': 'demo'}),
     (['schedules', 'list'], 'schedules.list', {}),
     (['schedules', 'list', '--thread', 't1', '--project', 'demo'], 'schedules.list',
      {'thread_id': 't1', 'project_id': 'demo'}),
@@ -154,6 +162,11 @@ USAGE_ERRORS = [
     ['schedules', 'add', 'x', '--time', '9:07', '--weekdays', '1,x'],
     ['schedules', 'add', 'x', '--every', '60', '--action', 'send'],
     ['schedules', 'add', '--every', '60'],
+    ['schedules', 'add', 'x', '--every', '60', '--event', 'demo.done'],
+    ['schedules', 'add', 'x', '--every', '60', '--event-project', 'p'],
+    ['schedules', 'add', 'x', '--every', '60', '--match', '{}'],
+    ['schedules', 'add', 'x', '--event', 'demo.done', '--match', '[1]'],
+    ['schedules', 'add', 'x', '--event', 'demo.done', '--match', 'to=done'],
     ['schedules', 'list', 'extra'],
     ['schedules', 'pause'],
     ['schedules', 'remove'],
@@ -348,7 +361,11 @@ class UsageTest(CliCase):
 
     def test_schedule_usage_errors_say_what_is_wrong(self) -> None:
         for argv, message in (
-            (['x'], 'one of the arguments --at --every --time is required'),
+            (['x'], 'one of the arguments --at --every --time --event is required'),
+            (['x', '--every', '60', '--event-project', 'p'], '--event-project needs --event'),
+            (['x', '--at', 'a', '--match', '{}'], '--match needs --event'),
+            (['x', '--event', 'e', '--match', '[1]'], '--match must be a JSON object'),
+            (['x', '--event', 'e', '--match', '{'], '--match is not JSON'),
             (['x', '--at', 'a', '--time', '9:07'], 'not allowed with argument'),
             (['x', '--every', '0'], "not a whole number of seconds: '0'"),
             (['x', '--every', 'x'], "not a whole number of seconds: 'x'"),
@@ -786,6 +803,9 @@ class ScheduleOutputTest(CliCase):
             schedule_info('s6', trigger={'type': 'fixed_time', 'timeOfDay': '9:07',
                                          'weekdays': []}),
             schedule_info('s7', trigger={'type': 'interval', 'everyMs': 60500}),
+            schedule_info('s8', trigger={'type': 'event', 'topic': 'demo.done'}, next_run=None),
+            schedule_info('s9', trigger={'type': 'event', 'topic': 'demo.done'}, next_run=None,
+                          paused=True),
         ]
         self.assertEqual(self.lines('schedules', 'list', result=schedules), [
             f's1  {AT}  notify  at 2026-10-25T09:00  -  Stand-up',
@@ -795,6 +815,8 @@ class ScheduleOutputTest(CliCase):
             f's5  {AT}  notify  09:07  -  Stand-up',
             f's6  {AT}  notify  9:07  -  Stand-up',
             f's7  {AT}  notify  every 60.5s  -  Stand-up',
+            's8  active  notify  on demo.done  -  Stand-up',
+            's9  paused  notify  on demo.done  -  Stand-up',
         ])
 
     def test_add_pause_and_remove_print_the_schedule(self) -> None:
@@ -846,6 +868,8 @@ class ScheduleOutputTest(CliCase):
             (schedule_info(trigger={'type': 'fixed_time', 'timeOfDay': '9:07', 'weekdays': 0}),
              f's1  {AT}  notify  -  -  Stand-up'),
             (schedule_info(trigger={'type': 'webhook'}), f's1  {AT}  notify  -  -  Stand-up'),
+            (schedule_info(trigger={'type': 'event', 'topic': 5}, next_run=None),
+             's1  active  notify  -  -  Stand-up'),
             ({key: value for key, value in schedule_info().items() if key != 'next_run'},
              's1  -' + rest),
             (schedule_info(next_run=5), 's1  -' + rest),

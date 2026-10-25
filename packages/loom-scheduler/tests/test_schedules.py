@@ -267,6 +267,123 @@ class AddTest(SchedulerCase):
                          info['next_run'])
 
 
+class EventTriggerAddTest(SchedulerCase):
+    async def add_event(self, trigger: dict, command_id: str = 'e1') -> dict:
+        return await self.add(command_id, trigger={'type': 'event', **trigger},
+                              action='notify', thread_id=...)
+
+    async def assert_refused(self, cases: list[tuple[dict, str]],
+                             code: str = 'invalid') -> None:
+        for trigger, message in cases:
+            with self.subTest(trigger=trigger):
+                params = {'id': 'e1', 'trigger': {'type': 'event', **trigger}, 'text': 'hi',
+                          'action': 'notify'}
+                self.assertEqual(await self.refused('schedules.add', params, code), message)
+                self.assertEqual(self.schedule_rows(), 0)
+                self.assertEqual(self.receipts(), 0)
+
+    async def test_an_event_trigger_with_each_field_is_kept_with_no_next_run(self) -> None:
+        trigger = {'topic': 'demo.done', 'project_id': 'p2', 'match': {'to': 'done', 'n': 1},
+                   'hops_max': 3, 'rate_max': 5}
+        info = await self.add_event({**trigger, 'extra': 'dropped'})
+        self.assertEqual(info['trigger'], {'type': 'event', **trigger})
+        self.assertIsNone(info['next_run'])
+        self.assertEqual(await self.call('schedules.list', {}), [info])
+        self.assertIsNone(self.scheduler.next_wake())
+        bare = await self.add_event({'topic': 'demo.done'}, 'e2')
+        self.assertEqual(bare['trigger'], {'type': 'event', 'topic': 'demo.done'})
+
+    async def test_each_loom_topic_and_a_long_signal_topic_are_accepted(self) -> None:
+        topics = ['thread.settled', 'thread.failed', 'request.opened', 'schedule.fired',
+                  'a' * 200, 'factory.run:status_1-x']
+        for number, topic in enumerate(topics):
+            with self.subTest(topic=topic):
+                info = await self.add_event({'topic': topic}, f'e{number}')
+                self.assertEqual(info['trigger']['topic'], topic)
+
+    async def test_topic_is_checked(self) -> None:
+        message = ('trigger.topic must be a signal topic or one of thread.settled, '
+                   'thread.failed, request.opened, schedule.fired')
+        await self.assert_refused([
+            ({}, 'trigger.topic is required'),
+            ({'topic': None}, 'trigger.topic is required'),
+            ({'topic': 7}, message),
+            ({'topic': ''}, message),
+            ({'topic': 'a' * 201}, message),
+            ({'topic': '-x'}, message),
+            ({'topic': 'a b'}, message),
+            ({'topic': 'turn.text'}, message),
+            ({'topic': 'signal'}, message),
+            ({'topic': 'trigger.skipped'}, message),
+        ])
+
+    async def test_project_id_is_checked(self) -> None:
+        await self.assert_refused([
+            ({'topic': 'x', 'project_id': None}, 'trigger.project_id must not be null'),
+            ({'topic': 'x', 'project_id': 3}, 'trigger.project_id must be a string'),
+        ])
+        await self.assert_refused([({'topic': 'x', 'project_id': 'p9'},
+                                    "no project with id 'p9'")], 'not_found')
+
+    async def test_match_is_checked(self) -> None:
+        await self.assert_refused([
+            ({'topic': 'x', 'match': None}, 'trigger.match must not be null'),
+            ({'topic': 'x', 'match': ['to']}, 'trigger.match must be a JSON object'),
+            ({'topic': 'x', 'match': 'to'}, 'trigger.match must be a JSON object'),
+            ({'topic': 'x', 'match': {f'f{n}': n for n in range(21)}},
+             'trigger.match must have at most 20 fields'),
+            ({'topic': 'x', 'match': {'k': 'x' * 4_089}},
+             'trigger.match must be at most 4096 bytes as JSON'),
+        ])
+
+    async def test_a_match_of_4096_bytes_and_20_fields_is_accepted(self) -> None:
+        fields = await self.add_event({'topic': 'x', 'match': {f'f{n}': n for n in range(20)}})
+        self.assertEqual(len(fields['trigger']['match']), 20)
+        size = await self.add_event({'topic': 'x', 'match': {'k': 'x' * 4_088}}, 'e2')
+        self.assertEqual(len(size['trigger']['match']['k']), 4_088)
+
+    async def test_hops_max_and_rate_max_may_only_lower_the_defaults(self) -> None:
+        cases = []
+        for field, most in (('hops_max', 8), ('rate_max', 30)):
+            message = f'trigger.{field} must be an integer from 1 to {most}'
+            cases += [
+                ({'topic': 'x', field: None}, f'trigger.{field} must not be null'),
+                ({'topic': 'x', field: 0}, message),
+                ({'topic': 'x', field: most + 1}, message),
+                ({'topic': 'x', field: True}, message),
+                ({'topic': 'x', field: str(most)}, message),
+                ({'topic': 'x', field: 1.0}, message),
+            ]
+        await self.assert_refused(cases)
+        info = await self.add_event({'topic': 'x', 'hops_max': 8, 'rate_max': 30})
+        self.assertEqual((info['trigger']['hops_max'], info['trigger']['rate_max']), (8, 30))
+        low = await self.add_event({'topic': 'x', 'hops_max': 1, 'rate_max': 1}, 'e2')
+        self.assertEqual((low['trigger']['hops_max'], low['trigger']['rate_max']), (1, 1))
+
+    async def test_the_cursor_starts_at_the_newest_event(self) -> None:
+        self.host.signal('x')
+        self.host.signal('x')
+        info = await self.add_event({'topic': 'x'})
+        clock = await self.add('a2')
+        self.assertEqual(
+            self.host.rows('SELECT id, event_after FROM schedules ORDER BY created_at, id'),
+            sorted([(info['id'], 2), (clock['id'], None)]),
+        )
+
+    async def test_the_schedules_own_checks_still_hold(self) -> None:
+        trigger = {'type': 'event', 'topic': 'x'}
+        for fields, code, message in (
+            ({}, 'invalid', 'thread_id is required to post from outside a thread'),
+            ({'action': 'launch'}, 'invalid', 'project_id is required to launch'),
+            ({'thread_id': 'nope'}, 'not_found', "no thread with id 'nope'"),
+            ({'action': 'launch', 'project_id': 'p9'}, 'not_found', "no project with id 'p9'"),
+        ):
+            with self.subTest(fields=fields):
+                params = {'id': 'e1', 'trigger': trigger, 'text': 'x', **fields}
+                self.assertEqual(await self.refused('schedules.add', params, code), message)
+        self.assertEqual(self.schedule_rows(), 0)
+
+
 class OldStoreTest(SchedulerCase):
     async def test_an_old_store_gains_the_columns_and_fires_as_before(self) -> None:
         self.host.connection.execute('DROP TABLE schedules')
@@ -282,7 +399,7 @@ class OldStoreTest(SchedulerCase):
         self.scheduler = self.new_scheduler()
         self.scheduler = self.new_scheduler()
         columns = [row[1] for row in self.host.rows('PRAGMA table_info(schedules)')]
-        self.assertEqual(columns[-3:], ['concurrency_key', 'on_busy', 'settle'])
+        self.assertEqual(columns[-4:], ['concurrency_key', 'on_busy', 'settle', 'event_after'])
         [info] = await self.call('schedules.list', {})
         self.assertEqual((info['id'], info['concurrency_key'], info['on_busy'], info['settle']),
                          ('s-old', None, None, None))

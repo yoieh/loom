@@ -312,6 +312,9 @@ class Store:
         args.append(min(limit, MAX_EVENTS))
         return [_event(row) for row in self.connection.execute(sql, args)]
 
+    def last_event_id(self) -> int:
+        return self.connection.execute('SELECT COALESCE(MAX(id), 0) FROM events').fetchone()[0]
+
     def event(self, tx: sqlite3.Connection, event_id: int) -> Event | None:
         row = tx.execute('SELECT id, type, at, thread_id, data FROM events WHERE id = ?',
                          (event_id,)).fetchone()

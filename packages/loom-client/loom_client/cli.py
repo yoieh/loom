@@ -109,9 +109,30 @@ def _workspace(args: argparse.Namespace, parser: argparse.ArgumentParser) -> dic
     return {'strategy': args.workspace, **given}
 
 
+def _match(text: str, parser: argparse.ArgumentParser) -> dict:
+    try:
+        match = json.loads(text)
+    except (ValueError, RecursionError):
+        parser.error('--match is not JSON')
+    if not isinstance(match, dict):
+        parser.error('--match must be a JSON object')
+    return match
+
+
 def _trigger(args: argparse.Namespace, parser: argparse.ArgumentParser) -> dict:
     if args.weekdays is not None and args.time is None:
         parser.error('--weekdays needs --time')
+    if args.event is None:
+        for flag, value in (('--event-project', args.event_project), ('--match', args.match)):
+            if value is not None:
+                parser.error(f'{flag} needs --event')
+    if args.event is not None:
+        trigger = {'type': TriggerType.EVENT.value, 'topic': args.event}
+        if args.event_project is not None:
+            trigger['project_id'] = args.event_project
+        if args.match is not None:
+            trigger['match'] = _match(args.match, parser)
+        return trigger
     if args.at is not None:
         return {'type': TriggerType.AT.value, 'at': args.at}
     if args.every is not None:
@@ -243,8 +264,15 @@ def _schedule_add_args(command: argparse.ArgumentParser) -> None:
     when.add_argument('--every', metavar='SECONDS', type=_seconds,
                       help='run every so many seconds')
     when.add_argument('--time', metavar='H:MM', help='run each day at this local time')
+    when.add_argument('--event', metavar='TOPIC',
+                      help='run on each signal of this topic, or on a Loom event such as '
+                           'thread.settled')
     command.add_argument('--weekdays', metavar='LIST', type=_weekdays,
                          help='with --time, only these days, 0 is Sunday (as 1,2,3,4,5)')
+    command.add_argument('--event-project', metavar='P',
+                         help='with --event, only events of this project')
+    command.add_argument('--match', metavar='JSON',
+                         help='with --event, a JSON object of payload fields that must be equal')
     command.add_argument('--action', choices=_values(ScheduleAction),
                          help='what it does (default post)')
     command.add_argument('--thread', help='thread it posts into')

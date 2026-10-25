@@ -36,6 +36,12 @@ class ServiceHost:
         except LoomError as error:
             raise ScheduleError(error.code, error.message) from None
 
+    def listen(self, listener: Callable[[], None]) -> Callable[[], None]:
+        return self.store.listen(listener)
+
+    def last_event_id(self) -> int:
+        return self.store.last_event_id()
+
 
 def _served(method: Callable[[object, object], Awaitable[object]]) -> Method:
     async def serve(params: object, caller: Caller) -> object:
