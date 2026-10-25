@@ -23,12 +23,13 @@ class Config:
     permission_mode: str = DEFAULT_MODE
     agents_max: int | None = None
     idle_after: int = 1200
+    request_timeout: int = 600
     codex_bin: str | None = None
     codex_home: str | None = None
 
 
 KEYS = tuple(field.name for field in dataclasses.fields(Config))
-WHOLE_NUMBERS = ('agents_max', 'idle_after')
+WHOLE_NUMBERS = ('agents_max', 'idle_after', 'request_timeout')
 
 
 def _option(value: str | None, name: str) -> Path | None:

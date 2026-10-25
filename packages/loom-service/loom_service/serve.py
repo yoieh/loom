@@ -73,7 +73,8 @@ async def start(socket: Path, data_dir: Path, config: Config, *,
     host = Host(data_dir, socket, config, environ, log)
     runners = {'claude': ClaudeRunner(), 'codex': CodexRunner()}
     orchestrator = Orchestrator(store, projects, runners, host,
-                                agents_max=agents_max, idle_after=config.idle_after)
+                                agents_max=agents_max, idle_after=config.idle_after,
+                                request_timeout=config.request_timeout)
     await orchestrator.recover()
     service = Service(store, projects, orchestrator)
     scheduler = Scheduler(ServiceHost(store, service), clock=store.clock)

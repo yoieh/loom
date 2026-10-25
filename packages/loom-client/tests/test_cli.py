@@ -92,11 +92,18 @@ COMMANDS = [
     (['schedule', 'list'], 'schedules.list', {}),
     (['schedules', 'pause', 's1'], 'schedules.pause', {'schedule_id': 's1'}),
     (['schedules', 'remove', 's1'], 'schedules.remove', {'schedule_id': 's1'}),
+    (['requests', 'respond', 'r1', 'allow'], 'requests.respond',
+     {'request_id': 'r1', 'decision': 'allow'}),
+    (['requests', 'respond', 'r1', 'deny', '--message', 'Not this one.'], 'requests.respond',
+     {'request_id': 'r1', 'decision': 'deny', 'message': 'Not this one.'}),
+    (['request', 'respond', 'r1', 'deny'], 'requests.respond',
+     {'request_id': 'r1', 'decision': 'deny'}),
 ]
 
 WRITES = {'threads.launch', 'threads.delegate', 'threads.send', 'threads.stop',
           'threads.settle', 'threads.update', 'projects.add', 'projects.set_mode',
-          'projects.remove', 'schedules.add', 'schedules.pause', 'schedules.remove'}
+          'projects.remove', 'schedules.add', 'schedules.pause', 'schedules.remove',
+          'requests.respond'}
 
 USAGE_ERRORS = [
     [],
@@ -139,7 +146,12 @@ USAGE_ERRORS = [
     ['schedules', 'list', 'extra'],
     ['schedules', 'pause'],
     ['schedules', 'remove'],
-    ['requests', 'respond', 'r1', 'allow'],
+    ['requests', 'respond'],
+    ['requests', 'respond', 'r1'],
+    ['requests', 'respond', 'r1', 'maybe'],
+    ['requests', 'respond', 'r1', 'allow', 'extra'],
+    ['request', 'respond', 'r1'],
+    ['requests'],
     ['--socket'],
     ['serve', '--port', '80'],
 ]
@@ -200,7 +212,8 @@ class CommandTest(CliCase):
                      ['projects', 'remove', 'demo'], ['threads', 'launch', 'd', 'T', 'm'],
                      ['schedules', 'add', 'x', '--every', '60'], ['schedules', 'pause', 's1'],
                      ['schedules', 'remove', 's1'],
-                     ['threads', 'update', 't1', '--audience', 'agent']):
+                     ['threads', 'update', 't1', '--audience', 'agent'],
+                     ['requests', 'respond', 'r1', 'allow']):
             with self.subTest(argv=argv):
                 self.assertEqual(self.run_cli(*argv, '--id', 'retry-7')[0], 0)
                 self.assertEqual(self.server.requests[-1]['params']['id'], 'retry-7')
@@ -212,8 +225,35 @@ class CommandTest(CliCase):
             'threads.launch', 'threads.delegate', 'threads.send', 'threads.list', 'threads.get',
             'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
             'projects.set_mode', 'projects.remove', 'projects.list', 'schedules.add',
-            'schedules.list', 'schedules.pause', 'schedules.remove',
+            'schedules.list', 'schedules.pause', 'schedules.remove', 'requests.respond',
         })
+
+    def test_requests_respond_sends_a_new_uuid4_id_or_the_given_one(self) -> None:
+        self.answer(ok(thread_info()))
+        self.assertEqual(self.run_cli('requests', 'respond', 'r1', 'allow')[0], 0)
+        sent = self.server.requests[-1]
+        self.assertEqual(sent['call'], 'requests.respond')
+        params = dict(sent['params'])
+        self.assertEqual(uuid.UUID(params.pop('id')).version, 4)
+        self.assertEqual(params, {'request_id': 'r1', 'decision': 'allow'})
+        self.assertEqual(self.run_cli('request', 'respond', 'r1', 'deny', '--message', 'no',
+                                      '--id', 'c1')[0], 0)
+        self.assertEqual(self.server.requests[-1]['params'],
+                         {'request_id': 'r1', 'decision': 'deny', 'message': 'no', 'id': 'c1'})
+
+    def test_requests_respond_prints_the_thread_line_or_one_json_line(self) -> None:
+        thread = thread_info(state='running')
+        self.answer(ok(thread))
+        self.assertEqual(self.run_cli('requests', 'respond', 'r1', 'allow'),
+                         (0, 't1  running  demo  First\n', ''))
+        code, out, err = self.run_cli('--json', 'requests', 'respond', 'r1', 'allow')
+        self.assertEqual((code, err, out.count('\n')), (0, '', 1))
+        self.assertEqual(json.loads(out), thread)
+
+    def test_a_refused_answer_exits_1_with_its_code_and_message(self) -> None:
+        self.answer(failed('conflict', 'request r1 is closed'))
+        self.assertEqual(self.run_cli('requests', 'respond', 'r1', 'deny'),
+                         (1, '', 'loom: conflict: request r1 is closed\n'))
 
     def test_a_relative_project_path_is_made_absolute(self) -> None:
         self.answer(ok(project_info()))
@@ -273,7 +313,7 @@ class UsageTest(CliCase):
 
     def test_help_lists_the_commands_and_exits_0(self) -> None:
         for argv, names in (
-            (['--help'], ['serve', 'install', 'threads', 'projects', 'schedules']),
+            (['--help'], ['serve', 'install', 'threads', 'projects', 'schedules', 'requests']),
             (['threads', '--help'],
              ['launch', 'delegate', 'send', 'list', 'get', 'stop', 'settle', 'update',
               'events']),
@@ -281,6 +321,8 @@ class UsageTest(CliCase):
             (['project', '--help'], ['add', 'set-mode', 'remove', 'list']),
             (['schedules', '--help'], ['add', 'list', 'pause', 'remove']),
             (['schedule', '--help'], ['add', 'list', 'pause', 'remove']),
+            (['requests', '--help'], ['respond']),
+            (['request', '--help'], ['respond']),
         ):
             with self.subTest(argv=argv):
                 out = io.StringIO()
@@ -558,9 +600,10 @@ class HumanOutputTest(CliCase):
             event(7, 'request.closed', request_id='r1', decision='allow'),
             event(8, 'turn.started'),
             event(9, 'some.future', thread_id=None, odd='x\x1by'),
+            event(10, 'request.closed', request_id='r1', decision='deny', reason='time\x1bout'),
         )
         lines = out.splitlines()
-        self.assertEqual(len(lines), 9)
+        self.assertEqual(len(lines), 10)
         self.assertTrue(out.isascii())
         self.assertTrue(lines[0].endswith(
             'turn.tool Ba\\x1bsh {"command": "echo \\x9b\\x7f", "n": 1} toolu_1'))
@@ -573,6 +616,17 @@ class HumanOutputTest(CliCase):
         self.assertTrue(lines[6].endswith('request.closed r1 allow'))
         self.assertTrue(lines[7].endswith(' t1 turn.started'))
         self.assertEqual(lines[8], f'9 {AT} - some.future {{"odd": "x\\u001by"}}')
+        self.assertTrue(lines[9].endswith('request.closed r1 deny time\\x1bout'))
+
+    def test_a_closed_request_prints_its_reason_when_it_has_one(self) -> None:
+        out = self.events(
+            event(1, 'request.closed', request_id='r1', decision='deny', reason='timeout'),
+            event(2, 'request.closed', request_id='r2', decision='allow'),
+        )
+        self.assertEqual(out.splitlines(), [
+            f'1 {AT} t1 request.closed r1 deny timeout',
+            f'2 {AT} t1 request.closed r2 allow',
+        ])
 
     def test_a_thread_updated_event_prints_the_new_audience(self) -> None:
         out = self.events(event(1, 'thread.updated', audience='person', previous_audience='agent'),
