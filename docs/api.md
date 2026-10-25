@@ -357,6 +357,9 @@ A start is never refused for lack of room. At most `agents_max` agent processes 
 has been `idle` longest to sleep (its process is closed and it goes to `sleeping`), then starts.
 Only when every live process is in a turn does the start wait, `queued`, in §4's order: a
 person's own words first, then agents' starts, then schedules, and the oldest first within each.
+A launch ranks by its caller, as `threads.send` does: a person's as a person's words, an agent's
+or an unverified caller's as an agent's start, a schedule's last; its first message keeps that
+rank after a restart.
 A thread `idle` for `idle_after` seconds goes to `sleeping` too; the next message resumes it.
 
 **Errors:** `not_found` when the project does not exist; `invalid` for a missing or wrong
