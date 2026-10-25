@@ -2,11 +2,12 @@ import sqlite3
 from collections.abc import Mapping
 from datetime import timedelta
 
-from loom_contracts.calls import Audience, ThreadInfo
+from loom_contracts.calls import Audience, Settle, ThreadInfo
 from loom_contracts.events import EventType
 from loom_contracts.runners import PermissionMode, RunnerName
 from loom_contracts.states import ThreadState
 
+from . import concurrency
 from .clock import iso
 from .errors import LoomError
 from .slots import StartSource
@@ -19,6 +20,7 @@ CONTINUATION = 'Your last turn was cut off; continue where you were.'
 CONTINUATIONS = 3
 CONTINUATION_WINDOW = timedelta(seconds=300)
 CRASHED = 'exited mid-turn after 3 continuations in 5 minutes'
+SETTLED_RESULT = 2000
 
 _MOVES = {
     ThreadState.QUEUED: {ThreadState.STARTING, ThreadState.SLEEPING},
@@ -44,6 +46,7 @@ COLUMNS = (
     'id', 'title', 'runner', 'project_id', 'workspace_strategy', 'workspace_path', 'branch',
     'base', 'model', 'permission_mode', 'requests', 'state', 'waiting', 'reason', 'parent_id',
     'origin', 'has_session', 'stop_requested', 'created_at', 'updated_at', 'audience',
+    'concurrency_key', 'settle', 'key_state',
 )
 
 
@@ -86,6 +89,7 @@ def stop_targets(tx: sqlite3.Connection, thread_id: str) -> list[sqlite3.Row]:
 def request_stop(store: Store, tx: sqlite3.Connection, thread_id: str) -> None:
     row = fetch(tx, thread_id)
     tx.execute('UPDATE threads SET stop_requested = 1 WHERE id = ?', (thread_id,))
+    concurrency.free(store, tx, thread_id)
     transition(store, tx, thread_id, ThreadState(row['state']), STOPPING)
 
 
@@ -126,8 +130,9 @@ def start_queue(tx: sqlite3.Connection) -> list[tuple[int, str, str]]:
     return tx.execute(
         'SELECT coalesce(starts.rank, ?), coalesce(starts.queued_at, threads.created_at), '
         'threads.id FROM threads LEFT JOIN starts ON starts.thread_id = threads.id '
-        'WHERE threads.state = ? AND threads.stop_requested = 0 ORDER BY 1, 2, 3',
-        (int(StartSource.AGENT), str(ThreadState.QUEUED)),
+        'WHERE threads.state = ? AND threads.stop_requested = 0 '
+        "AND coalesce(threads.key_state, '') != ? ORDER BY 1, 2, 3",
+        (int(StartSource.AGENT), str(ThreadState.QUEUED), concurrency.WAITING),
     ).fetchall()
 
 
@@ -165,6 +170,8 @@ def thread_info(row: sqlite3.Row) -> ThreadInfo:
         'parent_id': row['parent_id'],
         'origin': row['origin'],
         'audience': Audience(row['audience']),
+        'concurrency_key': row['concurrency_key'],
+        'settle': None if row['settle'] is None else Settle(row['settle']),
         'created_at': row['created_at'],
     }
 
@@ -193,7 +200,8 @@ def insert(store: Store, tx: sqlite3.Connection, fields: Mapping[str, object]) -
 
 
 def transition(store: Store, tx: sqlite3.Connection, thread_id: str, state: ThreadState,
-               reason: str | None = None, *, waiting: bool | None = None) -> None:
+               reason: str | None = None, *, waiting: bool | None = None,
+               result: str | None = None) -> None:
     row = fetch(tx, thread_id)
     current = ThreadState(row['state'])
     state = ThreadState(state)
@@ -216,3 +224,8 @@ def transition(store: Store, tx: sqlite3.Connection, thread_id: str, state: Thre
     if state is ThreadState.FAILED:
         store.append_event(tx, EventType.THREAD_FAILED, thread_id,
                            {'reason': reason if reason is not None else ''})
+    elif state is ThreadState.SETTLED:
+        data = {} if result is None else {'result': result[:SETTLED_RESULT]}
+        store.append_event(tx, EventType.THREAD_SETTLED, thread_id, data)
+    if state in ENDED:
+        concurrency.free(store, tx, thread_id)

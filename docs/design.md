@@ -371,9 +371,11 @@ only the parts below.
   from a thread it launched itself, and fires at most `rate_max` times an hour (default 30), so
   agents that start agents can't loop. Each skip is a `trigger.skipped` event.
 - **Concurrency keys.** A launch with `concurrency_key` (such as `pm:glantfolk`) waits while
-  another unsettled thread holds the key (`on_busy: "queue"`), or joins the one waiting launch
-  for it (`"coalesce"`), so one project manager works on a project at a time and a burst of
-  events becomes one thread.
+  another thread holds the key (`on_busy: "queue"`), or joins the one waiting launch for it
+  (`"coalesce"`), so one project manager works on a project at a time and a burst of events
+  becomes one thread. A thread holds its key until it settles, fails or is stopped, so a
+  stopped or failed thread does not hold it; then the next waiting launch starts, oldest first.
+  `coalesce` joins only a waiting launch of the same project and parent.
 - **One goal, then settled.** A launch with `settle: "on_result"` settles after its first
   `result` instead of going idle. Its `thread.settled` event carries the result, so the next
   step can trigger on it.

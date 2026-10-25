@@ -729,7 +729,8 @@ class SettleTest(OrchestratorTest):
         appended = self.events(thread_id)[before:]
         self.assertEqual([(event['type'], event['data']) for event in appended],
                          [(EventType.THREAD_STATE, {'state': 'settled', 'waiting': False,
-                                                    'reason': 'claude is not installed'})])
+                                                    'reason': 'claude is not installed'}),
+                          (EventType.THREAD_SETTLED, {})])
         self.assertEqual(len(self.events(thread_id, EventType.THREAD_FAILED)), 1)
         self.assertEqual(self.states(thread_id)[-2:], ['failed', 'settled'])
         self.assertEqual(len(self.runner.starts), starts)

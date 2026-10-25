@@ -34,8 +34,9 @@ In the examples below, the first JSON line is the request and the next one the a
 pass on the socket. Thread and schedule ids such as `"3f2a…"` and the paths are shortened;
 everything else comes from a real run. The command ids `c1`, `c2`, … give the order the changes
 ran in; each read shows the state at its point in that run, and `projects.remove` succeeded once
-both threads were settled. The `schedules.*` examples, and those of `threads.update` and the
-`audience` filters, come from later runs of their own.
+both threads were settled. The `schedules.*` examples, those of `threads.update` and the
+`audience` filters, and those of concurrency keys and `thread.settled`, come from later runs of
+their own.
 
 ## Transport
 
@@ -247,6 +248,8 @@ Most calls answer with a thread, a project or a schedule.
 | `parent_id` | string or null | The thread that delegated this one. |
 | `origin` | string or null | Who started it, as `threads.launch` was told. A thread a schedule launched has `schedule:<schedule id>`. |
 | `audience` | string | `person` when a person talks with it, else `agent`, the default (§15 Audience). See [`threads.update`](#threadsupdate). |
+| `concurrency_key` | string or null | The key it was launched or delegated with, or null (see Concurrency keys under [`threads.launch`](#threadslaunch)). |
+| `settle` | string or null | `on_result` when it settles after its first result, or null (see Settle on result under [`threads.launch`](#threadslaunch)). |
 | `created_at` | string | ISO 8601, UTC. |
 
 ### Project
@@ -344,9 +347,13 @@ Starts a new top-level thread in a project with a first message.
 | `requests` | string | `"any"` (default) or `"caller"`: who may answer the thread's permission prompts (§8 Requests). Stored now, used once `requests.respond` is served. |
 | `origin` | string | Who started the thread, for clients to show. |
 | `audience` | string | `"agent"` (default) or `"person"`: who talks with the thread (§15 Audience). |
+| `concurrency_key` | string | 1 to 200 characters, such as `pm:demo-repo`. At most one thread holds a key (see Concurrency keys below). Default: no key. A null answers `invalid`, `concurrency_key must not be null`; another type, an empty string or a longer one answers `invalid`, `concurrency_key must be a string of 1 to 200 characters`. |
+| `on_busy` | string | What a launch does while another thread holds its key: `"queue"` (default) or `"coalesce"`. Only with `concurrency_key`, else `invalid`, `on_busy needs concurrency_key`. A null answers `invalid`, `on_busy must not be null`; any other value `on_busy must be one of queue, coalesce`. |
+| `settle` | string | `"on_result"`: the thread settles after its first result instead of going `idle` (see Settle on result below). Default: it goes `idle`. A null answers `invalid`, `settle must not be null`; any other value `settle must be one of on_result`. |
 
-**Result:** the new thread, in state `queued`. Loom starts it after it answers; follow
-`threads.events` to see the turn.
+**Result:** the new thread, in state `queued`, or the waiting thread a coalescing launch joined
+(see Concurrency keys below). Loom starts it after it answers, unless it waits for
+its key; follow `threads.events` to see the turn.
 
 **Audience.** A launch without `audience` is `agent`, whoever calls: a person, an agent or a
 schedule. Loom never guesses `person` from the caller, so a client whose threads a person talks
@@ -364,20 +371,75 @@ or an unverified caller's as an agent's start, a schedule's last; its first mess
 rank after a restart.
 A thread `idle` for `idle_after` seconds goes to `sleeping` too; the next message resumes it.
 
+**Concurrency keys.** A key lets one thread at a time work on something, such as one project
+manager per project (§15). Keys are global, not per project, so a key names its project. A launch
+whose key no thread holds takes the key and starts as above. A thread holds its key until it is
+settled (by [`threads.settle`](#threadssettle) or on its result), fails, or a stop is requested
+on it or on a thread above it. Going `idle` or `sleeping` keeps the key, and so does a crash
+continuation (see [`threads.send`](#threadssend)). A stop lets the key go when it is asked for,
+so the next thread can start while the stopped one's turn is still being interrupted.
+
+While another thread holds the key:
+
+- With `on_busy: "queue"`, the launch answers a new thread in state `queued` that does not
+  start, even when a slot is free. When the holder lets the key go, the oldest thread waiting for
+  it (by `created_at`, then id) takes it and starts as any start does; the others keep waiting.
+- With `on_busy: "coalesce"`, the launch joins the newest thread waiting for the key: Loom makes
+  no thread, adds the launch's `message` to the end of that thread's first message after a blank
+  line, and answers that thread. With no thread waiting, the launch waits as under `queue`, so
+  with only coalescing launches at most one thread waits for a key. A launch joins only a
+  waiting thread of the same project that has no parent; when the newest waiting thread is in
+  another project or was delegated, it answers `conflict`,
+  `concurrency key <key> is waiting in another project or under another parent`, and changes
+  nothing. A joining launch's `title`, `workspace`, `runner`, `model`, `requests`, `origin`,
+  `audience` and `settle` are checked but not used: the waiting thread keeps its own. A retry
+  with the same command id answers the same thread and adds the message once.
+
+A waiting thread that is settled or stopped leaves the wait. A thread that let its key go, or
+left the wait, never takes the key again: a later message to it runs it beside the new holder.
+After a restart a waiting thread still waits, and a thread that had taken the key but not yet
+started starts.
+
+**Settle on result.** A thread launched with `settle: "on_result"` settles on its first turn
+result that is `completed` or `failed`, instead of going `idle`. As under
+[`threads.settle`](#threadssettle), its agent process is closed, its slot is freed, its key is
+let go, and its queued messages and continuations are dropped, so a message sent with
+`mode: "queue"` during that turn is never sent. A [`thread.settled`](#threadsettled) event
+carries the result's text. A `stopped` result, or any result while a stop is in progress, does
+not settle it: it ends as any stopped thread does. A crash mid-turn is no result: the thread
+resumes with its continuation and keeps its key, and after the fourth crash in 5 minutes it
+fails, which lets the key go.
+
 **Errors:** `not_found` when the project does not exist; `invalid` for a missing or wrong
 parameter, such as an `audience` that is null (`audience must not be null`) or not `person` or
 `agent` (`audience must be one of person, agent`).
 
 ```json
 {"v": "v1", "call": "threads.launch", "params": {"id": "c3", "project_id": "demo-repo", "title": "Fix the login test", "message": "Make the login test pass.", "workspace": {"strategy": "root"}}}
-{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto-accept-edits","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","created_at":"2026-10-24T18:47:12.958+00:00"}}
+{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto-accept-edits","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:12.958+00:00"}}
 ```
 
 A thread a person talks with, from a later run:
 
 ```json
 {"v": "v1", "call": "threads.launch", "params": {"id": "c3", "project_id": "demo-repo", "title": "Plan the week", "message": "What is on this week?", "workspace": {"strategy": "root"}, "audience": "person"}}
-{"ok":true,"result":{"id":"31d4…","title":"Plan the week","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","created_at":"2026-10-24T23:48:37.421+00:00"}}
+{"ok":true,"result":{"id":"31d4…","title":"Plan the week","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","concurrency_key":null,"settle":null,"created_at":"2026-10-24T23:48:37.421+00:00"}}
+```
+
+A launch on a key that `008a…` holds, from a later run, waits `queued` until `008a…` is settled:
+
+```json
+{"v": "v1", "call": "threads.launch", "params": {"id": "c3", "project_id": "demo-repo", "title": "Plan the next step", "message": "Run LM-12 is done.", "workspace": {"strategy": "root"}, "concurrency_key": "pm:demo-repo"}}
+{"ok":true,"result":{"id":"4e3a…","title":"Plan the next step","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":"pm:demo-repo","settle":null,"created_at":"2026-10-25T01:28:09.040+00:00"}}
+```
+
+In the same run, with `9a7d…` holding `inbox:demo-repo` and `4bb0…` waiting for it with the
+message `PR 14 was opened.`, a coalescing launch makes no thread and answers `4bb0…`, whose first
+message is now `PR 14 was opened.`, a blank line and `PR 15 was opened.`:
+
+```json
+{"v": "v1", "call": "threads.launch", "params": {"id": "c6", "project_id": "demo-repo", "title": "Read the inbox", "message": "PR 15 was opened.", "workspace": {"strategy": "root"}, "concurrency_key": "inbox:demo-repo", "on_busy": "coalesce"}}
+{"ok":true,"result":{"id":"4bb0…","title":"Read the inbox","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":"inbox:demo-repo","settle":null,"created_at":"2026-10-25T01:28:10.149+00:00"}}
 ```
 
 ### `threads.delegate`
@@ -395,21 +457,32 @@ Nothing is posted while the child or the parent is being stopped, or once the pa
 | `workspace` | object | Default: the parent's workspace (its root, or its worktree as `existing_worktree`). |
 | `runner` | string | Default: the parent's runner. |
 | `model` | string | Default: the parent's model. |
+| `concurrency_key` | string | As under [`threads.launch`](#threadslaunch). Default: no key. |
+| `on_busy` | string | `"queue"` (default) or `"coalesce"`, as under [`threads.launch`](#threadslaunch). |
 
 The child's title is the first line of `task`, cut at 80 characters. It runs in the parent's
 project with the project's mode, and it inherits the parent's `requests`. Its audience is always
 `agent`, whatever the parent's is.
 
-**Result:** the child thread, in state `queued`. It starts as under
-[`threads.launch`](#threadslaunch), as an agent's start: it may sleep the longest-idle thread or
-wait `queued`, and is never refused.
+A key works as under Concurrency keys in [`threads.launch`](#threadslaunch): a child holds it,
+or waits for it.
+A coalescing delegate joins only a waiting child of the same parent, and its `task` is added to
+that child's first message; its `workspace`, `runner` and `model` are not used. A delegate takes
+no `settle`.
+
+**Result:** the child thread, in state `queued`, or the waiting child a coalescing delegate
+joined. It starts as under [`threads.launch`](#threadslaunch), as an agent's start: it may sleep
+the longest-idle thread or wait `queued`, and is never refused.
 
 **Errors:** `not_found` when the parent does not exist; `conflict` when the parent is settled,
-failed or being stopped.
+failed or being stopped, or when the newest thread waiting for a coalescing delegate's key is
+under another parent (`concurrency key <key> is waiting in another project or under another
+parent`); `invalid` for a bad `concurrency_key` or `on_busy`, with the messages under
+[`threads.launch`](#threadslaunch).
 
 ```json
 {"v": "v1", "call": "threads.delegate", "params": {"id": "c5", "parent_id": "3f2a…", "task": "Review the login test fix."}}
-{"ok":true,"result":{"id":"b836…","title":"Review the login test fix.","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto-accept-edits","state":"queued","waiting":false,"reason":null,"parent_id":"3f2a…","origin":null,"audience":"agent","created_at":"2026-10-24T18:47:29.240+00:00"}}
+{"ok":true,"result":{"id":"b836…","title":"Review the login test fix.","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto-accept-edits","state":"queued","waiting":false,"reason":null,"parent_id":"3f2a…","origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:29.240+00:00"}}
 ```
 
 ### `threads.send`
@@ -445,7 +518,7 @@ answer.
 
 ```json
 {"v": "v1", "call": "threads.send", "params": {"id": "c4", "thread_id": "3f2a…", "message": "Also run the linter.", "mode": "queue"}}
-{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","created_at":"2026-10-24T18:47:12.958+00:00"}}
+{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:12.958+00:00"}}
 ```
 
 ### `threads.list`
@@ -466,12 +539,12 @@ A thread is listed when it matches every filter given. With no filter, every thr
 
 ```json
 {"v": "v1", "call": "threads.list", "params": {"project_id": "demo-repo"}}
-{"ok":true,"result":[{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","created_at":"2026-10-24T18:47:12.958+00:00"}]}
+{"ok":true,"result":[{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:12.958+00:00"}]}
 ```
 
 ```json
 {"v": "v1", "call": "threads.list", "params": {"audience": "person"}}
-{"ok":true,"result":[{"id":"31d4…","title":"Plan the week","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"master","model":null,"permission_mode":"auto","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","created_at":"2026-10-24T23:48:37.421+00:00"}]}
+{"ok":true,"result":[{"id":"31d4…","title":"Plan the week","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"master","model":null,"permission_mode":"auto","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","concurrency_key":null,"settle":null,"created_at":"2026-10-24T23:48:37.421+00:00"}]}
 ```
 
 ### `threads.get`
@@ -484,7 +557,7 @@ A thread is listed when it matches every filter given. With no filter, every thr
 
 ```json
 {"v": "v1", "call": "threads.get", "params": {"thread_id": "3f2a…"}}
-{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","created_at":"2026-10-24T18:47:12.958+00:00"}}
+{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:12.958+00:00"}}
 ```
 
 ```json
@@ -512,14 +585,16 @@ returned as it is.
 
 ```json
 {"v": "v1", "call": "threads.stop", "params": {"id": "c6", "thread_id": "3f2a…"}}
-{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":"stopping","parent_id":null,"origin":null,"audience":"agent","created_at":"2026-10-24T18:47:12.958+00:00"}}
+{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":"stopping","parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:12.958+00:00"}}
 ```
 
 ### `threads.settle`
 
 Marks a thread done: it goes to `settled`, its queued messages are dropped and its agent process
-is closed. A settled thread takes no more messages. Settling a settled thread again returns it
-unchanged.
+is closed. It lets go of the thread's concurrency key, so the oldest thread waiting for the key
+starts (see Concurrency keys under [`threads.launch`](#threadslaunch)), and it sends a
+[`thread.settled`](#threadsettled) event without `result`. A settled thread takes no more
+messages. Settling a settled thread again returns it unchanged.
 
 | Param | Type | |
 |---|---|---|
@@ -533,7 +608,7 @@ settled`).
 
 ```json
 {"v": "v1", "call": "threads.settle", "params": {"id": "c7", "thread_id": "b836…"}}
-{"ok":true,"result":{"id":"b836…","title":"Review the login test fix.","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"settled","waiting":false,"reason":null,"parent_id":"3f2a…","origin":null,"audience":"agent","created_at":"2026-10-24T18:47:29.240+00:00"}}
+{"ok":true,"result":{"id":"b836…","title":"Review the login test fix.","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"settled","waiting":false,"reason":null,"parent_id":"3f2a…","origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-24T18:47:29.240+00:00"}}
 ```
 
 ### `threads.update`
@@ -559,7 +634,7 @@ be one of person, agent`).
 
 ```json
 {"v": "v1", "call": "threads.update", "params": {"id": "c4", "thread_id": "0844…", "audience": "person"}}
-{"ok":true,"result":{"id":"0844…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"master","model":null,"permission_mode":"auto","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","created_at":"2026-10-24T23:48:37.309+00:00"}}
+{"ok":true,"result":{"id":"0844…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"master","model":null,"permission_mode":"auto","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","concurrency_key":null,"settle":null,"created_at":"2026-10-24T23:48:37.309+00:00"}}
 ```
 
 ```json
@@ -964,7 +1039,7 @@ follow, kept 30 days (§4 Events).
 | Field | Type | |
 |---|---|---|
 | `id` | int | Grows by one or more with each event. |
-| `type` | string | One of the ten types below. |
+| `type` | string | One of the eleven types below. |
 | `at` | string | ISO 8601, UTC, with milliseconds. |
 | `thread_id` | string or null | |
 | `data` | object | Depends on `type`. |
@@ -1000,6 +1075,30 @@ whose agent process keeps exiting mid-turn fails with the reason
 
 ```json
 {"id": 37, "type": "thread.failed", "at": "2026-10-24T18:53:55.140+00:00", "thread_id": "5b7e…", "data": {"reason": "the project's root is not the top of a git repo"}}
+```
+
+### `thread.settled`
+
+The thread settled; it comes right after the `thread.state` event with state `settled`. It is
+sent for every settle: by [`threads.settle`](#threadssettle), of a failed thread too, and on a
+result for a thread launched with `settle: "on_result"` (see Settle on result under
+[`threads.launch`](#threadslaunch)).
+
+| Field | Type | |
+|---|---|---|
+| `result` | string | Only when the thread settled on its result: the result's text, cut to its first 2,000 characters, or `""` when the result had no text. |
+
+A thread launched with `"settle": "on_result"` and the message `The nightly build is green.`,
+which the test agent repeats as its result:
+
+```json
+{"id": 26, "type": "thread.settled", "at": "2026-10-25T01:28:20.771+00:00", "thread_id": "f162…", "data": {"result": "The nightly build is green."}}
+```
+
+A settle by `threads.settle`:
+
+```json
+{"id": 10, "type": "thread.settled", "at": "2026-10-25T01:28:18.517+00:00", "thread_id": "008a…", "data": {}}
 ```
 
 ### `thread.updated`

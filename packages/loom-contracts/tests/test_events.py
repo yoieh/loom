@@ -3,7 +3,7 @@ from enum import StrEnum
 from typing import get_args, get_type_hints
 
 from loom_contracts.calls import Audience
-from loom_contracts.events import EVENT_DATA, Event, EventData, EventType
+from loom_contracts.events import EVENT_DATA, Event, EventData, EventType, ThreadSettledData
 from loom_contracts.runners import Decision
 from loom_contracts.states import ThreadState, TurnState
 from loom_contracts.triggers import ScheduleAction
@@ -11,6 +11,7 @@ from loom_contracts.triggers import ScheduleAction
 DATA: dict[str, tuple[set[str], set[str]]] = {
     'thread.state': ({'state'}, {'waiting', 'reason'}),
     'thread.failed': ({'reason'}, set()),
+    'thread.settled': (set(), {'result'}),
     'thread.updated': ({'audience', 'previous_audience'}, set()),
     'turn.started': (set(), set()),
     'turn.text': ({'text'}, set()),
@@ -26,6 +27,15 @@ class EventTypeTest(unittest.TestCase):
     def test_values(self) -> None:
         self.assertTrue(issubclass(EventType, StrEnum))
         self.assertEqual({kind.value for kind in EventType}, set(DATA))
+
+
+class ThreadSettledTest(unittest.TestCase):
+    def test_the_type_and_its_data(self) -> None:
+        self.assertEqual(EventType.THREAD_SETTLED, 'thread.settled')
+        self.assertIs(EVENT_DATA[EventType.THREAD_SETTLED], ThreadSettledData)
+        self.assertIn(ThreadSettledData, get_args(EventData))
+        self.assertEqual(ThreadSettledData.__required_keys__, frozenset())
+        self.assertEqual(ThreadSettledData.__optional_keys__, frozenset({'result'}))
 
 
 class EventEnvelopeTest(unittest.TestCase):
@@ -64,6 +74,7 @@ class EventDataTest(unittest.TestCase):
             ('thread.state', 'waiting'): bool,
             ('thread.updated', 'audience'): Audience,
             ('thread.updated', 'previous_audience'): Audience,
+            ('thread.settled', 'result'): str,
             ('turn.result', 'state'): TurnState,
             ('request.closed', 'decision'): Decision,
             ('schedule.fired', 'action'): ScheduleAction,

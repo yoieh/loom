@@ -10,6 +10,7 @@ from .triggers import ScheduleAction
 class EventType(StrEnum):
     THREAD_STATE = 'thread.state'
     THREAD_FAILED = 'thread.failed'
+    THREAD_SETTLED = 'thread.settled'
     THREAD_UPDATED = 'thread.updated'
     TURN_STARTED = 'turn.started'
     TURN_TEXT = 'turn.text'
@@ -28,6 +29,10 @@ class ThreadStateData(TypedDict):
 
 class ThreadFailedData(TypedDict):
     reason: str
+
+
+class ThreadSettledData(TypedDict):
+    result: NotRequired[str]
 
 
 class ThreadUpdatedData(TypedDict):
@@ -78,6 +83,7 @@ class ScheduleFiredData(TypedDict):
 EventData = (
     ThreadStateData
     | ThreadFailedData
+    | ThreadSettledData
     | ThreadUpdatedData
     | TurnStartedData
     | TurnTextData
@@ -100,6 +106,7 @@ class Event(TypedDict):
 EVENT_DATA: dict[EventType, type] = {
     EventType.THREAD_STATE: ThreadStateData,
     EventType.THREAD_FAILED: ThreadFailedData,
+    EventType.THREAD_SETTLED: ThreadSettledData,
     EventType.THREAD_UPDATED: ThreadUpdatedData,
     EventType.TURN_STARTED: TurnStartedData,
     EventType.TURN_TEXT: TurnTextData,

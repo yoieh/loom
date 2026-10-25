@@ -317,7 +317,10 @@ class ThreadAudienceTest(TracedOpenTest):
         store, seen = self.open_traced()
         self.assertEqual(self.columns(store).count('audience'), 1)
         self.assertEqual(self.alters(seen), [
-            "ALTER TABLE threads ADD COLUMN audience TEXT NOT NULL DEFAULT 'agent'"])
+            "ALTER TABLE threads ADD COLUMN audience TEXT NOT NULL DEFAULT 'agent'",
+            'ALTER TABLE threads ADD COLUMN concurrency_key TEXT',
+            'ALTER TABLE threads ADD COLUMN settle TEXT',
+            'ALTER TABLE threads ADD COLUMN key_state TEXT'])
         alter = seen.index(self.alters(seen)[0])
         begin = max(at for at, statement in enumerate(seen[:alter])
                     if statement == 'BEGIN IMMEDIATE')

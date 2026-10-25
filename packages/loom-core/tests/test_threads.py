@@ -3,7 +3,7 @@ import unittest
 import uuid
 from pathlib import Path
 
-from loom_contracts.calls import Audience, ThreadInfo
+from loom_contracts.calls import Audience, Settle, ThreadInfo
 from loom_contracts.events import EventType
 from loom_contracts.states import ThreadState
 
@@ -75,6 +75,10 @@ class AllowedTest(ThreadsTest):
                     if state is S.FAILED:
                         self.assertEqual(logged[2]['type'], EventType.THREAD_FAILED)
                         self.assertEqual(logged[2]['data'], {'reason': 'why'})
+                        self.assertEqual(len(logged), 3)
+                    elif state is S.SETTLED:
+                        self.assertEqual(logged[2]['type'], EventType.THREAD_SETTLED)
+                        self.assertEqual(logged[2]['data'], {})
                         self.assertEqual(len(logged), 3)
                     else:
                         self.assertEqual(len(logged), 2)
@@ -181,6 +185,16 @@ class ThreadInfoTest(ThreadsTest):
                          ('claude', 'auto', 'main', 'opus', 'r', 'voice'))
         self.assertIs(info['audience'], Audience.AGENT)
         self.assertEqual(list(info)[list(info).index('origin') + 1], 'audience')
+        self.assertEqual((info['concurrency_key'], info['settle']), (None, None))
+        names = list(info)
+        self.assertEqual(names[names.index('audience') + 1:names.index('audience') + 3],
+                         ['concurrency_key', 'settle'])
+
+    def test_info_carries_the_stored_key_and_settle(self) -> None:
+        thread_id = self.insert(concurrency_key='pm:loom', settle='on_result')
+        info = thread_info(self.row(thread_id))
+        self.assertEqual(info['concurrency_key'], 'pm:loom')
+        self.assertIs(info['settle'], Settle.ON_RESULT)
 
     def test_info_carries_the_stored_audience(self) -> None:
         thread_id = self.insert(audience='person')

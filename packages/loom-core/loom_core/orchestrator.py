@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
-from loom_contracts.calls import Audience, CallName, ProjectInfo, ThreadInfo
+from loom_contracts.calls import Audience, CallName, OnBusy, ProjectInfo, Settle, ThreadInfo
 from loom_contracts.events import EventType
 from loom_contracts.runners import (
     Capability, DispatchMode, Exited, PermissionMode, PermissionRequest, Runner, RunnerEvent,
@@ -15,7 +15,7 @@ from loom_contracts.runners import (
 from loom_contracts.states import ThreadState, TurnState
 from loom_contracts.workspaces import WorkspaceStrategy
 
-from . import delegation, keys, threads
+from . import concurrency, delegation, keys, threads
 from .clock import iso
 from .errors import LoomError
 from .lanes import Lanes
@@ -28,6 +28,7 @@ from .workspaces import WorkspacePlan, make_workspace, plan_workspace
 REQUESTS = ('caller', 'any')
 DEFAULT_WORKSPACE = {'strategy': WorkspaceStrategy.WORKTREE.value}
 RECOVERED = frozenset({ThreadState.STARTING, ThreadState.RUNNING, ThreadState.IDLE})
+SETTLING = frozenset({TurnState.COMPLETED, TurnState.FAILED})
 
 
 def _params(params: object) -> dict:
@@ -80,6 +81,14 @@ def _plan(tx: sqlite3.Connection, workspace: object, project: ProjectInfo, proje
     return plan
 
 
+def _join(tx: sqlite3.Connection, key: str | None, on_busy: OnBusy, project_id: str,
+          parent_id: str | None, text: str) -> ThreadInfo | None:
+    if on_busy is not OnBusy.COALESCE or concurrency.claim(tx, key) != concurrency.WAITING:
+        return None
+    thread_id = concurrency.join(tx, key, project_id, parent_id, text)
+    return None if thread_id is None else thread_info(fetch(tx, thread_id))
+
+
 def _held(tx: sqlite3.Connection, thread_id: str) -> tuple[int, StartSource] | None:
     found = tx.execute(
         'SELECT seq, (SELECT min(source) FROM messages WHERE thread_id = ?) FROM messages '
@@ -117,6 +126,7 @@ class Orchestrator:
         self._sleepers: set[str] = set()
         self._idle_since: dict[str, datetime] = {}
         self._idle_task: asyncio.Task | None = None
+        store.on_handed = self._submit_start
 
     async def launch(self, params: object, *,
                      source: StartSource = StartSource.PERSON) -> ThreadInfo:
@@ -148,13 +158,24 @@ class Orchestrator:
         audience = Audience.AGENT
         if 'audience' in params:
             audience = _choice(_not_null(params, 'audience'), 'audience', Audience)
+        key, on_busy = concurrency.key_params(params)
+        settle = None
+        if 'settle' in params:
+            settle = _choice(_not_null(params, 'settle'), 'settle', Settle)
         command_id = params.get('id')
+        start = False
 
         def change(tx: sqlite3.Connection) -> ThreadInfo:
+            nonlocal start
             project = self.projects.get(project_id)
             mode = self.projects.effective_mode(project_id)
             thread_id = str(uuid.uuid4())
             plan = _plan(tx, workspace, project, project_id, thread_id, self.store.data_dir)
+            joined = _join(tx, key, on_busy, project_id, None, message)
+            if joined is not None:
+                return joined
+            key_state = concurrency.claim(tx, key)
+            start = key_state != concurrency.WAITING
             row = threads.insert(self.store, tx, {
                 'id': thread_id,
                 'title': title,
@@ -169,6 +190,9 @@ class Orchestrator:
                 'requests': requests,
                 'origin': origin,
                 'audience': audience,
+                'concurrency_key': key,
+                'settle': settle,
+                'key_state': key_state,
             })
             threads.add_start(tx, thread_id, source, row['created_at'])
             self._add_message(tx, thread_id, f'{command_id}:message', message, DispatchMode.STEER,
@@ -176,7 +200,7 @@ class Orchestrator:
             return thread_info(row)
 
         receipt = self.store.command(command_id, CallName.THREADS_LAUNCH, change)
-        if not receipt.replayed:
+        if not receipt.replayed and start:
             self._submit_start(receipt.answer['id'])
         return receipt.answer
 
@@ -197,9 +221,12 @@ class Orchestrator:
                 raise LoomError('invalid', f'runner {runner} is not available')
         has_model = 'model' in params
         model = _text(_not_null(params, 'model'), 'model') if has_model else None
+        key, on_busy = concurrency.key_params(params)
         command_id = params.get('id')
+        start = False
 
         def change(tx: sqlite3.Connection) -> ThreadInfo:
+            nonlocal start
             parent = fetch(tx, parent_id)
             if parent['state'] in ENDED:
                 raise LoomError('conflict', f'thread {parent_id} is {parent["state"]}')
@@ -213,6 +240,11 @@ class Orchestrator:
             thread_id = str(uuid.uuid4())
             chosen = workspace if workspace is not None else delegation.parent_workspace(parent)
             plan = _plan(tx, chosen, project, project_id, thread_id, self.store.data_dir)
+            joined = _join(tx, key, on_busy, project_id, parent_id, task)
+            if joined is not None:
+                return joined
+            key_state = concurrency.claim(tx, key)
+            start = key_state != concurrency.WAITING
             row = threads.insert(self.store, tx, {
                 'id': thread_id,
                 'title': delegation.child_title(task),
@@ -227,6 +259,8 @@ class Orchestrator:
                 'requests': parent['requests'],
                 'parent_id': parent_id,
                 'audience': Audience.AGENT,
+                'concurrency_key': key,
+                'key_state': key_state,
             })
             threads.add_start(tx, thread_id, source, row['created_at'])
             self._add_message(tx, thread_id, f'{command_id}:message', task, DispatchMode.STEER,
@@ -234,7 +268,7 @@ class Orchestrator:
             return thread_info(row)
 
         receipt = self.store.command(command_id, CallName.THREADS_DELEGATE, change)
-        if not receipt.replayed:
+        if not receipt.replayed and start:
             self._submit_start(receipt.answer['id'])
         return receipt.answer
 
@@ -456,7 +490,7 @@ class Orchestrator:
     async def _start(self, thread_id: str) -> None:
         try:
             row = self._row(thread_id)
-            if row['state'] != ThreadState.QUEUED:
+            if row['state'] != ThreadState.QUEUED or row['key_state'] == concurrency.WAITING:
                 return
             if row['stop_requested']:
                 self._move(thread_id, ThreadState.SLEEPING)
@@ -765,6 +799,7 @@ class Orchestrator:
                         event: RunnerEvent) -> None:
         current = self._sessions.get(thread_id) is session
         turn_over = False
+        settled = False
         posted = None
         with self.store.transaction() as tx:
             row = fetch(tx, thread_id)
@@ -776,7 +811,8 @@ class Orchestrator:
                 posted = self._crash(tx, row)
             elif live:
                 posted = self._post_result(tx, row, event)
-                turn_over = self._apply(tx, row, event)
+                settled = self._settle_on_result(tx, row, event)
+                turn_over = not settled and self._apply(tx, row, event)
         if current and isinstance(event, (TurnResult, Exited)):
             ended = self._turn_ends.pop(thread_id, None)
             if ended is not None and not ended.done():
@@ -787,7 +823,7 @@ class Orchestrator:
                                                                StartSource.AGENT))
         if not live:
             return
-        if isinstance(event, Exited):
+        if isinstance(event, Exited) or settled:
             self._sessions.pop(thread_id, None)
             await self._close_session(session)
             self._give_back(thread_id)
@@ -801,6 +837,18 @@ class Orchestrator:
                 or row['state'] != ThreadState.RUNNING):
             return None
         return self._post(tx, row, event)
+
+    def _settle_on_result(self, tx: sqlite3.Connection, row: sqlite3.Row,
+                          event: RunnerEvent) -> bool:
+        if (not isinstance(event, TurnResult) or event.state not in SETTLING
+                or row['settle'] != Settle.ON_RESULT or row['state'] != ThreadState.RUNNING
+                or row['stop_requested']):
+            return False
+        thread_id = row['id']
+        transition(self.store, tx, thread_id, ThreadState.SETTLED, result=event.text or '')
+        tx.execute('DELETE FROM messages WHERE thread_id = ?', (thread_id,))
+        tx.execute('DELETE FROM continuations WHERE thread_id = ?', (thread_id,))
+        return True
 
     def _post(self, tx: sqlite3.Connection, row: sqlite3.Row,
               result: TurnResult) -> tuple[str, int] | None:
