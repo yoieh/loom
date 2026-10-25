@@ -402,6 +402,9 @@ def _run(args: argparse.Namespace) -> int:
         message = f'loom: {output.escape(error.message)}'
         if follow and error.last_event_id is not None:
             message += f'; resume with --after {error.last_event_id}'
+        command_id = getattr(error, 'command_id', None)
+        if command_id is not None:
+            message += f'; retry with --id {output.escape(command_id)}'
         sys.stderr.write(message + '\n')
         return EXIT_CONNECTION
     return 0

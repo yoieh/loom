@@ -412,5 +412,79 @@ class SocketPathTest(unittest.TestCase):
             self.assertEqual(Client('/y/api.sock').socket_path, '/y/api.sock')
 
 
+class CommandIdTest(FakeServerCase):
+    def test_a_write_call_lost_after_connecting_carries_its_command_id(self) -> None:
+        client = Client(str(self.socket))
+        for method, args, kwargs, call, _ in CALLS:
+            if call not in WRITES:
+                continue
+            for chunks in ([CLOSE], [b'{"ok": true, "result"', CLOSE]):
+                for given in ({}, {'id': 'retry-1'}):
+                    with self.subTest(method=method, kwargs=kwargs, chunks=chunks, given=given):
+                        self.answer(chunks)
+                        with self.assertRaises(LoomProtocolError) as caught:
+                            getattr(client, method)(*args, **kwargs, **given)
+                        sent = self.server.requests[-1]['params']['id']
+                        self.assertEqual(caught.exception.command_id, sent)
+                        if given:
+                            self.assertEqual(sent, 'retry-1')
+                        else:
+                            self.assertTrue(is_uuid4(sent), sent)
+
+    def test_a_write_call_whose_answer_times_out_carries_its_command_id(self) -> None:
+        release = threading.Event()
+        self.addCleanup(release.set)
+        self.answer_with(lambda request: release.wait(5) and [])
+        client = Client(str(self.socket), timeout=0.2)
+        for given in ({}, {'id': 'retry-1'}):
+            with self.subTest(given=given):
+                with self.assertRaises(LoomConnectionError) as caught:
+                    client.threads_launch('demo', 'First', 'hello', **given)
+                self.assertNotIsInstance(caught.exception, LoomProtocolError)
+                sent = self.server.requests[-1]['params']['id']
+                self.assertEqual(caught.exception.command_id, sent)
+                self.assertEqual(sent, given.get('id', sent))
+
+    def test_a_write_call_that_cannot_connect_carries_no_command_id(self) -> None:
+        file = self.base / 'file'
+        file.write_text('x')
+        for path in (str(self.base / 'none.sock'), str(file), '', '\x00loom'):
+            for given in ({}, {'id': 'retry-1'}):
+                with self.subTest(path=path, given=given):
+                    with self.assertRaises(LoomConnectionError) as caught:
+                        Client(path).threads_send('t1', 'again', **given)
+                    self.assertIsNone(getattr(caught.exception, 'command_id', None))
+        self.assertEqual(self.server.requests, [])
+
+    def test_a_read_call_lost_after_connecting_carries_no_command_id(self) -> None:
+        client = Client(str(self.socket))
+        self.answer([CLOSE])
+        for method, args, kwargs, call, _ in CALLS:
+            if call in WRITES:
+                continue
+            with self.subTest(method=method, kwargs=kwargs):
+                with self.assertRaises(LoomProtocolError) as caught:
+                    getattr(client, method)(*args, **kwargs)
+                self.assertIsNone(getattr(caught.exception, 'command_id', None))
+
+    def test_a_lost_follow_carries_no_command_id(self) -> None:
+        for chunks in (stream(event(1)), [CLOSE]):
+            with self.subTest(chunks=chunks):
+                self.answer(chunks)
+                with self.assertRaises(LoomConnectionError) as caught:
+                    list(Client(str(self.socket)).follow_events())
+                self.assertIsNone(getattr(caught.exception, 'command_id', None))
+        with self.assertRaises(LoomConnectionError) as caught:
+            next(Client(str(self.base / 'none.sock')).follow_events())
+        self.assertIsNone(getattr(caught.exception, 'command_id', None))
+
+    def test_a_refused_write_is_an_api_error_with_no_command_id(self) -> None:
+        self.answer(failed('invalid', 'title must be a string'))
+        with self.assertRaises(LoomApiError) as caught:
+            Client(str(self.socket)).projects_add('Demo', '/tmp/demo', id='retry-1')
+        self.assertNotIsInstance(caught.exception, LoomConnectionError)
+        self.assertIsNone(getattr(caught.exception, 'command_id', None))
+
+
 if __name__ == '__main__':
     unittest.main()

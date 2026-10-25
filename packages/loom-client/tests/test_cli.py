@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import unittest
+import uuid
 from unittest import mock
 
 from loom_client import Client, cli
@@ -742,6 +743,78 @@ class ServeTest(CliCase):
                 contextlib.redirect_stderr(err):
             self.assertEqual(cli.main(['serve']), 2)
         self.assertEqual(err.getvalue(), 'loom: cannot start loom-service: Permission denied\n')
+
+
+class RetryHintTest(CliCase):
+    LOST = 'loom: the connection closed before a full answer line'
+
+    def write_commands(self) -> list[list[str]]:
+        return [argv for argv, call, _ in COMMANDS if call in WRITES]
+
+    def test_a_write_lost_after_it_reached_loom_says_which_id_to_retry_with(self) -> None:
+        self.assertEqual({call for _, call, _ in COMMANDS if call in WRITES}, WRITES)
+        for argv in self.write_commands():
+            for chunks in ([CLOSE], [b'{"ok": true, "result"', CLOSE]):
+                for flags in ([], ['--json']):
+                    with self.subTest(argv=argv, chunks=chunks, flags=flags):
+                        self.answer(chunks)
+                        code, out, err = self.run_cli(*flags, *argv)
+                        self.assertEqual((code, out), (3, ''))
+                        sent = self.server.requests[-1]['params']['id']
+                        self.assertEqual(uuid.UUID(sent).version, 4)
+                        self.assertEqual(err, f'{self.LOST}; retry with --id {sent}\n')
+
+    def test_a_given_id_is_printed_and_retrying_with_it_sends_the_same_id(self) -> None:
+        for argv in (['threads', 'launch', 'demo', 'First', 'hello'],
+                     ['--json', 'projects', 'add', 'Demo', '/tmp/demo'],
+                     ['schedules', 'remove', 's1']):
+            with self.subTest(argv=argv):
+                self.answer([CLOSE])
+                code, out, err = self.run_cli(*argv, '--id', 'retry-1')
+                self.assertEqual((code, out), (3, ''))
+                self.assertEqual(err, f'{self.LOST}; retry with --id retry-1\n')
+                printed = err.rstrip('\n').rsplit('; retry with --id ', 1)[1]
+                self.answer(ok(thread_info()))
+                self.assertEqual(self.run_cli(*argv, '--id', printed)[0], 0)
+                ids = [request['params']['id'] for request in self.server.requests[-2:]]
+                self.assertEqual(ids, ['retry-1', 'retry-1'])
+
+    def test_a_given_id_with_a_control_character_prints_escaped_on_one_line(self) -> None:
+        self.answer([CLOSE])
+        code, out, err = self.run_cli('threads', 'send', 't1', 'hi', '--id', 'a\nb\x1b')
+        self.assertEqual((code, out), (3, ''))
+        self.assertEqual(err, f'{self.LOST}; retry with --id a\\nb\\x1b\n')
+        self.assertEqual(err.count('\n'), 1)
+        self.assertEqual(self.server.requests[-1]['params']['id'], 'a\nb\x1b')
+
+    def test_a_write_that_cannot_reach_loom_has_no_retry_hint(self) -> None:
+        path = str(self.base / 'none.sock')
+        for argv in self.write_commands():
+            for given in ([], ['--id', 'retry-1']):
+                with self.subTest(argv=argv, given=given):
+                    code, out, err = self.run_cli(*argv, *given, socket=path)
+                    self.assertEqual((code, out), (3, ''))
+                    self.assertTrue(err.startswith(f'loom: cannot reach Loom at {path}: '), err)
+                    self.assertNotIn('retry with', err)
+                    self.assertEqual(err.count('\n'), 1)
+
+    def test_a_read_lost_after_it_reached_loom_has_no_retry_hint(self) -> None:
+        self.answer([CLOSE])
+        for argv in (['projects', 'list'], ['threads', 'get', 't1'], ['threads', 'events']):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_cli(*argv)
+                self.assertEqual((code, out, err), (3, '', f'{self.LOST}\n'))
+        self.answer(stream(event(4)))
+        code, _, err = self.run_cli('threads', 'events', '--follow')
+        self.assertEqual(code, 3)
+        self.assertTrue(err.endswith('; resume with --after 4\n'), err)
+        self.assertNotIn('retry with', err)
+
+    def test_an_api_error_on_a_write_has_no_retry_hint(self) -> None:
+        self.answer(failed('invalid', 'bad input'))
+        for argv in self.write_commands():
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_cli(*argv), (1, '', 'loom: invalid: bad input\n'))
 
 
 if __name__ == '__main__':
