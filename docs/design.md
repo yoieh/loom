@@ -34,7 +34,8 @@ through T3's own tools.
   uuid, §73.4), a runner (`claude`, `codex` or `t3`), a project, a workspace (§5), a title, an
   optional parent thread and an optional `origin` (the client or schedule that started it), an
   audience (`person` or `agent`, §15), and a state (§4). Codex picks its own thread id
-  (`thread.started`), so its runner keeps that id in `<data_dir>/codex/<thread id>`.
+  (`thread.started`), so its runner keeps that id in `<data_dir>/codex/<loom thread id>`, a file
+  named by Loom's thread id that holds Codex's.
 - **Turn**: one message, or several that steer it, up to the agent's `result`.
 - **Task**: a thread another thread started with `delegate`, whose result goes back to its
   parent.
@@ -168,8 +169,8 @@ class RunnerSession(Protocol):
   exec resume <thread_id> --json -` after, as §73.4.1 with §73.13 rows 13–17. Its capabilities
   are `interrupt` and `resume`: Codex never asks, so it has no `permission_requests`, and `exec`
   takes no message mid-turn, so it has no `steer`. It keeps Codex's thread id (from
-  `thread.started`) in `<data_dir>/codex/<thread id>` (directory 0700, file 0600) to resume
-  after a sleep or a restart.
+  `thread.started`) in `<data_dir>/codex/<loom thread id>`, a file named by Loom's thread id
+  that holds Codex's (directory 0700, file 0600), to resume after a sleep or a restart.
 - **`loom-runner-t3`**: drives a T3 thread through T3's own API when T3 is installed and
   paired, so a project can keep its threads in T3. Built last.
 - **Environment.** Each agent gets an allowlisted environment (§73.13 row 12) plus
