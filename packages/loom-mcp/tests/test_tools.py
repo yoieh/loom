@@ -11,6 +11,7 @@ EVENT_TRIGGER = {'type': 'event', 'topic': 'factory.run.status', 'project_id': '
                  'match': {'to': 'done'}, 'hops_max': 2, 'rate_max': 5}
 WORKSPACE = {'strategy': 'worktree', 'branch': 'fix', 'base': 'main'}
 MAY_HAVE_RUN = 'the call may have run, so check with threads or schedules before calling again'
+MAY_HAVE_EMITTED = 'the signal may have been written, and emitting it again writes a second one'
 LOST = 'the connection closed before a full answer line'
 
 VALID = {
@@ -552,8 +553,8 @@ class RetryTest(ToolsCase):
 
     def test_every_write_is_retried_once_with_the_same_id(self) -> None:
         writes = [('delegate', 'threads.delegate'), ('task_cancel', 'threads.stop'),
-                  ('thread_send', 'threads.send'), ('emit', 'signals.emit'),
-                  ('schedule', 'schedules.add'), ('unschedule', 'schedules.remove')]
+                  ('thread_send', 'threads.send'), ('schedule', 'schedules.add'),
+                  ('unschedule', 'schedules.remove')]
         mcp = self.start_thread()
         for tool, call in writes:
             with self.subTest(tool=tool):
@@ -564,6 +565,15 @@ class RetryTest(ToolsCase):
                 self.assertEqual(len(sent), 2)
                 self.assertEqual(sent[0], sent[1])
                 self.assert_command_id(sent[0])
+
+    def test_two_dropped_emits_say_a_second_emit_writes_a_second_signal(self) -> None:
+        self.loom.on('signals.emit', dropped())
+        mcp = self.start_thread()
+        self.assertEqual(mcp.tool('emit', VALID['emit']), (f'{LOST}; {MAY_HAVE_EMITTED}', True))
+        self.assertEqual(self.loom.names(), ['signals.emit', 'signals.emit'])
+        first, second = (params for _, params in self.loom.calls)
+        self.assertEqual(first, second)
+        self.assert_command_id(first)
 
     def test_a_dropped_read_is_not_retried(self) -> None:
         reads = [('threads', 'threads.list'), ('schedules', 'schedules.list'),
@@ -591,6 +601,13 @@ class RetryTest(ToolsCase):
         text, is_error = mcp.tool('thread_send', VALID['thread_send'])
         self.assertTrue(is_error)
         self.assertTrue(text.endswith(MAY_HAVE_RUN), text)
+
+    def test_an_unreachable_loom_fails_emit_with_its_own_text(self) -> None:
+        mcp = self.start_thread(LOOM_SOCKET=str(self.base / 'none.sock'))
+        text, is_error = mcp.tool('emit', VALID['emit'])
+        self.assertTrue(is_error)
+        self.assertTrue(text.startswith(f"cannot reach Loom at {self.base / 'none.sock'}"), text)
+        self.assertTrue(text.endswith(MAY_HAVE_EMITTED), text)
 
     def test_no_socket_path_is_a_tool_error(self) -> None:
         mcp = self.start_thread(LOOM_SOCKET='')

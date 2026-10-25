@@ -2435,10 +2435,14 @@ an empty `title`, a `runner` or a trigger, are checked by the server, and its an
 stop, `thread_send`, `emit`, `schedule` and `unschedule`) sends a new command id. When the connection
 fails before the answer, it sends the same request once more with the same id, so a call that
 already ran returns its first answer and runs only once (see
-[Command ids](#command-ids-and-safe-retries)). When that fails too, the text is the error's
+[Command ids](#command-ids-and-safe-retries)). When that fails too, the text for `launch_thread`,
+`delegate`, `task_cancel`'s stop, `thread_send`, `schedule` and `unschedule` is the error's
 message followed by `; the call may have run, so check with threads or schedules before calling
-again`. A read (`threads`, `schedules`, `task_status`, and the `threads.get` calls) is not tried
-again.
+again`. For `emit` it is the error's message followed by
+`; the signal may have been written, and emitting it again writes a second one`, because a new
+call sends a new command id and only a retry with the same id writes no second event (see
+[`signals.emit`](#signalsemit)). A read (`threads`, `schedules`, `task_status`, and the
+`threads.get` calls) is not tried again.
 
 ### Example
 
