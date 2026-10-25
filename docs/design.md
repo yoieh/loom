@@ -117,7 +117,8 @@ Rules, each checked by a packaging test:
   way down. An interrupted turn leaves its thread `idle`; when the turn has not ended 5 s after
   the interrupt (`stop_grace`), or the runner can't interrupt, the process is closed and the
   thread is `sleeping`, as is a thread stopped before it started. A stopped child's result is
-  not posted to its parent.
+  not posted to its parent. A thread that is being stopped can't delegate or launch (`conflict`),
+  so nothing it starts escapes the stop.
 - **Events.** Each change of state, each turn's text and tool lines, each request and each
   `result` is an event with a growing id, kept 30 days. The state tables are the truth; events
   are a log for clients to follow, not something state is rebuilt from.
@@ -239,22 +240,29 @@ class RunnerSession(Protocol):
 
 Starting a session is one tool call for any agent. `loom-mcp` is a stdio MCP server that
 `loom install` registers with Claude Code (user scope) and Codex (`codex mcp add`, with
-`env_vars = ["LOOM_THREAD"]`, §73.13 row 13). It knows its thread from `LOOM_THREAD`, else
-`CLAUDE_CODE_SESSION_ID`; an agent Loom didn't start (a terminal, T3) still gets the tools and
-is recorded as an outside thread.
+`env_vars = ["LOOM_THREAD", "LOOM_SOCKET", "XDG_RUNTIME_DIR"]`, §73.13 row 13, because Codex
+passes an MCP server only its table's `env` and `env_vars`, §73.13 item 9). It knows its thread
+from `LOOM_THREAD` when that is set and not empty, else from `CLAUDE_CODE_SESSION_ID` when
+`threads.get` finds that id. An agent Loom didn't start (a terminal, T3) still gets the tools
+and is recorded as an outside thread: v1 has no call that registers it, so each `launch_thread`
+records it in the new thread's `origin`, `outside:<CLAUDE_CODE_SESSION_ID>` or else `outside` (a
+Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `delegate` or use
+`task_status` and `task_cancel`.
 
 | Tool | Does | Like T3's |
 |---|---|---|
-| `launch_thread {title, message, project?, workspace?, runner?, model?}` | a new top-level thread | `t3_thread_launch` |
+| `launch_thread {title, message, project_id?, workspace?, runner?, model?, audience?}` | a new top-level thread | `t3_thread_launch` |
 | `delegate {task, workspace?, runner?, model?}` → `task_id` | a child thread; its last `result` is posted back to the parent | `delegate_task` |
 | `task_status {task_id}`, `task_cancel {task_id}` | read or stop a child | same |
 | `thread_send {thread_id, message, mode?}` | a message into a thread | `t3_thread_send` |
-| `threads {project?}` | threads and their states | `t3_thread_list` |
+| `threads {project_id?}` | threads and their states | `t3_thread_list` |
 | `schedule {…}`, `schedules {}`, `unschedule {id}` | §7 | `schedule_task` and friends |
 
 - No depth or count limits: a task can delegate, and a thread can have any number of tasks.
   Every thread records where it came from, and Stop reaches all the way down (§4).
 - The tools act in registered projects only.
+- No tool adds a project, changes a project's mode or takes a permission mode. A thread a tool
+  starts gets its project's mode (§11).
 
 ## §10 Clients
 

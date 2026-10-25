@@ -161,7 +161,20 @@ class Service:
             remove()
 
     async def _launch(self, params: object, caller: Caller) -> ThreadInfo:
+        thread_id = caller.thread_id
+        if thread_id is not None and caller.schedule_id is None and not caller.scheduled:
+            if self._stopping(_params(params).get('id'), thread_id):
+                raise LoomError('conflict', f'thread {thread_id} is stopping')
         return await self.orchestrator.launch(params, source=_source(caller))
+
+    def _stopping(self, command_id: object, thread_id: str) -> bool:
+        with self.store.transaction() as tx:
+            if isinstance(command_id, str) and tx.execute(
+                    'SELECT 1 FROM commands WHERE id = ?', (command_id,)).fetchone():
+                return False
+            row = tx.execute(
+                'SELECT stop_requested FROM threads WHERE id = ?', (thread_id,)).fetchone()
+        return row is not None and bool(row[0])
 
     async def _delegate(self, params: object, caller: Caller) -> ThreadInfo:
         return await self.orchestrator.delegate(params, source=StartSource.AGENT)

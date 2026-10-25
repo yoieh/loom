@@ -254,7 +254,7 @@ class UsageTest(CliCase):
 
     def test_help_lists_the_commands_and_exits_0(self) -> None:
         for argv, names in (
-            (['--help'], ['serve', 'threads', 'projects', 'schedules']),
+            (['--help'], ['serve', 'install', 'threads', 'projects', 'schedules']),
             (['threads', '--help'],
              ['launch', 'delegate', 'send', 'list', 'get', 'stop', 'settle', 'update',
               'events']),
