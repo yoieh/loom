@@ -303,11 +303,15 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   with `runCount` 0 and no items (*seen*, T3 0.1.2). Its id is stored at once; the first
   message then goes through `send`. A launch has no retry key, so it is never retried by
   itself: a crash between the launch and storing the id leaves at most one empty, idle T3
-  thread. `resume` reads the stored id and checks it with `t3_thread_read`; a thread that is
-  gone or archived in T3 fails the start. A thread T3 doesn't know is an `isError` result
-  with code `thread_not_found` ("Thread <id> is no longer available."). An archived thread
-  reads as before, with `thread.archived` `true`, so the runner checks that field (*seen*,
-  T3 0.1.2).
+  thread. The MCP client's one retry after T3 dropped the MCP session (400 `-32600`, or 404;
+  the Transport bullet) covers the launch too: the client initializes again and sends the same
+  `t3_thread_launch` once more, and the launch still runs at most once, since T3 refuses such a
+  request before any tool runs. A launch is never retried after a timeout or a connection
+  error, since T3 may already have acted. `resume` reads the stored id and checks it with
+  `t3_thread_read`; a thread that is gone or archived in T3 fails the start. A thread T3
+  doesn't know is an `isError` result with code `thread_not_found` ("Thread <id> is no longer
+  available."). An archived thread reads as before, with `thread.archived` `true`, so the
+  runner checks that field (*seen*, T3 0.1.2).
 - **Send and interrupt.** `t3_thread_send {threadId, message, mode, clientRequestId}`, with
   `steer` → `steer`, `queue` → `queue` and `interrupt` → `restart`. `RunnerSession.send`
   carries no Loom command id (§4), so the runner makes a new `clientRequestId` (a uuid4) per
