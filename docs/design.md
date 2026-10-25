@@ -35,7 +35,8 @@ through T3's own tools.
   optional parent thread and an optional `origin` (the client or schedule that started it), an
   audience (`person` or `agent`, §15), and a state (§4). Codex picks its own thread id
   (`thread.started`), so its runner keeps that id in `<data_dir>/codex/<loom thread id>`, a file
-  named by Loom's thread id that holds Codex's.
+  named by Loom's thread id that holds Codex's. T3 picks its own too, kept the same way in `<data_dir>/t3/`
+  (§6.1).
 - **Turn**: one message, or several that steer it, up to the agent's `result`.
 - **Task**: a thread another thread started with `delegate`, whose result goes back to its
   parent.
@@ -179,7 +180,7 @@ class RunnerSession(Protocol):
   named by Loom's thread id that holds Codex's (directory 0700, file 0600), to resume after a
   sleep or a restart.
 - **`loom-runner-t3`**: drives a T3 thread through T3's own API when T3 is installed and
-  paired, so a project can keep its threads in T3. Built last.
+  paired, so a project can keep its threads in T3. Built last; its contract is §6.1.
 - **Environment.** Each agent gets an allowlisted environment (§73.13 row 12) plus
   `LOOM_THREAD=<thread id>`, `LOOM_SOCKET`, the provider settings and the agent token from a
   0600 file in Loom's data dir (§73.13 row 11). For Claude, the host keys are the settings
@@ -190,6 +191,110 @@ class RunnerSession(Protocol):
   is appended to `PATH`) and `codex_home` (→ `CODEX_HOME`), and the secret `agent-token` (→
   `CLIPROXY_API_KEY`, for Codex only). Arguments are lists, never a shell string; a message
   never goes in argv.
+
+### §6.1 The T3 runner
+
+Written 2026-10-25 with the user, through Bertil, so that LM-10 has a contract to build
+against. It rests on Thread Voice, which already drives T3 as an outside client: its
+`docs/design-stage5.md` §53 (cited here as TV §53) holds the spike that paired with T3 0.1.0
+and the client built from it. What TV §53 observed is marked *seen*; what comes only from
+T3's tool descriptions is marked *schema*, and LM-10 checks it against T3 first.
+
+The user decided two things by voice that day: Loom pairs with full access, as Thread Voice
+does; and, since T3's API can't answer a permission prompt, a T3 thread's prompts are
+answered in T3's own app. That makes the T3 runner the way for a project to stay in T3, not
+the main path: "då känns det också som att vi kanske inte kommer använda så mycket av T3.
+Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the main path.
+
+- **Transport.** T3's MCP endpoint over HTTP: `POST {origin}/mcp`, JSON-RPC 2.0, MCP protocol
+  `2025-06-18`, every answer `application/json` (*seen*; an SSE body is accepted too, in case
+  T3 changes). The origin is loopback, `http://127.0.0.1:<port>`, and T3 picks the port; the
+  runner reads it from `<t3_home>/userdata/server-runtime.json` (`origin`). One `initialize`
+  and `notifications/initialized` per runner, whose `Mcp-Session-Id` goes on every later call;
+  T3 answers 400 (`-32600`) without it and 404 for an unknown one, and then the runner
+  initializes again and retries once (*seen*). The client is stdlib `http.client`, run with
+  `asyncio.to_thread`, with a 10 s timeout per call. Loom only connects out to loopback and
+  still binds nothing (§11).
+- **The origin check.** Before every call the runner reads `server-runtime.json` and sends
+  nothing unless it names the origin the credential was paired with, so the token never goes
+  to another address (TV §53 Security). The check is made again on the next call.
+- **Logging in.** Each call carries `Authorization: Bearer <access_token>`. The token is an
+  MCP client session: 30 days, no refresh (*seen*). A 401 (`invalid_mcp_credential`) means not
+  paired; the user pairs again.
+- **Pairing**, once, with `loom t3 pair`, which runs `python -m loom_runner_t3 pair` as
+  `loom serve` runs `loom-service` (§8). It is T3's MCP OAuth, approved headlessly with no
+  browser, as Thread Voice's `pair-t3` does (TV §53, item 1):
+  1. register `client_name` "Loom" at `/oauth/mcp/register`, with one loopback redirect URI
+     (`token_endpoint_auth_method: none`). Nothing ever listens on it: Loom reads the redirect
+     from T3's answer and never follows it, so it binds no port to pick one. It tries
+     `http://127.0.0.1/loom/callback` first; if T3 wants a port, a fixed one is written in;
+  2. PKCE `S256`: `GET /oauth/mcp/authorize`, then `POST /oauth/mcp/approval`;
+  3. run `t3 auth pairing create` with the four full-access scopes (`orchestration:read`,
+     `orchestration:operate`, `settings:write`, `source-control:write`), `--ttl 5m`,
+     `--label "Loom pairing"` and `--json`. The `t3` CLI is the setting `t3_bin`, by default
+     `<t3_home>/runtime/versions/<serverVersion>/t3`; its output, which holds the code, is
+     never shown;
+  4. `POST /oauth/mcp/decision` with the code (`access: full-access`); check that the
+     `redirectTo` it answers has the same `state`, `iss` and redirect URI;
+  5. exchange the code at `/oauth/mcp/token` within 60 s, and find the new session's id in
+     `t3 auth session list --json` by its label.
+
+  It prints "Paired as 'Loom' (full access, 30 days). Remove it with `loom t3 unpair` or in T3
+  Settings → Connections." Pairing again revokes the old session. `loom t3 unpair` revokes
+  the stored session (`t3 auth session revoke <id>`) and deletes the file; `loom t3 status`
+  says whether Loom is paired and how many days are left, and warns under 7.
+- **The secret** is `<data_dir>/t3-client.json`, mode 0600: `{origin, access_token,
+  expires_at, session_id, client_id, scope}`. The runner gets it as `RunnerHost.secret
+  ('t3-client')`, which the host reads with the same checks as `agent-token`. It never goes
+  into a log, argv, an event or an error text; the runner replaces the token with
+  `[redacted]` in every reason, as §11 says for `loom-runner-claude`.
+- **Settings.** `t3_home` (default `~/.t3`) and `t3_bin` (above), through `RunnerHost.setting`.
+- **Access.** The pairing asks for full access, T3's ceiling, so Loom can start a T3 thread in
+  a project of any mode. Every launch passes `runtimeMode` as the thread's `permission_mode`,
+  so the ceiling never widens a thread (§11); T3 honours a lower mode (*seen*).
+- **Thread ids.** T3 picks its own (`mcp:<uuid>`, *seen*). As for Codex, the runner keeps it in
+  `<data_dir>/t3/<loom thread id>` (directory 0700, file 0600).
+- **Projects and workspaces.** A Loom project uses the T3 project whose `workspaceRoot` is the
+  same path, found with `t3_project_list`. If there is none, the start fails with "no T3
+  project at <path>"; Loom never creates T3 projects. Loom makes the workspace itself (§5) and
+  passes `{type: "root"}` for a project's root or `{type: "existing_worktree", worktreePath,
+  branch}` for a worktree it made, which is a git worktree of the same repo, as T3 requires
+  (*schema*).
+- **Model.** With no `model`, the runner passes T3's `defaultModelSelection` from
+  `<t3_home>/userdata/settings.json`, read-only, since a launch with none fails in a project
+  with no default (*seen*). A `model` of the form `<instance>/<model>` sets both; a bare model
+  keeps the default's instance.
+- **Start.** A new thread is `t3_thread_launch {projectId, title, workspaceStrategy,
+  runtimeMode, modelSelection}` with no message, so it starts idle (*schema*), and its id is
+  stored at once; the first message then goes through `send`. A launch has no retry key, so it
+  is never retried by itself: a crash between the launch and storing the id leaves at most one
+  empty, idle T3 thread. `resume` reads the stored id and checks it with `t3_thread_read`; a
+  thread that is gone or archived in T3 fails the start.
+- **Send and interrupt.** `t3_thread_send {threadId, message, mode, clientRequestId}`, with
+  `steer` → `steer`, `queue` → `queue` and `interrupt` → `restart`; the `clientRequestId` is
+  derived from the Loom command id (§4), so a retry sends once (*schema*; TV §53 found no retry
+  key on 0.1.0). `interrupt` is `t3_thread_interrupt {threadId, clientRequestId}`.
+- **Events.** T3's MCP sends no stream, so a session polls `t3_thread_read {view: "activity",
+  afterPosition}`: every second while the thread is `running` or has a queued run, and every
+  15 s while it is idle, so a turn the user starts in T3's own app is seen too. A run that
+  starts is `turn.started`; a `user_message` item is `entered`; a completed assistant item is
+  `text` (T3 shows it only when complete, *seen*); a tool item is `tool`; a run that ends is
+  `result`, completed, failed or stopped. The exact item and run state names come from a
+  stream LM-10 records from a real T3 thread first, which also becomes the replay tests (§3).
+- **Capabilities:** `steer`, `interrupt` and `resume`, not `permission_requests`.
+  `t3_pending_request_respond` "cannot approve a permission request" (*schema*), so a T3
+  thread's permission prompts and questions are answered in T3, by the user, as today. While
+  one is open (`pendingRequestCount`) the thread stays `running`.
+- **Sleep and close.** T3 owns the agent's process. `close` only stops polling and emits
+  `exited`; it never stops, settles or archives the T3 thread. Stop (§4) uses `interrupt`.
+- **Errors** are one line, `t3: <code>: <message>`, cut to 200 characters, from T3's `isError`
+  results (*seen*). A 401 is "t3: not paired (run loom t3 pair)"; a failed origin check is
+  "t3: T3 is not running at the paired address". At start they are start errors; during a
+  turn they end it `failed`. A missing or expired `t3-client` secret fails the start with the
+  same not-paired text, and Loom without T3 works as before.
+- **Tests** never reach a real T3: the MCP client takes its HTTP call as an argument, so tests
+  pass a fake, and pairing runs against a fake `t3` CLI. The recorded stream above, with
+  tokens and ids replaced, is played into a session as the other runners' replay tests are.
 
 ## §7 The scheduler
 
@@ -316,6 +421,10 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
   binary and the OS error only, replaces the token with `[redacted]`, and cuts each such text to
   500 characters.
 - `interval` is at least 60 s, so a mistake can't start a thread every second.
+- Pairing with T3 (§6.1) makes Loom a full-access T3 client. Its token is the `t3-client`
+  secret, sent only to the loopback origin it was paired with; a thread Loom starts in T3 gets
+  its project's mode, never the ceiling; and the user can revoke it with `loom t3 unpair` or in
+  T3 Settings → Connections.
 - Webhooks (later) get T3's checks: a per-schedule random secret compared in constant time,
   optional HMAC-SHA256 signatures, a rate limit and a cap on queued deliveries.
 
