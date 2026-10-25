@@ -153,7 +153,7 @@ class HostTest(ScheduleCase):
         with self.assertRaises(ScheduleError) as caught:
             await host.call('requests.respond', {}, Maker(None, True, 's1'))
         self.assertEqual((caught.exception.code, caught.exception.message),
-                         ('invalid', 'requests.respond is not served yet'))
+                         ('invalid', 'request_id is required'))
 
 
 class CallsTest(ScheduleCase):

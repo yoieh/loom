@@ -31,6 +31,7 @@ class FakeSession:
         self.closed = False
         self.closing = False
         self.fail_send: Exception | None = None
+        self.fail_respond: Exception | None = None
         self.fail_interrupt: Exception | None = None
         self._queue: asyncio.Queue = asyncio.Queue()
         self.events: AsyncIterator[RunnerEvent] = self._stream()
@@ -53,6 +54,9 @@ class FakeSession:
         self.sent.append((message, mode))
 
     async def respond(self, request_id: str, answer: RequestAnswer) -> None:
+        if self.fail_respond is not None:
+            error, self.fail_respond = self.fail_respond, None
+            raise error
         self.responses.append((request_id, answer))
 
     async def interrupt(self) -> None:

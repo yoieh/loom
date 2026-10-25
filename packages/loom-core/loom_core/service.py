@@ -15,7 +15,7 @@ from .store import MAX_EVENT_ID, MAX_EVENTS, Store
 SERVED: tuple[str, ...] = (
     'threads.launch', 'threads.delegate', 'threads.send', 'threads.list', 'threads.get',
     'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
-    'projects.set_mode', 'projects.remove', 'projects.list',
+    'projects.set_mode', 'projects.remove', 'projects.list', 'requests.respond',
 )
 
 
@@ -66,6 +66,14 @@ def _is_person(caller: Caller) -> bool:
     return caller.thread_id is None and caller.verified is True
 
 
+def _identity(caller: Caller) -> str | None:
+    if caller.scheduled or caller.schedule_id is not None:
+        return None
+    if caller.thread_id is not None:
+        return f'thread:{caller.thread_id}'
+    return 'person' if caller.verified is True else None
+
+
 def _source(caller: Caller) -> StartSource:
     if caller.scheduled:
         return StartSource.SCHEDULE
@@ -111,6 +119,7 @@ class Service:
             'projects.set_mode': self._set_mode,
             'projects.remove': self._remove_project,
             'projects.list': self._list_projects,
+            'requests.respond': self._respond,
         }
 
     def method(self, call: object) -> Method:
@@ -165,7 +174,8 @@ class Service:
         if thread_id is not None and caller.schedule_id is None and not caller.scheduled:
             if self._stopping(_params(params).get('id'), thread_id):
                 raise LoomError('conflict', f'thread {thread_id} is stopping')
-        return await self.orchestrator.launch(params, source=_source(caller))
+        return await self.orchestrator.launch(params, source=_source(caller),
+                                              launcher=_identity(caller))
 
     def _stopping(self, command_id: object, thread_id: str) -> bool:
         with self.store.transaction() as tx:
@@ -224,3 +234,7 @@ class Service:
     async def _list_projects(self, params: object, caller: Caller) -> list[ProjectInfo]:
         _params(params)
         return self.projects.list()
+
+    async def _respond(self, params: object, caller: Caller) -> ThreadInfo:
+        return await self.orchestrator.respond(params, answerer=_identity(caller),
+                                               answerer_thread=caller.thread_id)

@@ -10,6 +10,7 @@ from unittest import mock
 from loom_contracts.calls import CallName
 from loom_contracts.events import EventType
 
+from loom_core import threads
 from loom_core.clock import iso, utc_now
 from loom_core.errors import LoomError
 from loom_core.store import DB_NAME, MAX_COMMAND_ID, SCHEMA, Receipt, Store
@@ -299,12 +300,7 @@ class ThreadAudienceTest(TracedOpenTest):
     def audiences(self, store: Store) -> list[tuple[str, str]]:
         return store.connection.execute('SELECT id, audience FROM threads').fetchall()
 
-    def test_a_new_store_has_the_column_from_its_schema(self) -> None:
-        store, seen = self.open_traced()
-        self.assertEqual(self.columns(store).count('audience'), 1)
-        self.assertEqual(self.alters(seen), [])
-
-    def test_an_old_store_gains_the_column_once_and_its_rows_read_as_agent(self) -> None:
+    def make_old_store(self) -> None:
         self.data_dir.mkdir(mode=0o700)
         db = sqlite3.connect(self.data_dir / DB_NAME)
         db.execute(OLD_THREADS)
@@ -314,13 +310,23 @@ class ThreadAudienceTest(TracedOpenTest):
                    "'idle', 'now', 'now')")
         db.commit()
         db.close()
+
+    def test_a_new_store_has_the_column_from_its_schema(self) -> None:
+        store, seen = self.open_traced()
+        self.assertEqual(self.columns(store).count('audience'), 1)
+        self.assertEqual(self.columns(store).count('launched_by'), 1)
+        self.assertEqual(self.alters(seen), [])
+
+    def test_an_old_store_gains_the_column_once_and_its_rows_read_as_agent(self) -> None:
+        self.make_old_store()
         store, seen = self.open_traced()
         self.assertEqual(self.columns(store).count('audience'), 1)
         self.assertEqual(self.alters(seen), [
             "ALTER TABLE threads ADD COLUMN audience TEXT NOT NULL DEFAULT 'agent'",
             'ALTER TABLE threads ADD COLUMN concurrency_key TEXT',
             'ALTER TABLE threads ADD COLUMN settle TEXT',
-            'ALTER TABLE threads ADD COLUMN key_state TEXT'])
+            'ALTER TABLE threads ADD COLUMN key_state TEXT',
+            'ALTER TABLE threads ADD COLUMN launched_by TEXT'])
         alter = seen.index(self.alters(seen)[0])
         begin = max(at for at, statement in enumerate(seen[:alter])
                     if statement == 'BEGIN IMMEDIATE')
@@ -334,6 +340,13 @@ class ThreadAudienceTest(TracedOpenTest):
         self.assertEqual(self.columns(again).count('audience'), 1)
         self.assertEqual(self.alters(seen), [])
         self.assertEqual(self.audiences(again), [('t1', 'agent')])
+
+    def test_an_old_stores_threads_read_launched_by_as_null(self) -> None:
+        self.make_old_store()
+        store, _ = self.open_traced()
+        self.assertEqual(threads.fetch(store.connection, 't1')['launched_by'], None)
+        self.assertEqual(store.connection.execute(
+            'SELECT count(*) FROM permission_requests').fetchone(), (0,))
 
 
 if __name__ == '__main__':

@@ -226,11 +226,19 @@ class RunnerSession(Protocol):
 - **Transport.** `loom serve` listens on `$XDG_RUNTIME_DIR/loom/api.sock` (user-only, mode
   0600), JSON lines. A local client needs no token and nothing listens on a port. A remote
   client waits for a relay and is not covered.
-- **Requests.** A permission prompt is a `request.opened` event any client can answer with
-  `requests.respond`; the first answer wins and the rest see `request.closed`. A launch can say
-  `requests: "caller"`, so only the client that launched it answers (the factory, for its own
-  workers). With no answer in `request_timeout` (default 600 s), Loom denies, since the agent
-  would otherwise wait forever (§73.13 row 5).
+- **Requests.** A permission prompt is a `request.opened` event, answered with
+  `requests.respond`; the first answer wins and the rest see `request.closed`. By default
+  (`requests: "any"`) any caller may answer. A launch can say `requests: "caller"`, so only the
+  launcher of the thread's top-level thread answers: that Loom thread, or, for a launch from
+  outside Loom, the user's outside clients, which Loom does not tell apart (the factory and
+  Thread Voice both count as the user); a schedule's launch has no launcher, so nobody does. A
+  delegating agent never answers its child's requests under `caller`, and a thread never
+  answers its own, under either. These rules guard against an agent's own calls; they are not a
+  sandbox (`docs/api.md`, Who may answer a request). With no answer in
+  `request_timeout` (default 600 s), Loom denies, since the agent would otherwise wait forever
+  (§73.13 row 5); a request still open when its turn ends is closed as denied. Telling one
+  outside client from another (so the factory alone answers its workers) is later work, and can
+  be added to `v1`.
 - **`loom-client`**: a stdlib-only Python API for every call, and the `loom` CLI with one
   command per call and `--json` output; `loom threads events --follow` prints the stream as
   JSON lines, so a client in any language can use Loom by running the CLI.
@@ -290,8 +298,8 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
 - A thread an agent starts, and a schedule it makes, gets the target project's permission mode,
   never the caller's if that is wider (T3's `DispatchModeLimit.ts`). So an agent can't start a
   `full-access` thread from an `approval-required` one.
-- Only a client answers a request; Loom never allows anything on its own, and denies on
-  timeout.
+- Only a client answers a request, never the thread that asked; Loom never allows anything on
+  its own, and denies on timeout.
 - Agent-written text in events is data: clients show it as text, capped at 2,000 characters per
   entry.
 - A runner's error texts and turn failure reasons never hold the environment or the agent token.

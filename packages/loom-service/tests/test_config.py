@@ -116,6 +116,22 @@ class ConfigTest(unittest.TestCase):
         self.assert_refused('claude_bin = 4', 'claude_bin must be a string')
         self.assert_refused('permission_mode = 1', 'permission_mode must be a string')
 
+    def test_request_timeout_defaults_to_600_and_loads_a_value(self) -> None:
+        self.assertEqual(Config().request_timeout, 600)
+        self.assertEqual(self.load('claude_bin = "/opt/claude"\n').request_timeout, 600)
+        config = self.load('request_timeout = 30\n')
+        self.assertEqual(config.request_timeout, 30)
+        self.assertIs(type(config.request_timeout), int)
+
+    def test_request_timeout_refuses_anything_but_1_or_more(self) -> None:
+        for value in ('0', '-1', '"60"', '1.5', 'true'):
+            with self.subTest(value=value):
+                with self.assertRaises(StartError) as caught:
+                    self.load(f'request_timeout = {value}\n')
+                self.assertEqual(
+                    str(caught.exception),
+                    f'{self.path}: request_timeout must be a whole number of 1 or more')
+
     def test_the_codex_keys_default_to_none_and_load_as_strings(self) -> None:
         self.assertEqual((Config().codex_bin, Config().codex_home), (None, None))
         config = self.load('claude_bin = "/opt/claude"\n')

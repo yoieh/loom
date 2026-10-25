@@ -458,6 +458,33 @@ class RespondTest(SessionTest):
         await session.respond(B_TXT_ID, RequestAnswer(Decision.DENY, 'Not b.txt.'))
         self.assertEqual(self.written[-1], deny_line(B_TXT_ID, 'Not b.txt.'))
 
+    async def test_allow_sends_the_input_as_asked_after_the_event_changes(self) -> None:
+        turn = stream_turns('perm-tool')[0]
+        session = await self.start()
+        request = await self.open_request(session, turn)
+        request.input['command'] = 'rm -rf /'
+        await session.respond(A_TXT_ID, RequestAnswer(Decision.ALLOW))
+        self.assertEqual(self.written[-1], allow_line(A_TXT_ID, A_TXT_INPUT))
+        recorded = json.loads(turn[2])['request']['input']
+        sent = json.loads(self.written[-1])['response']['response']['updatedInput']
+        self.assertEqual(sent, recorded)
+
+    async def test_allow_sends_nested_input_as_asked_after_the_event_changes(self) -> None:
+        turn = stream_turns('perm-tool')[0]
+        nested = changed(
+            turn[2],
+            lambda data: data['request']['input'].update(options={'timeout': 5}),
+        )
+        asked = json.loads(nested)['request']['input']
+        session = await self.start()
+        request = await self.open_request(session, [turn[0], turn[1], nested])
+        self.assertEqual(request.input, asked)
+        request.input['options']['timeout'] = 600
+        await session.respond(A_TXT_ID, RequestAnswer(Decision.ALLOW))
+        self.assertEqual(self.written[-1], allow_line(A_TXT_ID, asked))
+        sent = json.loads(self.written[-1])['response']['response']['updatedInput']
+        self.assertEqual(sent, {**A_TXT_INPUT, 'options': {'timeout': 5}})
+
     async def test_deny_without_a_message(self) -> None:
         for message in (None, ''):
             with self.subTest(message=message):

@@ -17,8 +17,8 @@ DATA: dict[str, tuple[set[str], set[str]]] = {
     'turn.text': ({'text'}, set()),
     'turn.tool': ({'tool_use_id', 'name', 'input'}, set()),
     'turn.result': ({'state'}, {'text', 'reason'}),
-    'request.opened': ({'request_id', 'tool_name', 'input'}, {'description'}),
-    'request.closed': ({'request_id', 'decision'}, set()),
+    'request.opened': ({'request_id', 'tool_name', 'input'}, {'description', 'expires_at'}),
+    'request.closed': ({'request_id', 'decision'}, {'reason'}),
     'schedule.fired': ({'schedule_id', 'action', 'text'}, {'by', 'late'}),
 }
 
@@ -76,7 +76,9 @@ class EventDataTest(unittest.TestCase):
             ('thread.updated', 'previous_audience'): Audience,
             ('thread.settled', 'result'): str,
             ('turn.result', 'state'): TurnState,
+            ('request.opened', 'expires_at'): str,
             ('request.closed', 'decision'): Decision,
+            ('request.closed', 'reason'): str,
             ('schedule.fired', 'action'): ScheduleAction,
             ('schedule.fired', 'late'): bool,
         }

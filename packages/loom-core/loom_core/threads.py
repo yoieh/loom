@@ -7,7 +7,7 @@ from loom_contracts.events import EventType
 from loom_contracts.runners import PermissionMode, RunnerName
 from loom_contracts.states import ThreadState
 
-from . import concurrency
+from . import concurrency, requests
 from .clock import iso
 from .errors import LoomError
 from .slots import StartSource
@@ -46,7 +46,7 @@ COLUMNS = (
     'id', 'title', 'runner', 'project_id', 'workspace_strategy', 'workspace_path', 'branch',
     'base', 'model', 'permission_mode', 'requests', 'state', 'waiting', 'reason', 'parent_id',
     'origin', 'has_session', 'stop_requested', 'created_at', 'updated_at', 'audience',
-    'concurrency_key', 'settle', 'key_state',
+    'concurrency_key', 'settle', 'key_state', 'launched_by',
 )
 
 
@@ -211,6 +211,7 @@ def transition(store: Store, tx: sqlite3.Connection, thread_id: str, state: Thre
         reason = STOPPING
     if state is not ThreadState.RUNNING:
         waiting = False
+        requests.close_ended(store, tx, thread_id)
     elif waiting is None:
         waiting = bool(row['waiting'])
     tx.execute(

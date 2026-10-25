@@ -20,6 +20,7 @@ TIMEOUT = 10.0
 FAKE_CLAUDE = Path(__file__).resolve().parents[2] / 'loom-service' / 'tests' / 'fake_claude.py'
 LOOM = Path(sys.executable).parent / 'loom'
 EVENT_KEYS = {'id', 'type', 'at', 'thread_id', 'data'}
+ASK = 'Ask for permission.'
 GIT_ENV = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'GIT_CONFIG_GLOBAL': '/dev/null',
            'GIT_CONFIG_NOSYSTEM': '1', 'HOME': '/nonexistent'}
 
@@ -178,7 +179,7 @@ class LiveCase(unittest.TestCase):
 class ScriptTest(LiveCase):
     def test_the_loom_script_lists_its_commands(self) -> None:
         for argv, names in (
-            (['--help'], ['serve', 'threads', 'projects', 'schedules']),
+            (['--help'], ['serve', 'threads', 'projects', 'schedules', 'requests']),
             (['threads', '--help'],
              ['launch', 'delegate', 'send', 'list', 'get', 'stop', 'settle', 'update',
               'events']),
@@ -268,7 +269,7 @@ class ApiTest(LiveCase):
         self.assertEqual(client.schedules_list(), [])
         with self.assertRaises(LoomApiError) as caught:
             client.requests_respond('r1', 'allow')
-        self.assertEqual(caught.exception.code, 'invalid')
+        self.assertEqual(caught.exception.code, 'not_found')
         with self.assertRaises(LoomApiError) as caught:
             client.threads_get('nope')
         self.assertEqual(caught.exception.code, 'not_found')
@@ -430,6 +431,88 @@ class CliTest(LiveCase):
             timeout=TIMEOUT)
         self.assertEqual(done.returncode, 3)
         self.assertIn(str(other), done.stderr)
+
+
+class RequestsTest(LiveCase):
+    def asked(self) -> tuple[dict, str]:
+        self.client.projects_add('Repo', str(self.repo), permission_mode='auto')
+        thread = self.client.threads_launch('repo', 'Ask', ASK, workspace={'strategy': 'root'})
+
+        def opened() -> list[dict]:
+            return [event for event in self.all_events(thread['id'])
+                    if event['type'] == 'request.opened']
+
+        request_id = wait_for(opened, 'request.opened')[0]['data']['request_id']
+        info = self.client.threads_get(thread['id'])
+        self.assertEqual((info['state'], info['waiting']), ('running', True))
+        return thread, request_id
+
+    def responses(self, count: int = 1) -> list[dict]:
+        path = self.repo / 'responses.jsonl'
+
+        def recorded() -> list[dict]:
+            if not path.exists():
+                return []
+            found = [json.loads(text)['response'] for text in path.read_text().splitlines()]
+            return found if len(found) >= count else []
+
+        return wait_for(recorded, f'{count} recorded responses')
+
+    def closed(self, thread_id: str) -> list[dict]:
+        def found() -> list[dict]:
+            return [event['data'] for event in self.all_events(thread_id)
+                    if event['type'] == 'request.closed']
+
+        return wait_for(found, 'request.closed')
+
+    def test_the_python_api_answers_a_request(self) -> None:
+        self.serve()
+        thread, request_id = self.asked()
+        answered = self.client.requests_respond(request_id, 'allow')
+        self.assertEqual((answered['id'], answered['waiting']), (thread['id'], False))
+        [response] = self.responses()
+        self.assertEqual(response['request_id'], request_id)
+        self.assertEqual(response['response']['behavior'], 'allow')
+        self.assertEqual(self.closed(thread['id']),
+                         [{'request_id': request_id, 'decision': 'allow'}])
+        self.results(thread['id'])
+        self.assertEqual(self.idle(thread['id'])['waiting'], False)
+
+    def test_the_cli_answers_a_request_and_a_second_answer_is_a_conflict(self) -> None:
+        self.serve()
+        thread, request_id = self.asked()
+        done = self.cli('requests', 'respond', request_id, 'deny', '--message', 'no')
+        self.assertEqual((done.returncode, done.stderr), (0, ''))
+        self.assertTrue(done.stdout.startswith(f'{thread["id"]}  '), done.stdout)
+        [response] = self.responses()
+        self.assertEqual(response['response'], {'behavior': 'deny', 'message': 'no'})
+        self.results(thread['id'])
+
+        done = self.cli('request', 'respond', request_id, 'allow')
+        self.assertEqual((done.returncode, done.stdout), (1, ''))
+        self.assertEqual(done.stderr, f'loom: conflict: request {request_id} is closed\n')
+        self.assertEqual(len(self.responses()), 1)
+        lines = self.cli('threads', 'events', '--thread', thread['id']).stdout.splitlines()
+        self.assertTrue(any(text.endswith(f'request.closed {request_id} deny')
+                            for text in lines), lines)
+
+    def test_an_unanswered_request_is_denied_after_request_timeout(self) -> None:
+        with open(self.config, 'a') as file:
+            file.write('request_timeout = 1\n')
+        self.serve()
+        thread, request_id = self.asked()
+        self.assertEqual(self.closed(thread['id']),
+                         [{'request_id': request_id, 'decision': 'deny', 'reason': 'timeout'}])
+        [response] = self.responses()
+        self.assertEqual(response['response'], {
+            'behavior': 'deny',
+            'message': 'No answer came within 1 s, so Loom denied this request.',
+        })
+        self.results(thread['id'])
+        self.assertEqual(self.idle(thread['id'])['waiting'], False)
+        lines = self.cli('threads', 'events', '--thread', thread['id']).stdout.splitlines()
+        self.assertTrue(any(text.endswith(f'request.closed {request_id} deny timeout')
+                            for text in lines), lines)
 
 
 class FollowTest(LiveCase):

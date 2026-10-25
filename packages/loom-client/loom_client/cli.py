@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import TextIO
 
 from loom_contracts.calls import Audience, CallName
-from loom_contracts.runners import DispatchMode, PermissionMode, RunnerName
+from loom_contracts.runners import Decision, DispatchMode, PermissionMode, RunnerName
 from loom_contracts.triggers import ScheduleAction, TriggerType
 from loom_contracts.workspaces import WorkspaceStrategy
 
@@ -29,6 +29,7 @@ GROUPS = {
     'threads': ('start, message and follow agent threads', ()),
     'projects': ('manage the projects threads run in', ('project',)),
     'schedules': ('add, list, pause and remove schedules', ('schedule',)),
+    'requests': ("answer threads' permission prompts", ('request',)),
 }
 
 WORKSPACE_FIELDS = {
@@ -242,6 +243,18 @@ def _schedule_write_args(command: argparse.ArgumentParser) -> None:
     _add_id(command)
 
 
+def _respond_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument('request_id')
+    command.add_argument('decision', choices=_values(Decision))
+    command.add_argument('--message', help='what the agent is told when it is denied')
+    _add_id(command)
+
+
+def _respond(client: Client, args: argparse.Namespace) -> object:
+    return client.requests_respond(args.request_id, args.decision, message=args.message,
+                                   id=args.id)
+
+
 def _no_args(command: argparse.ArgumentParser) -> None:
     pass
 
@@ -287,6 +300,7 @@ COMMANDS: dict[CallName, tuple[str, Callable[[argparse.ArgumentParser], None], R
     CallName.SCHEDULES_REMOVE: (
         'remove a schedule', _schedule_write_args,
         lambda client, args: client.schedules_remove(args.schedule_id, id=args.id)),
+    CallName.REQUESTS_RESPOND: ('answer a permission prompt', _respond_args, _respond),
 }
 
 

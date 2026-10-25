@@ -15,6 +15,7 @@ from loom_contracts.runners import (
 from loom_contracts.states import ThreadState, TurnState
 
 from loom_core import threads
+from loom_core.clock import iso
 from loom_core.errors import LoomError
 from loom_core.orchestrator import Orchestrator
 from loom_core.projects import Projects
@@ -338,6 +339,11 @@ class LaunchParamsTest(OrchestratorTest):
 
 
 class EventsTest(OrchestratorTest):
+    def expires_at(self, request_id: str) -> str:
+        opened = self.store.connection.execute(
+            'SELECT opened_at FROM permission_requests WHERE id = ?', (request_id,)).fetchone()[0]
+        return iso(datetime.fromisoformat(opened) + timedelta(seconds=600))
+
     async def test_runner_events_become_events_and_states(self) -> None:
         thread_id, session = await self.running()
         session.emit(TurnStarted())
@@ -360,8 +366,11 @@ class EventsTest(OrchestratorTest):
                                     'input': {'command': 'ls'}}),
             (EventType.REQUEST_OPENED, {'request_id': 'r1', 'tool_name': 'Bash',
                                         'input': {'command': 'rm x'},
-                                        'description': 'Remove x'}),
+                                        'description': 'Remove x',
+                                        'expires_at': self.expires_at('r1')}),
             (EventType.TURN_RESULT, {'state': 'completed', 'text': 'All done'}),
+            (EventType.REQUEST_CLOSED, {'request_id': 'r1', 'decision': 'deny',
+                                        'reason': 'ended'}),
         ])
         self.assertEqual(self.states(thread_id),
                          ['queued', 'starting', 'running', 'running', 'idle'])
@@ -371,7 +380,8 @@ class EventsTest(OrchestratorTest):
         session.emit(PermissionRequest('r1', 'Edit', {}, None))
         await self.finish(thread_id, session, done(TurnState.FAILED, None, 'boom'))
         opened = self.events(thread_id, EventType.REQUEST_OPENED)[0]['data']
-        self.assertEqual(opened, {'request_id': 'r1', 'tool_name': 'Edit', 'input': {}})
+        self.assertEqual(opened, {'request_id': 'r1', 'tool_name': 'Edit', 'input': {},
+                                  'expires_at': self.expires_at('r1')})
         result = self.events(thread_id, EventType.TURN_RESULT)[0]['data']
         self.assertEqual(result, {'state': 'failed', 'reason': 'boom'})
         self.assertEqual(self.state(thread_id), 'idle')
