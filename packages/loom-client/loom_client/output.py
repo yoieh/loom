@@ -23,7 +23,7 @@ EVENT_FIELDS: dict[str, tuple[str, ...]] = {
     EventType.TURN_RESULT: ('state', 'text', 'reason'),
     EventType.REQUEST_OPENED: ('request_id', 'tool_name', 'description', 'input'),
     EventType.REQUEST_CLOSED: ('request_id', 'decision', 'reason'),
-    EventType.SCHEDULE_FIRED: ('schedule_id', 'action', 'by', 'late', 'text'),
+    EventType.SCHEDULE_FIRED: ('schedule_id', 'action', 'by', 'late', 'cause', 'hops', 'text'),
     EventType.SIGNAL: ('topic', 'project_id', 'key', 'hops', 'payload'),
     EventType.TRIGGER_SKIPPED: ('schedule_id', 'event_id', 'reason'),
 }
