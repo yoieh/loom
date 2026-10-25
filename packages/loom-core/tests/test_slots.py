@@ -560,7 +560,7 @@ class SourceTest(ServiceTest):
             Caller(): StartSource.PERSON,
             Caller(thread_id='t'): StartSource.AGENT,
             Caller(verified=False): StartSource.AGENT,
-            Caller(scheduled=True): StartSource.SCHEDULE,
+            Caller(schedule_id='s1'): StartSource.SCHEDULE,
         }
         for caller, source in cases.items():
             with self.subTest(caller=caller), \
@@ -575,7 +575,7 @@ class SourceTest(ServiceTest):
                 self.assertEqual(send.call_args.kwargs['source'], source)
 
     async def test_delegate_is_an_agents_start(self) -> None:
-        for caller in (Caller(), Caller(scheduled=True)):
+        for caller in (Caller(), Caller(schedule_id='s1')):
             with mock.patch.object(self.orchestrator, 'delegate',
                                    new_callable=mock.AsyncMock) as delegate:
                 await self.call('threads.delegate', {'parent_id': 'x'}, caller)

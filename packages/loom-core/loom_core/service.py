@@ -24,8 +24,11 @@ SERVED: tuple[str, ...] = (
 class Caller:
     thread_id: str | None = None
     verified: bool = True
-    scheduled: bool = False
     schedule_id: str | None = None
+
+    @property
+    def scheduled(self) -> bool:
+        return self.schedule_id is not None
 
 
 Method = Callable[[object, Caller], Awaitable[object]]
@@ -62,13 +65,13 @@ def _audience(params: dict) -> Audience | None:
 
 
 def _is_person(caller: Caller) -> bool:
-    if caller.schedule_id is not None:
+    if caller.scheduled:
         return False
     return caller.thread_id is None and caller.verified is True
 
 
 def _identity(caller: Caller) -> str | None:
-    if caller.scheduled or caller.schedule_id is not None:
+    if caller.scheduled:
         return None
     if caller.thread_id is not None:
         return f'thread:{caller.thread_id}'
@@ -76,7 +79,7 @@ def _identity(caller: Caller) -> str | None:
 
 
 def _own_thread(caller: Caller) -> str | None:
-    if caller.scheduled or caller.schedule_id is not None:
+    if caller.scheduled:
         return None
     return caller.thread_id
 
@@ -180,7 +183,7 @@ class Service:
 
     async def _launch(self, params: object, caller: Caller) -> ThreadInfo:
         thread_id = caller.thread_id
-        if thread_id is not None and caller.schedule_id is None and not caller.scheduled:
+        if thread_id is not None and not caller.scheduled:
             if self._stopping(_params(params).get('id'), thread_id):
                 raise LoomError('conflict', f'thread {thread_id} is stopping')
         return await self.orchestrator.launch(params, source=_source(caller),

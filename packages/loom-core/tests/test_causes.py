@@ -31,9 +31,7 @@ BAD_CAUSES = [
 
 
 def scheduled(thread_id: str) -> tuple[Caller, ...]:
-    return (Caller(thread_id=thread_id, scheduled=True, schedule_id='s1'),
-            Caller(thread_id=thread_id, schedule_id='s1'),
-            Caller(thread_id=thread_id, scheduled=True))
+    return (Caller(thread_id=thread_id, schedule_id='s1'),)
 
 
 class CauseTest(ServiceTest):
