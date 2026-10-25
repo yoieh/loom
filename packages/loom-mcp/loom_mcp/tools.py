@@ -26,6 +26,7 @@ NOT_A_LOOM_THREAD = 'this agent is not a Loom thread, so it has no tasks; use la
 NEEDS_PROJECT = 'project_id is required outside a Loom thread'
 UNKNOWN_PROJECT = "cannot tell this thread's project; give project_id"
 MAY_HAVE_RUN = 'the call may have run, so check with threads or schedules before calling again'
+MAY_HAVE_EMITTED = 'the signal may have been written, and emitting it again writes a second one'
 
 CONCURRENCY_KEY = ('A key, such as pm:demo, that at most one thread holds at a time; the launch '
                    'waits while another thread holds it.')
@@ -161,7 +162,7 @@ def check_arguments(tool: Tool, arguments: dict) -> dict:
     return values
 
 
-def _write(send: Callable[[str], object]) -> object:
+def _write(send: Callable[[str], object], text: str = MAY_HAVE_RUN) -> object:
     command_id = str(uuid.uuid4())
     try:
         return send(command_id)
@@ -170,7 +171,7 @@ def _write(send: Callable[[str], object]) -> object:
     try:
         return send(command_id)
     except LoomConnectionError as error:
-        raise ToolError(f'{error.message}; {MAY_HAVE_RUN}') from None
+        raise ToolError(f'{error.message}; {text}') from None
 
 
 class Tools:
@@ -264,7 +265,7 @@ class Tools:
     def _emit(self, client: Client, values: dict) -> object:
         return _write(lambda command_id: client.signals_emit(
             values['topic'], values['payload'], project_id=values.get('project_id'),
-            key=values.get('key'), cause=values.get('cause'), id=command_id))
+            key=values.get('key'), cause=values.get('cause'), id=command_id), MAY_HAVE_EMITTED)
 
     def _schedule(self, client: Client, values: dict) -> object:
         return _write(lambda command_id: client.schedules_add(
