@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
-from loom_contracts.calls import CallName, ProjectInfo, ThreadInfo
+from loom_contracts.calls import Audience, CallName, ProjectInfo, ThreadInfo
 from loom_contracts.events import EventType
 from loom_contracts.runners import (
     Capability, DispatchMode, Exited, PermissionMode, PermissionRequest, Runner, RunnerEvent,
@@ -145,6 +145,9 @@ class Orchestrator:
         origin = None
         if 'origin' in params:
             origin = _string(_not_null(params, 'origin'), 'origin')
+        audience = Audience.AGENT
+        if 'audience' in params:
+            audience = _choice(_not_null(params, 'audience'), 'audience', Audience)
         command_id = params.get('id')
 
         def change(tx: sqlite3.Connection) -> ThreadInfo:
@@ -165,6 +168,7 @@ class Orchestrator:
                 'permission_mode': mode,
                 'requests': requests,
                 'origin': origin,
+                'audience': audience,
             })
             threads.add_start(tx, thread_id, source, row['created_at'])
             self._add_message(tx, thread_id, f'{command_id}:message', message, DispatchMode.STEER)
@@ -221,6 +225,7 @@ class Orchestrator:
                 'permission_mode': self.projects.effective_mode(project_id),
                 'requests': parent['requests'],
                 'parent_id': parent_id,
+                'audience': Audience.AGENT,
             })
             threads.add_start(tx, thread_id, source, row['created_at'])
             self._add_message(tx, thread_id, f'{command_id}:message', task, DispatchMode.STEER)
@@ -275,6 +280,22 @@ class Orchestrator:
         if not receipt.replayed and before is not None:
             self.lanes.submit(thread_id, lambda: self._end_session(thread_id, before))
         return receipt.answer
+
+    async def update(self, params: object) -> ThreadInfo:
+        params = _params(params)
+        thread_id = _string(_required(params, 'thread_id'), 'thread_id')
+        audience = _choice(_required(params, 'audience'), 'audience', Audience)
+
+        def change(tx: sqlite3.Connection) -> ThreadInfo:
+            previous = Audience(fetch(tx, thread_id)['audience'])
+            if previous is not audience:
+                tx.execute('UPDATE threads SET audience = ?, updated_at = ? WHERE id = ?',
+                           (str(audience), iso(self.store.clock()), thread_id))
+                self.store.append_event(tx, EventType.THREAD_UPDATED, thread_id,
+                                        {'audience': audience, 'previous_audience': previous})
+            return thread_info(fetch(tx, thread_id))
+
+        return self.store.command(params.get('id'), CallName.THREADS_UPDATE, change).answer
 
     async def stop(self, params: object) -> ThreadInfo:
         params = _params(params)
@@ -842,7 +863,11 @@ class Orchestrator:
             transition(self.store, tx, thread_id, ThreadState.SLEEPING)
         return False
 
-    def list(self, project_id: str | None = None) -> list[ThreadInfo]:
+    def list(self, project_id: str | None = None,
+             audience: object = None) -> list[ThreadInfo]:
         if project_id is not None:
             _string(project_id, keys.PROJECT_KEY)
-        return [thread_info(row) for row in threads.select(self.store.connection, project_id)]
+        if audience is not None:
+            audience = _choice(audience, 'audience', Audience)
+        return [thread_info(row)
+                for row in threads.select(self.store.connection, project_id, audience)]

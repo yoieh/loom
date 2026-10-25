@@ -6,7 +6,7 @@ import sys
 from collections.abc import Callable
 from typing import TextIO
 
-from loom_contracts.calls import CallName
+from loom_contracts.calls import Audience, CallName
 from loom_contracts.runners import DispatchMode, PermissionMode, RunnerName
 from loom_contracts.triggers import ScheduleAction, TriggerType
 from loom_contracts.workspaces import WorkspaceStrategy
@@ -105,6 +105,10 @@ def _add_id(command: argparse.ArgumentParser) -> None:
     command.add_argument('--id', help='command id, to retry a call safely (default: a new one)')
 
 
+def _add_audience(command: argparse.ArgumentParser, text: str, required: bool = False) -> None:
+    command.add_argument('--audience', choices=_values(Audience), required=required, help=text)
+
+
 def _add_workspace(command: argparse.ArgumentParser) -> None:
     command.add_argument('--workspace', choices=_values(WorkspaceStrategy),
                          help='where the thread works')
@@ -123,6 +127,7 @@ def _launch_args(command: argparse.ArgumentParser) -> None:
     command.add_argument('--requests', choices=('caller', 'any'),
                          help='who may answer its permission prompts')
     command.add_argument('--origin', help='where the thread comes from')
+    _add_audience(command, 'who talks with the thread (default agent)')
     _add_id(command)
 
 
@@ -130,7 +135,7 @@ def _launch(client: Client, args: argparse.Namespace) -> object:
     return client.threads_launch(
         args.project_id, args.title, _stdin_or(args.message), workspace=args.workspace,
         runner=args.runner, model=args.model, requests=args.requests, origin=args.origin,
-        id=args.id)
+        audience=args.audience, id=args.id)
 
 
 def _delegate_args(command: argparse.ArgumentParser) -> None:
@@ -159,6 +164,7 @@ def _send(client: Client, args: argparse.Namespace) -> object:
 
 def _list_args(command: argparse.ArgumentParser) -> None:
     command.add_argument('--project', help='only threads of this project')
+    _add_audience(command, 'only threads with this audience')
 
 
 def _thread_args(command: argparse.ArgumentParser) -> None:
@@ -170,10 +176,17 @@ def _thread_write_args(command: argparse.ArgumentParser) -> None:
     _add_id(command)
 
 
+def _update_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument('thread_id')
+    _add_audience(command, 'who talks with the thread', required=True)
+    _add_id(command)
+
+
 def _events_args(command: argparse.ArgumentParser) -> None:
     command.add_argument('--after', type=_event_id, default=0,
                          help='print events after this event id (default 0)')
     command.add_argument('--thread', help='only events of this thread')
+    _add_audience(command, 'only events of threads with this audience')
     command.add_argument('--follow', action='store_true', help='go on printing new events')
 
 
@@ -237,7 +250,8 @@ COMMANDS: dict[CallName, tuple[str, Callable[[argparse.ArgumentParser], None], R
     CallName.THREADS_DELEGATE: ('start a child thread for a task', _delegate_args, _delegate),
     CallName.THREADS_SEND: ('send a message to a thread', _send_args, _send),
     CallName.THREADS_LIST: (
-        'list threads', _list_args, lambda client, args: client.threads_list(args.project)),
+        'list threads', _list_args,
+        lambda client, args: client.threads_list(args.project, audience=args.audience)),
     CallName.THREADS_GET: (
         'show a thread', _thread_args, lambda client, args: client.threads_get(args.thread_id)),
     CallName.THREADS_STOP: (
@@ -246,6 +260,9 @@ COMMANDS: dict[CallName, tuple[str, Callable[[argparse.ArgumentParser], None], R
     CallName.THREADS_SETTLE: (
         'settle a thread', _thread_write_args,
         lambda client, args: client.threads_settle(args.thread_id, id=args.id)),
+    CallName.THREADS_UPDATE: (
+        "change a thread's audience", _update_args,
+        lambda client, args: client.threads_update(args.thread_id, args.audience, id=args.id)),
     CallName.THREADS_EVENTS: ('print events', _events_args, None),
     CallName.PROJECTS_ADD: (
         'add a project', _project_add_args,
@@ -348,12 +365,12 @@ class Printer:
 
 def _events(client: Client, args: argparse.Namespace, printer: Printer) -> None:
     if args.follow:
-        for event in client.follow_events(args.after, args.thread):
+        for event in client.follow_events(args.after, args.thread, audience=args.audience):
             printer.event(event)
         return
     after = args.after
     while True:
-        page = client.threads_events(after, args.thread)
+        page = client.threads_events(after, args.thread, audience=args.audience)
         for event in page:
             printer.event(event)
         if len(page) < PAGE:

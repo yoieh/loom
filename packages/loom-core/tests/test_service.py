@@ -25,8 +25,8 @@ SCHEDULED = (
 
 ALL_CALLS = (
     'threads.launch', 'threads.delegate', 'threads.send', 'threads.list', 'threads.get',
-    'threads.stop', 'threads.settle', 'threads.events', 'projects.add', 'projects.set_mode',
-    'projects.remove', 'projects.list',
+    'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
+    'projects.set_mode', 'projects.remove', 'projects.list',
 )
 
 
@@ -76,7 +76,7 @@ class ServiceTest(OrchestratorTest):
 
 
 class MethodTest(ServiceTest):
-    async def test_served_names_the_twelve_calls_in_order(self) -> None:
+    async def test_served_names_the_thirteen_calls_in_order(self) -> None:
         self.assertEqual(SERVED, ALL_CALLS)
 
     async def test_method_gives_a_callable_for_each_served_call(self) -> None:

@@ -24,6 +24,29 @@ OLD_MESSAGES = '''CREATE TABLE IF NOT EXISTS messages (
         created_at TEXT NOT NULL
     )'''
 
+OLD_THREADS = '''CREATE TABLE IF NOT EXISTS threads (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        runner TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        workspace_strategy TEXT NOT NULL,
+        workspace_path TEXT NOT NULL,
+        branch TEXT,
+        base TEXT,
+        model TEXT,
+        permission_mode TEXT NOT NULL,
+        requests TEXT NOT NULL,
+        state TEXT NOT NULL,
+        waiting INTEGER NOT NULL DEFAULT 0,
+        reason TEXT,
+        parent_id TEXT,
+        origin TEXT,
+        has_session INTEGER NOT NULL DEFAULT 0,
+        stop_requested INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )'''
+
 
 def mode_of(path: Path) -> int:
     return stat.S_IMODE(os.stat(path).st_mode)
@@ -213,7 +236,7 @@ class CommandTest(TempDirTest):
         self.assertEqual(self.count('commands'), 1)
 
 
-class MessageSourceTest(TempDirTest):
+class TracedOpenTest(TempDirTest):
     def open_traced(self) -> tuple[Store, list[str]]:
         seen: list[str] = []
         connect = sqlite3.connect
@@ -228,11 +251,13 @@ class MessageSourceTest(TempDirTest):
         self.addCleanup(store.close)
         return store, seen
 
-    def columns(self, store: Store) -> list[str]:
-        return [row[1] for row in store.connection.execute('PRAGMA table_info(messages)')]
-
     def alters(self, seen: list[str]) -> list[str]:
         return [statement for statement in seen if statement.startswith('ALTER')]
+
+
+class MessageSourceTest(TracedOpenTest):
+    def columns(self, store: Store) -> list[str]:
+        return [row[1] for row in store.connection.execute('PRAGMA table_info(messages)')]
 
     def test_a_new_store_has_the_column_from_its_schema(self) -> None:
         store, seen = self.open_traced()
@@ -265,6 +290,47 @@ class MessageSourceTest(TempDirTest):
         self.assertEqual(self.alters(seen), [])
         self.assertEqual(again.connection.execute(
             'SELECT thread_id, text, source FROM messages').fetchall(), [('t1', 'held', 1)])
+
+
+class ThreadAudienceTest(TracedOpenTest):
+    def columns(self, store: Store) -> list[str]:
+        return [row[1] for row in store.connection.execute('PRAGMA table_info(threads)')]
+
+    def audiences(self, store: Store) -> list[tuple[str, str]]:
+        return store.connection.execute('SELECT id, audience FROM threads').fetchall()
+
+    def test_a_new_store_has_the_column_from_its_schema(self) -> None:
+        store, seen = self.open_traced()
+        self.assertEqual(self.columns(store).count('audience'), 1)
+        self.assertEqual(self.alters(seen), [])
+
+    def test_an_old_store_gains_the_column_once_and_its_rows_read_as_agent(self) -> None:
+        self.data_dir.mkdir(mode=0o700)
+        db = sqlite3.connect(self.data_dir / DB_NAME)
+        db.execute(OLD_THREADS)
+        db.execute("INSERT INTO threads (id, title, runner, project_id, workspace_strategy, "
+                   "workspace_path, permission_mode, requests, state, created_at, updated_at) "
+                   "VALUES ('t1', 'Work', 'claude', 'loom', 'root', '/repo', 'auto', 'any', "
+                   "'idle', 'now', 'now')")
+        db.commit()
+        db.close()
+        store, seen = self.open_traced()
+        self.assertEqual(self.columns(store).count('audience'), 1)
+        self.assertEqual(self.alters(seen), [
+            "ALTER TABLE threads ADD COLUMN audience TEXT NOT NULL DEFAULT 'agent'"])
+        alter = seen.index(self.alters(seen)[0])
+        begin = max(at for at, statement in enumerate(seen[:alter])
+                    if statement == 'BEGIN IMMEDIATE')
+        commit = seen.index('COMMIT', alter)
+        self.assertNotIn('COMMIT', seen[begin:alter])
+        self.assertNotIn('BEGIN IMMEDIATE', seen[alter:commit])
+        self.assertEqual(seen[begin + 1], SCHEMA[0])
+        self.assertEqual(self.audiences(store), [('t1', 'agent')])
+        store.close()
+        again, seen = self.open_traced()
+        self.assertEqual(self.columns(again).count('audience'), 1)
+        self.assertEqual(self.alters(seen), [])
+        self.assertEqual(self.audiences(again), [('t1', 'agent')])
 
 
 if __name__ == '__main__':

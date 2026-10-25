@@ -5,7 +5,7 @@ script in any language. It documents the socket protocol `loom serve` speaks, ev
 event, `loom serve` itself, the `loom` CLI and the Python API. The design behind it is
 `docs/design.md` §8; this page says what the code does today.
 
-Served now: sixteen calls, the `threads.*`, `projects.*` and `schedules.*` ones. Only
+Served now: seventeen calls, the `threads.*`, `projects.*` and `schedules.*` ones. Only
 `requests.respond` waits: it comes with LM-9, and the server answers it `invalid` until then.
 
 ## Start here
@@ -34,7 +34,8 @@ In the examples below, the first JSON line is the request and the next one the a
 pass on the socket. Thread and schedule ids such as `"3f2a…"` and the paths are shortened;
 everything else comes from a real run. The command ids `c1`, `c2`, … give the order the changes
 ran in; each read shows the state at its point in that run, and `projects.remove` succeeded once
-both threads were settled. The `schedules.*` examples come from later runs of their own.
+both threads were settled. The `schedules.*` examples, and those of `threads.update` and the
+`audience` filters, come from later runs of their own.
 
 ## Transport
 
@@ -142,9 +143,9 @@ string of 1 to 200 characters`. The CLI and the Python API make one for you.
   drops before the answer arrives, send the request again with the same `id`.
 - Using an `id` again for a different call is a `conflict`, `id was already used for <call>`.
 - The calls that take an `id` are `threads.launch`, `threads.delegate`, `threads.send`,
-  `threads.stop`, `threads.settle`, `projects.add`, `projects.set_mode`, `projects.remove`,
-  `schedules.add`, `schedules.pause` and `schedules.remove` (and `requests.respond`, once
-  served).
+  `threads.stop`, `threads.settle`, `threads.update`, `projects.add`, `projects.set_mode`,
+  `projects.remove`, `schedules.add`, `schedules.pause` and `schedules.remove` (and
+  `requests.respond`, once served).
 - Loom's scheduler uses ids of the form `schedule:<schedule id>:<due>` for the calls its runs make
   (see [How schedules run](#how-schedules-run)), so don't choose ids that begin with `schedule:`.
 
@@ -243,10 +244,8 @@ Most calls answer with a thread, a project or a schedule.
 | `reason` | string or null | `stopping` while a stop is in progress, or why the thread failed. |
 | `parent_id` | string or null | The thread that delegated this one. |
 | `origin` | string or null | Who started it, as `threads.launch` was told. A thread a schedule launched has `schedule:<schedule id>`. |
+| `audience` | string | `person` when a person talks with it, else `agent`, the default (§15 Audience). See [`threads.update`](#threadsupdate). |
 | `created_at` | string | ISO 8601, UTC. |
-
-`permission_mode` is in every thread result, though `ThreadInfo` in
-`loom_contracts/calls.py` does not list it yet.
 
 ### Project
 
@@ -312,6 +311,7 @@ root is not a git repo, the branch exists already, the base is not a commit), ma
 | [`threads.get`](#threadsget) | yes | no |
 | [`threads.stop`](#threadsstop) | yes | yes |
 | [`threads.settle`](#threadssettle) | yes | yes |
+| [`threads.update`](#threadsupdate) | yes | yes |
 | [`threads.events`](#threadsevents) | yes | no |
 | [`projects.add`](#projectsadd) | yes | yes |
 | [`projects.set_mode`](#projectsset_mode) | yes | yes |
@@ -341,9 +341,16 @@ Starts a new top-level thread in a project with a first message.
 | `model` | string | Not empty. Default: the agent's own. |
 | `requests` | string | `"any"` (default) or `"caller"`: who may answer the thread's permission prompts (§8 Requests). Stored now, used once `requests.respond` is served. |
 | `origin` | string | Who started the thread, for clients to show. |
+| `audience` | string | `"agent"` (default) or `"person"`: who talks with the thread (§15 Audience). |
 
 **Result:** the new thread, in state `queued`. Loom starts it after it answers; follow
 `threads.events` to see the turn.
+
+**Audience.** A launch without `audience` is `agent`, whoever calls: a person, an agent or a
+schedule. Loom never guesses `person` from the caller, so a client whose threads a person talks
+with, such as Thread Voice, sends `"audience": "person"`. A schedule's `launch` and a delegated
+child are always `agent`. The audience only tells clients who the thread is for; it changes no
+permission, and any caller may launch a `person` thread.
 
 A start is never refused for lack of room. At most `agents_max` agent processes are live at once
 (see [`config.toml`](#configtoml)). A start that finds no free slot first puts the thread that
@@ -353,11 +360,19 @@ person's own words first, then agents' starts, then schedules, and the oldest fi
 A thread `idle` for `idle_after` seconds goes to `sleeping` too; the next message resumes it.
 
 **Errors:** `not_found` when the project does not exist; `invalid` for a missing or wrong
-parameter.
+parameter, such as an `audience` that is null (`audience must not be null`) or not `person` or
+`agent` (`audience must be one of person, agent`).
 
 ```json
 {"v": "v1", "call": "threads.launch", "params": {"id": "c3", "project_id": "demo-repo", "title": "Fix the login test", "message": "Make the login test pass.", "workspace": {"strategy": "root"}}}
-{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto-accept-edits","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"created_at":"2026-10-24T18:47:12.958+00:00"}}
+{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto-accept-edits","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","created_at":"2026-10-24T18:47:12.958+00:00"}}
+```
+
+A thread a person talks with, from a later run:
+
+```json
+{"v": "v1", "call": "threads.launch", "params": {"id": "c3", "project_id": "demo-repo", "title": "Plan the week", "message": "What is on this week?", "workspace": {"strategy": "root"}, "audience": "person"}}
+{"ok":true,"result":{"id":"31d4…","title":"Plan the week","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto","state":"queued","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","created_at":"2026-10-24T23:48:37.421+00:00"}}
 ```
 
 ### `threads.delegate`
@@ -377,7 +392,8 @@ Nothing is posted while the child or the parent is being stopped, or once the pa
 | `model` | string | Default: the parent's model. |
 
 The child's title is the first line of `task`, cut at 80 characters. It runs in the parent's
-project with the project's mode, and it inherits the parent's `requests`.
+project with the project's mode, and it inherits the parent's `requests`. Its audience is always
+`agent`, whatever the parent's is.
 
 **Result:** the child thread, in state `queued`. It starts as under
 [`threads.launch`](#threadslaunch), as an agent's start: it may sleep the longest-idle thread or
@@ -388,7 +404,7 @@ failed or being stopped.
 
 ```json
 {"v": "v1", "call": "threads.delegate", "params": {"id": "c5", "parent_id": "3f2a…", "task": "Review the login test fix."}}
-{"ok":true,"result":{"id":"b836…","title":"Review the login test fix.","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto-accept-edits","state":"queued","waiting":false,"reason":null,"parent_id":"3f2a…","origin":null,"created_at":"2026-10-24T18:47:29.240+00:00"}}
+{"ok":true,"result":{"id":"b836…","title":"Review the login test fix.","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":null,"model":null,"permission_mode":"auto-accept-edits","state":"queued","waiting":false,"reason":null,"parent_id":"3f2a…","origin":null,"audience":"agent","created_at":"2026-10-24T18:47:29.240+00:00"}}
 ```
 
 ### `threads.send`
@@ -424,7 +440,7 @@ answer.
 
 ```json
 {"v": "v1", "call": "threads.send", "params": {"id": "c4", "thread_id": "3f2a…", "message": "Also run the linter.", "mode": "queue"}}
-{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"created_at":"2026-10-24T18:47:12.958+00:00"}}
+{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","created_at":"2026-10-24T18:47:12.958+00:00"}}
 ```
 
 ### `threads.list`
@@ -434,12 +450,23 @@ Lists threads, oldest first. Settled and failed threads are listed too.
 | Param | Type | |
 |---|---|---|
 | `project_id` | string | Only this project's threads. An unknown project gives `[]`. |
+| `audience` | string | `"person"` or `"agent"`: only threads with this audience now. |
+
+A thread is listed when it matches every filter given. With no filter, every thread is listed.
 
 **Result:** a list of threads.
 
+**Errors:** `invalid` when `audience` is null (`audience must not be null`) or not `person` or
+`agent` (`audience must be one of person, agent`).
+
 ```json
 {"v": "v1", "call": "threads.list", "params": {"project_id": "demo-repo"}}
-{"ok":true,"result":[{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"created_at":"2026-10-24T18:47:12.958+00:00"}]}
+{"ok":true,"result":[{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","created_at":"2026-10-24T18:47:12.958+00:00"}]}
+```
+
+```json
+{"v": "v1", "call": "threads.list", "params": {"audience": "person"}}
+{"ok":true,"result":[{"id":"31d4…","title":"Plan the week","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"master","model":null,"permission_mode":"auto","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","created_at":"2026-10-24T23:48:37.421+00:00"}]}
 ```
 
 ### `threads.get`
@@ -452,7 +479,7 @@ Lists threads, oldest first. Settled and failed threads are listed too.
 
 ```json
 {"v": "v1", "call": "threads.get", "params": {"thread_id": "3f2a…"}}
-{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"created_at":"2026-10-24T18:47:12.958+00:00"}}
+{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","created_at":"2026-10-24T18:47:12.958+00:00"}}
 ```
 
 ```json
@@ -480,7 +507,7 @@ returned as it is.
 
 ```json
 {"v": "v1", "call": "threads.stop", "params": {"id": "c6", "thread_id": "3f2a…"}}
-{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":"stopping","parent_id":null,"origin":null,"created_at":"2026-10-24T18:47:12.958+00:00"}}
+{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":"stopping","parent_id":null,"origin":null,"audience":"agent","created_at":"2026-10-24T18:47:12.958+00:00"}}
 ```
 
 ### `threads.settle`
@@ -501,7 +528,38 @@ settled`).
 
 ```json
 {"v": "v1", "call": "threads.settle", "params": {"id": "c7", "thread_id": "b836…"}}
-{"ok":true,"result":{"id":"b836…","title":"Review the login test fix.","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"settled","waiting":false,"reason":null,"parent_id":"3f2a…","origin":null,"created_at":"2026-10-24T18:47:29.240+00:00"}}
+{"ok":true,"result":{"id":"b836…","title":"Review the login test fix.","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"settled","waiting":false,"reason":null,"parent_id":"3f2a…","origin":null,"audience":"agent","created_at":"2026-10-24T18:47:29.240+00:00"}}
+```
+
+### `threads.update`
+
+Changes a thread's audience (§15 Audience), for example to `person` when an agent thread needs a
+person to talk with it. A change writes one [`thread.updated`](#threadupdated) event. Updating a
+thread to the audience it already has changes nothing and writes no event; the answer is the
+thread as it is. It works in any state, `settled` and `failed` included, and touches no turn,
+process or permission mode. Any caller may update any thread.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string, required | Command id. |
+| `thread_id` | string, required | |
+| `audience` | string, required | `"person"` or `"agent"`. |
+
+**Result:** the thread after the update.
+
+**Errors:** `not_found` (`no thread with id '<thread_id>'`); `invalid` when `thread_id` is
+missing or null (`thread_id is required`) or not a string (`thread_id must be a string`), or when
+`audience` is missing or null (`audience is required`) or not `person` or `agent` (`audience must
+be one of person, agent`).
+
+```json
+{"v": "v1", "call": "threads.update", "params": {"id": "c4", "thread_id": "0844…", "audience": "person"}}
+{"ok":true,"result":{"id":"0844…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"master","model":null,"permission_mode":"auto","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"person","created_at":"2026-10-24T23:48:37.309+00:00"}}
+```
+
+```json
+{"v": "v1", "call": "threads.update", "params": {"id": "e5", "thread_id": "0844…"}}
+{"ok":false,"error":{"code":"invalid","message":"audience is required"}}
 ```
 
 ### `threads.events`
@@ -513,7 +571,10 @@ Reads the event log: a page of stored events, or a stream that goes on with new 
 |---|---|---|
 | `after` | int | Only events with a larger id. Default `0`, the start. |
 | `thread_id` | string | Only this thread's events. |
+| `audience` | string | `"person"` or `"agent"`: only events of threads with this audience, as below. |
 | `follow` | bool | Default `false`. `true` opens a stream. |
+
+An event is kept when it matches every filter given. With no filter, every event is kept.
 
 **Without `follow`**, the result is a list of at most 1,000 events after `after`, oldest first.
 To read everything, ask again with `after` set to the last id you got, until a page holds fewer
@@ -542,9 +603,41 @@ connection for other calls.
 again with `after` set to that id: you get every event after it, with nothing missed or repeated.
 Events are kept 30 days.
 
+**The `audience` filter.** With `audience: A`, an event is kept when any of these holds:
+
+- its thread has audience `A` now;
+- it is a [`thread.updated`](#threadupdated) event whose `previous_audience` is `A`, so a
+  follower sees a thread leave its audience;
+- its `thread_id` is null, such as the `schedule.fired` event of a `notify` with no thread.
+
+The filter reads each thread's audience at the time of the read, not the one it had when the
+event was written. So once a thread becomes `person`, a reader with `audience: "person"` that
+reads from `after: 0` gets the thread's whole history, and a follower gets its events from then
+on. When it goes back to `agent`, a follower gets that `thread.updated` event and none of the
+thread's after it, and a reader from 0 then gets, of its history, only the `thread.updated`
+events that took it out of `person`.
+
+A follower of `person` threads: the thread `0844…`, already `person`, takes a turn, is changed
+back to `agent` and takes another turn (events 25 to 30, not sent), and then a `notify` schedule
+with no thread fires:
+
+```json
+{"v": "v1", "call": "threads.events", "params": {"after": 17, "audience": "person", "follow": true}}
+{"ok":true,"result":{"follow":true}}
+{"event":{"id":18,"type":"thread.state","at":"2026-10-24T23:49:04.196+00:00","thread_id":"0844…","data":{"state":"running","waiting":false}}}
+{"event":{"id":19,"type":"turn.started","at":"2026-10-24T23:49:04.215+00:00","thread_id":"0844…","data":{}}}
+{"event":{"id":20,"type":"turn.tool","at":"2026-10-24T23:49:04.239+00:00","thread_id":"0844…","data":{"tool_use_id":"toolu_fake_2","name":"Bash","input":{"command":"true","description":"Fake tool call 2"}}}}
+{"event":{"id":21,"type":"turn.text","at":"2026-10-24T23:49:04.258+00:00","thread_id":"0844…","data":{"text":"Also run the linter."}}}
+{"event":{"id":22,"type":"turn.result","at":"2026-10-24T23:49:04.279+00:00","thread_id":"0844…","data":{"state":"completed","text":"Also run the linter."}}}
+{"event":{"id":23,"type":"thread.state","at":"2026-10-24T23:49:04.279+00:00","thread_id":"0844…","data":{"state":"idle","waiting":false}}}
+{"event":{"id":24,"type":"thread.updated","at":"2026-10-24T23:49:05.220+00:00","thread_id":"0844…","data":{"audience":"agent","previous_audience":"person"}}}
+{"event":{"id":31,"type":"schedule.fired","at":"2026-10-24T23:49:06.312+00:00","thread_id":null,"data":{"schedule_id":"cba9…","action":"notify","text":"Stand-up in five minutes.","late":true}}}
+```
+
 **Errors:** `invalid` when `after` is not an integer of 0 or more (`after must be an integer of 0
-or more`) or `follow` is not a bool (`follow must be true or false`). An error answers the follow
-request with one error line, and no stream starts.
+or more`), `follow` is not a bool (`follow must be true or false`), or `audience` is null
+(`audience must not be null`) or not `person` or `agent` (`audience must be one of person,
+agent`). An error answers the follow request with one error line, and no stream starts.
 
 ### `projects.add`
 
@@ -854,8 +947,8 @@ wins (§8 Requests).
 
 ## Events
 
-Every change of a thread's state, every turn's text and tool calls, every turn's result and every
-schedule run that fired is an event, with an id that only grows. Read them with
+Every change of a thread's state or audience, every turn's text and tool calls, every turn's
+result and every schedule run that fired is an event, with an id that only grows. Read them with
 [`threads.events`](#threadsevents). The state in `threads.get` is the truth; events are a log to
 follow, kept 30 days (§4 Events).
 
@@ -866,7 +959,7 @@ follow, kept 30 days (§4 Events).
 | Field | Type | |
 |---|---|---|
 | `id` | int | Grows by one or more with each event. |
-| `type` | string | One of the nine types below. |
+| `type` | string | One of the ten types below. |
 | `at` | string | ISO 8601, UTC, with milliseconds. |
 | `thread_id` | string or null | |
 | `data` | object | Depends on `type`. |
@@ -902,6 +995,22 @@ whose agent process keeps exiting mid-turn fails with the reason
 
 ```json
 {"id": 37, "type": "thread.failed", "at": "2026-10-24T18:53:55.140+00:00", "thread_id": "5b7e…", "data": {"reason": "the project's root is not the top of a git repo"}}
+```
+
+### `thread.updated`
+
+The thread's audience changed, by [`threads.update`](#threadsupdate). An update to the audience
+the thread already has sends none.
+
+| Field | Type | |
+|---|---|---|
+| `audience` | string | The new audience, `person` or `agent`. |
+| `previous_audience` | string | The audience it had before. |
+
+Both fields are always there.
+
+```json
+{"id": 17, "type": "thread.updated", "at": "2026-10-24T23:48:49.036+00:00", "thread_id": "0844…", "data": {"audience": "person", "previous_audience": "agent"}}
 ```
 
 ### `turn.started`
@@ -1155,14 +1264,15 @@ They go before the command.
 | Command | Call |
 |---|---|
 | `loom serve [--socket PATH] [--data-dir DIR] [--config FILE]` | starts the server, see [`loom serve`](#loom-serve) |
-| `loom threads launch <project_id> <title> <message> [--workspace root\|worktree\|existing_worktree] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--requests caller\|any] [--origin O] [--id ID]` | `threads.launch` |
+| `loom threads launch <project_id> <title> <message> [--workspace root\|worktree\|existing_worktree] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--requests caller\|any] [--origin O] [--audience person\|agent] [--id ID]` | `threads.launch` |
 | `loom threads delegate <parent_id> <task> [--workspace ...] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--id ID]` | `threads.delegate` |
 | `loom threads send <thread_id> <message> [--mode steer\|queue\|interrupt] [--id ID]` | `threads.send` |
-| `loom threads list [--project P]` | `threads.list` |
+| `loom threads list [--project P] [--audience person\|agent]` | `threads.list` |
 | `loom threads get <thread_id>` | `threads.get` |
 | `loom threads stop <thread_id> [--id ID]` | `threads.stop` |
 | `loom threads settle <thread_id> [--id ID]` | `threads.settle` |
-| `loom threads events [--after N] [--thread T] [--follow]` | `threads.events` |
+| `loom threads update <thread_id> --audience person\|agent [--id ID]` | `threads.update` |
+| `loom threads events [--after N] [--thread T] [--audience person\|agent] [--follow]` | `threads.events` |
 | `loom projects add <title> <path> [--mode M] [--id ID]` | `projects.add` |
 | `loom projects set-mode <project_id> <mode> [--id ID]` | `projects.set_mode` |
 | `loom projects remove <project_id> [--id ID]` | `projects.remove` |
@@ -1176,6 +1286,9 @@ They go before the command.
   `loom schedules ...`.
 - `--branch` and `--base` go with `--workspace worktree`, `--path` and `--branch` with
   `--workspace existing_worktree`; any other mix is a usage error.
+- `--audience` sends `audience`: on `threads launch` the new thread's audience, on `threads list`
+  and `threads events` a filter (see [`threads.events`](#threadsevents) for which events it
+  keeps). Without it, nothing is sent. `threads update` requires it.
 - `projects add` makes a relative path absolute from the current directory.
 - `schedules add` takes exactly one trigger option, else it is a usage error:
   - `--at DATETIME` sends `{"type": "at", "at": DATETIME}`, with the time as given.
@@ -1273,6 +1386,29 @@ $ loom schedules add "Ping." --every 30 --action notify
 loom: invalid: trigger.everyMs must be an integer from 60000 to 31536000000
 $ loom schedules add "Ping." --every 60
 loom: invalid: thread_id is required to post from outside a thread
+```
+
+Audiences, in another run with a project `demo-repo`, an agent thread `0844…` and a thread
+`31d4…` launched with `"audience": "person"`. Event 31 is a `notify` with no thread, so every
+filter keeps it:
+
+```text
+$ loom threads list
+0844…  idle  demo-repo  Fix the login test
+31d4…  idle  demo-repo  Plan the week
+$ loom threads list --audience person
+31d4…  idle  demo-repo  Plan the week
+$ loom threads update 0844… --audience person
+0844…  idle  demo-repo  Fix the login test
+$ loom threads list --audience person
+0844…  idle  demo-repo  Fix the login test
+31d4…  idle  demo-repo  Plan the week
+$ loom threads events --audience person --after 30
+31 2026-10-24T23:49:06.312+00:00 - schedule.fired cba9… notify late Stand-up in five minutes.
+32 2026-10-24T23:49:20.137+00:00 0844… thread.updated person
+$ loom threads update 0844…
+usage: loom threads update [-h] --audience {person,agent} [--id ID] thread_id
+loom threads update: error: the following arguments are required: --audience
 ```
 
 ### Following events
@@ -1378,12 +1514,13 @@ not_found no thread with id 'nope'
   `LoomApiError` on `ok: false`.
 - One method per `v1` call, named after it with `_` for `.`. Required params are positional; the
   rest are keywords, and a keyword left `None` is not sent:
-  - `threads_launch(project_id, title, message, *, workspace=None, runner=None, model=None, requests=None, origin=None, id=None)`
+  - `threads_launch(project_id, title, message, *, workspace=None, runner=None, model=None, requests=None, origin=None, audience=None, id=None)`
   - `threads_delegate(parent_id, task, *, workspace=None, runner=None, model=None, id=None)`
   - `threads_send(thread_id, message, *, mode=None, id=None)`
-  - `threads_list(project_id=None)`, `threads_get(thread_id)`
+  - `threads_list(project_id=None, *, audience=None)`, `threads_get(thread_id)`
   - `threads_stop(thread_id, *, id=None)`, `threads_settle(thread_id, *, id=None)`
-  - `threads_events(after=0, thread_id=None)`: one page
+  - `threads_update(thread_id, audience, *, id=None)`
+  - `threads_events(after=0, thread_id=None, *, audience=None)`: one page
   - `projects_add(title, path, *, permission_mode=None, id=None)`
   - `projects_set_mode(project_id, permission_mode, *, id=None)`
   - `projects_remove(project_id, *, id=None)`, `projects_list()`
@@ -1393,10 +1530,10 @@ not_found no thread with id 'nope'
   - Not served yet: `requests_respond(request_id, decision, *, message=None, id=None)`.
 - A call that changes something sends a new uuid4 `id` when `id` is `None`. Pass the same `id`
   again to retry it safely.
-- `Client.follow_events(after=0, thread_id=None) -> Iterator[Event]`: yields every event after
-  `after`, then each new one, until you stop iterating. When the connection is lost it raises
-  `LoomConnectionError` whose `last_event_id` is the id of the last event it yielded (or `after`
-  when none was); follow again from there.
+- `Client.follow_events(after=0, thread_id=None, *, audience=None) -> Iterator[Event]`: yields
+  every event after `after`, then each new one, until you stop iterating. When the connection is
+  lost it raises `LoomConnectionError` whose `last_event_id` is the id of the last event it
+  yielded (or `after` when none was); follow again from there.
 
 ### Errors
 

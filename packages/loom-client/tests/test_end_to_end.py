@@ -180,7 +180,8 @@ class ScriptTest(LiveCase):
         for argv, names in (
             (['--help'], ['serve', 'threads', 'projects', 'schedules']),
             (['threads', '--help'],
-             ['launch', 'delegate', 'send', 'list', 'get', 'stop', 'settle', 'events']),
+             ['launch', 'delegate', 'send', 'list', 'get', 'stop', 'settle', 'update',
+              'events']),
             (['projects', '--help'], ['add', 'set-mode', 'remove', 'list']),
             (['schedules', '--help'], ['add', 'list', 'pause', 'remove']),
         ):
@@ -326,6 +327,39 @@ class CliTest(LiveCase):
         other = self.cli_json('projects', 'add', 'Other', str(make_repo(self.base / 'other')))
         self.assertEqual(self.cli_json('projects', 'remove', 'other'), other)
         self.assertEqual(self.cli_json('projects', 'list'), [changed])
+
+    def test_audience_filters_lists_and_events_and_update_changes_it(self) -> None:
+        self.cli_json('projects', 'add', 'Repo', str(self.repo), '--mode', 'auto')
+        person = self.cli_json('threads', 'launch', 'repo', 'Person', 'hi', '--workspace', 'root',
+                               '--audience', 'person')
+        agent = self.cli_json('threads', 'launch', 'repo', 'Agent', 'hi', '--workspace', 'root')
+        self.assertEqual((person['audience'], agent['audience']), ('person', 'agent'))
+        for thread in (person, agent):
+            self.results(thread['id'])
+            self.idle(thread['id'])
+
+        def listed(*argv: str) -> list[str]:
+            return [thread['id'] for thread in self.cli_json('threads', 'list', *argv)]
+
+        def events(audience: str) -> list[dict]:
+            done = self.cli('--json', 'threads', 'events', '--audience', audience)
+            self.assertEqual((done.returncode, done.stderr), (0, ''))
+            return [json.loads(text) for text in done.stdout.splitlines()]
+
+        self.assertCountEqual(listed(), [person['id'], agent['id']])
+        self.assertEqual(listed('--audience', 'person'), [person['id']])
+        self.assertEqual(listed('--audience', 'agent'), [agent['id']])
+        agent_events = events('agent')
+        self.assertIn(agent['id'], {event['thread_id'] for event in agent_events})
+        self.assertNotIn(person['id'], {event['thread_id'] for event in agent_events})
+
+        updated = self.cli_json('threads', 'update', agent['id'], '--audience', 'person')
+        self.assertEqual((updated['id'], updated['audience']), (agent['id'], 'person'))
+        changes = [event for event in events('person') if event['type'] == 'thread.updated']
+        self.assertEqual([(event['thread_id'], event['data']) for event in changes], [
+            (agent['id'], {'audience': 'person', 'previous_audience': 'agent'}),
+        ])
+        self.assertEqual(listed('--audience', 'agent'), [])
 
     def test_human_output_prints_one_line_per_event(self) -> None:
         thread = self.started('a\x1b[2Jb\tc\nd')

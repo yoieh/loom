@@ -32,9 +32,9 @@ through T3's own tools.
 
 - **Thread**: one agent session. It has an id (a uuid; for Claude it is the agent's session
   uuid, §73.4), a runner (`claude`, `codex` or `t3`), a project, a workspace (§5), a title, an
-  optional parent thread and an optional `origin` (the client or schedule that started it), and
-  a state (§4). Codex picks its own thread id (`thread.started`), so its runner keeps that id in
-  `<data_dir>/codex/<thread id>`.
+  optional parent thread and an optional `origin` (the client or schedule that started it), an
+  audience (`person` or `agent`, §15), and a state (§4). Codex picks its own thread id
+  (`thread.started`), so its runner keeps that id in `<data_dir>/codex/<thread id>`.
 - **Turn**: one message, or several that steer it, up to the agent's `result`.
 - **Task**: a thread another thread started with `delegate`, whose result goes back to its
   parent.
@@ -216,10 +216,10 @@ class RunnerSession(Protocol):
 ## §8 The API
 
 - **Calls** (`v1`): `threads.launch`, `threads.delegate`, `threads.send`, `threads.list`,
-  `threads.get`, `threads.stop`, `threads.settle`, `threads.events` (a stream from a given event
-  id, so a client that reconnects misses nothing), `requests.respond`, `schedules.add`,
-  `schedules.list`, `schedules.pause`, `schedules.remove`, `projects.*`. Each call and event is
-  documented, with examples, in `docs/api.md`.
+  `threads.get`, `threads.stop`, `threads.settle`, `threads.update` (a thread's audience, §15),
+  `threads.events` (a stream from a given event id, so a client that reconnects misses nothing),
+  `requests.respond`, `schedules.add`, `schedules.list`, `schedules.pause`, `schedules.remove`,
+  `projects.*`. Each call and event is documented, with examples, in `docs/api.md`.
 - **Transport.** `loom serve` listens on `$XDG_RUNTIME_DIR/loom/api.sock` (user-only, mode
   0600), JSON lines. A local client needs no token and nothing listens on a port. A remote
   client waits for a relay and is not covered.
@@ -259,8 +259,9 @@ is recorded as an outside thread.
 
 - **Thread Voice** keeps everything about people: voice, calls, asks, push, its pages,
   personas and household members. Everything about agents goes through `loom-client`: it
-  launches and sends through the API and follows `threads.events` for reply progress, the agent
-  log and settled state; it answers `request.opened` by voice and speaks `schedule.fired`.
+  launches its threads with `audience: "person"`, sends through the API and follows
+  `threads.events` with `audience: "person"` (§15) for reply progress, the agent log and settled
+  state; it answers `request.opened` by voice and speaks `schedule.fired`.
   Agents keep `thread-voice-mcp` for `speak` and `ask`, beside `loom-mcp`. Its pages can show a
   threads board and a schedules list from the same events. That work is Thread Voice's, once
   Loom's `v1` API exists.

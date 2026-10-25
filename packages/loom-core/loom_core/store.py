@@ -9,7 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from loom_contracts.calls import CallName
+from loom_contracts.calls import Audience, CallName
 from loom_contracts.events import Event, EventType
 
 from .clock import Clock, iso, utc_now
@@ -21,6 +21,7 @@ MAX_COMMAND_ID = 200
 MAX_EVENTS = 1000
 MAX_EVENT_ID = 2**63 - 1
 MESSAGE_SOURCE = 'source INTEGER NOT NULL DEFAULT 1'
+THREAD_AUDIENCE = "audience TEXT NOT NULL DEFAULT 'agent'"
 
 SCHEMA: list[str] = [
     '''CREATE TABLE IF NOT EXISTS commands (
@@ -45,7 +46,7 @@ SCHEMA: list[str] = [
         permission_mode TEXT NULL,
         created_at TEXT NOT NULL
     )''',
-    '''CREATE TABLE IF NOT EXISTS threads (
+    f'''CREATE TABLE IF NOT EXISTS threads (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
         runner TEXT NOT NULL,
@@ -65,7 +66,8 @@ SCHEMA: list[str] = [
         has_session INTEGER NOT NULL DEFAULT 0,
         stop_requested INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        {THREAD_AUDIENCE}
     )''',
     'CREATE INDEX IF NOT EXISTS threads_project ON threads (project_id, state)',
     'CREATE INDEX IF NOT EXISTS threads_parent ON threads (parent_id)',
@@ -113,10 +115,10 @@ def _make_data_dir(data_dir: Path) -> None:
     os.chmod(data_dir, 0o700)
 
 
-def _add_message_source(tx: sqlite3.Connection) -> None:
-    columns = {row[1] for row in tx.execute('PRAGMA table_info(messages)')}
-    if 'source' not in columns:
-        tx.execute(f'ALTER TABLE messages ADD COLUMN {MESSAGE_SOURCE}')
+def _add_column(tx: sqlite3.Connection, table: str, column: str) -> None:
+    columns = {row[1] for row in tx.execute(f'PRAGMA table_info({table})')}
+    if column.split()[0] not in columns:
+        tx.execute(f'ALTER TABLE {table} ADD COLUMN {column}')
 
 
 def _check_command_id(command_id: object) -> str:
@@ -146,7 +148,8 @@ class Store:
             with store.transaction() as tx:
                 for statement in SCHEMA:
                     tx.execute(statement)
-                _add_message_source(tx)
+                _add_column(tx, 'threads', THREAD_AUDIENCE)
+                _add_column(tx, 'messages', MESSAGE_SOURCE)
             store.prune_events()
         except BaseException:
             connection.close()
@@ -218,6 +221,7 @@ class Store:
 
     def events(
         self, after: object = 0, thread_id: object = None, limit: int = MAX_EVENTS,
+        audience: object = None,
     ) -> list[Event]:
         if (
             isinstance(after, bool) or not isinstance(after, int)
@@ -228,11 +232,19 @@ class Store:
             raise LoomError('invalid', 'thread_id must be a string')
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             raise LoomError('invalid', 'limit must be an integer of 1 or more')
+        if audience is not None and (
+                not isinstance(audience, str) or audience not in tuple(Audience)):
+            raise LoomError('invalid', f'audience must be one of {", ".join(Audience)}')
         sql = 'SELECT id, type, at, thread_id, data FROM events WHERE id > ?'
         args: list[object] = [after]
         if thread_id is not None:
             sql += ' AND thread_id = ?'
             args.append(thread_id)
+        if audience is not None:
+            sql += (' AND (thread_id IS NULL'
+                    ' OR thread_id IN (SELECT id FROM threads WHERE audience = ?)'
+                    " OR (type = ? AND json_extract(data, '$.previous_audience') = ?))")
+            args.extend((str(audience), str(EventType.THREAD_UPDATED), str(audience)))
         sql += ' ORDER BY id LIMIT ?'
         args.append(min(limit, MAX_EVENTS))
         return [
