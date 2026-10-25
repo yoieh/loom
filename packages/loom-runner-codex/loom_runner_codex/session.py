@@ -11,6 +11,7 @@ from loom_contracts.runners import (
     Capability,
     DispatchMode,
     Exited,
+    MessageEntered,
     RequestAnswer,
     RunnerEvent,
     RunnerHost,
@@ -126,6 +127,7 @@ def _child_group(process: Process, getpgid: GetGroup) -> int | None:
 @dataclasses.dataclass(eq=False)
 class _Turn:
     message: bytes
+    prompt: str
     spawned: asyncio.Future[None]
     process: Process | None = None
     group: int | None = None
@@ -287,7 +289,7 @@ class CodexSession:
         return task
 
     def _reserve(self, message: str) -> _Turn:
-        turn = _Turn(message.encode('utf-8', 'replace'), self._loop.create_future())
+        turn = _Turn(message.encode('utf-8', 'replace'), message, self._loop.create_future())
         self._turn = turn
         return turn
 
@@ -443,6 +445,7 @@ class CodexSession:
                 if not turn.started:
                     turn.started = True
                     self._emit(item)
+                    self._emit(MessageEntered(turn.prompt))
             case TextOut():
                 turn.text = item.text
                 self._emit(item)

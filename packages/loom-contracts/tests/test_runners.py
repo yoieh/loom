@@ -9,6 +9,7 @@ from loom_contracts.runners import (
     Decision,
     DispatchMode,
     Exited,
+    MessageEntered,
     PermissionMode,
     PermissionRequest,
     RequestAnswer,
@@ -92,6 +93,7 @@ class RunnerEventTest(unittest.TestCase):
     def setUp(self) -> None:
         self.events = {
             TurnStarted: (TurnStarted(), []),
+            MessageEntered: (MessageEntered('Reply with the word second'), ['text']),
             TextOut: (TextOut('heron'), ['text']),
             ToolUse: (
                 ToolUse('toolu_016V', 'Bash', {'command': 'echo hi'}),

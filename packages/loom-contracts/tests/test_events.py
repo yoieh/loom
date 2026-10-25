@@ -4,8 +4,8 @@ from typing import get_args, get_type_hints
 
 from loom_contracts.calls import Audience
 from loom_contracts.events import (
-    EVENT_DATA, Event, EventData, EventType, SignalData, SkipReason, ThreadSettledData,
-    TriggerSkippedData,
+    EVENT_DATA, Event, EventData, EventType, MessageEnteredData, SignalData, SkipReason,
+    ThreadSettledData, TriggerSkippedData,
 )
 from loom_contracts.runners import Decision
 from loom_contracts.states import ThreadState, TurnState
@@ -25,6 +25,7 @@ DATA: dict[str, tuple[set[str], set[str]]] = {
     'schedule.fired': ({'schedule_id', 'action', 'text'}, {'by', 'late', 'cause', 'hops'}),
     'signal': ({'topic', 'payload', 'hops'}, {'project_id', 'key', 'cause', 'by'}),
     'trigger.skipped': ({'schedule_id', 'event_id', 'reason'}, set()),
+    'message.entered': ({'command_id', 'text'}, set()),
 }
 
 
@@ -41,6 +42,15 @@ class ThreadSettledTest(unittest.TestCase):
         self.assertIn(ThreadSettledData, get_args(EventData))
         self.assertEqual(ThreadSettledData.__required_keys__, frozenset())
         self.assertEqual(ThreadSettledData.__optional_keys__, frozenset({'result'}))
+
+
+class MessageEnteredTest(unittest.TestCase):
+    def test_the_type_and_its_data(self) -> None:
+        self.assertEqual(EventType.MESSAGE_ENTERED, 'message.entered')
+        self.assertIs(EVENT_DATA[EventType.MESSAGE_ENTERED], MessageEnteredData)
+        self.assertIn(MessageEnteredData, get_args(EventData))
+        self.assertEqual(MessageEnteredData.__required_keys__, frozenset({'command_id', 'text'}))
+        self.assertEqual(MessageEnteredData.__optional_keys__, frozenset())
 
 
 class SignalTest(unittest.TestCase):
@@ -111,6 +121,8 @@ class EventDataTest(unittest.TestCase):
             ('trigger.skipped', 'schedule_id'): str,
             ('trigger.skipped', 'event_id'): int,
             ('trigger.skipped', 'reason'): SkipReason,
+            ('message.entered', 'command_id'): str,
+            ('message.entered', 'text'): str,
         }
         for (kind, key), field_type in expected.items():
             with self.subTest(kind=kind, key=key):
