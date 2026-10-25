@@ -364,7 +364,10 @@ A thread `idle` for `idle_after` seconds goes to `sleeping` too; the next messag
 
 **Errors:** `not_found` when the project does not exist; `invalid` for a missing or wrong
 parameter, such as an `audience` that is null (`audience must not be null`) or not `person` or
-`agent` (`audience must be one of person, agent`).
+`agent` (`audience must be one of person, agent`); `conflict` when the call comes from an agent
+thread that is being stopped (`thread <id> is stopping`), as
+[`threads.delegate`](#threadsdelegate) refuses a stopping parent. A schedule's launch is not
+refused this way, and a retry of a launch that already succeeded still returns its first answer.
 
 ```json
 {"v": "v1", "call": "threads.launch", "params": {"id": "c3", "project_id": "demo-repo", "title": "Fix the login test", "message": "Make the login test pass.", "workspace": {"strategy": "root"}}}
