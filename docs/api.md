@@ -5,8 +5,8 @@ script in any language. It documents the socket protocol `loom serve` speaks, ev
 event, `loom serve` itself, the `loom` CLI and the Python API. The design behind it is
 `docs/design.md` §8; this page says what the code does today.
 
-Served now: seventeen calls, the `threads.*`, `projects.*` and `schedules.*` ones. Only
-`requests.respond` waits: it comes with LM-9, and the server answers it `invalid` until then.
+Served now: all eighteen `v1` calls, the `threads.*`, `projects.*` and `schedules.*` ones and
+`requests.respond`.
 
 ## Start here
 
@@ -31,12 +31,12 @@ The same from the CLI is `uv run loom projects list`, and from Python
 `loom_client.Client().projects_list()`.
 
 In the examples below, the first JSON line is the request and the next one the answer, as they
-pass on the socket. Thread and schedule ids such as `"3f2a…"` and the paths are shortened;
-everything else comes from a real run. The command ids `c1`, `c2`, … give the order the changes
-ran in; each read shows the state at its point in that run, and `projects.remove` succeeded once
-both threads were settled. The `schedules.*` examples, those of `threads.update` and the
-`audience` filters, and those of concurrency keys and `thread.settled`, come from later runs of
-their own.
+pass on the socket. Thread, schedule and request ids such as `"3f2a…"` and the paths are
+shortened; everything else comes from a real run. The command ids `c1`, `c2`, … give the order
+the changes ran in; each read shows the state at its point in that run, and `projects.remove`
+succeeded once both threads were settled. The `schedules.*` examples, those of `threads.update`
+and the `audience` filters, those of concurrency keys and `thread.settled`, and those of
+permission requests, come from later runs of their own.
 
 ## Transport
 
@@ -91,9 +91,9 @@ breaking change will be `v2`, served next to `v1`.
 
 | Code | When |
 |---|---|
-| `invalid` | The request is malformed, a parameter is missing or wrong, the call is unknown or not served yet, or the line is over the cap. |
-| `not_found` | The thread or project the request names does not exist. |
-| `conflict` | The request clashes with the current state: the thread has ended, the project still has a live thread, the path is already a project's root, or the command id was used for another call. |
+| `invalid` | The request is malformed, a parameter is missing or wrong, the call is unknown or not served, or the line is over the cap. |
+| `not_found` | The thread, project, schedule or request the request names does not exist. |
+| `conflict` | The request clashes with the current state: the thread has ended or is being stopped, the request is closed, the project still has a live thread, the path is already a project's root, or the command id was used for another call. |
 | `forbidden` | The caller may not make this call (see [Callers](#callers)). |
 | `failed` | Something broke inside Loom. The message is `internal error`; the traceback goes only to the server's stderr. |
 
@@ -119,9 +119,12 @@ as usual. The server checks in this order, and the messages are:
 ```
 
 ```json
-{"call": "requests.respond", "params": {}}
-{"ok":false,"error":{"code":"invalid","message":"requests.respond is not served yet"}}
+{"call": "threads.lanch", "params": {}}
+{"ok":false,"error":{"code":"invalid","message":"unknown call: threads.lanch"}}
 ```
+
+`loom serve` serves every `v1` call, so it gives `<call> is not served yet` only for a call that
+is added to `v1` before it is served.
 
 ### Line cap
 
@@ -147,8 +150,8 @@ string of 1 to 200 characters`. The CLI and the Python API make one for you.
 - Using an `id` again for a different call is a `conflict`, `id was already used for <call>`.
 - The calls that take an `id` are `threads.launch`, `threads.delegate`, `threads.send`,
   `threads.stop`, `threads.settle`, `threads.update`, `projects.add`, `projects.set_mode`,
-  `projects.remove`, `schedules.add`, `schedules.pause` and `schedules.remove` (and
-  `requests.respond`, once served).
+  `projects.remove`, `requests.respond`, `schedules.add`, `schedules.pause` and
+  `schedules.remove`.
 - Loom's scheduler uses ids of the form `schedule:<schedule id>:<due>` for the calls its runs make
   (see [How schedules run](#how-schedules-run)), so don't choose ids that begin with `schedule:`.
 
@@ -225,6 +228,64 @@ the schedule's maker and the schedule's id:
 - The checks `schedules.add` makes on its `thread_id` and `project_id` run as the caller itself.
 
 Any caller may list, pause or remove any schedule.
+
+### Who may answer a request
+
+An agent's permission prompt is a [`request.opened`](#requestopened) event, and a client answers
+it with [`requests.respond`](#requestsrespond) (§8 Requests). Who may answer depends on the
+thread's `requests`, which [`threads.launch`](#threadslaunch) sets and
+[`threads.delegate`](#threadsdelegate) passes on to the child. The server knows each caller, told
+apart as above, as one of these:
+
+| Caller | Known as |
+|---|---|
+| A process Loom counts as an agent | Its Loom thread, by the thread's id. |
+| Any other process of the user that the server can check | The user. A person at the CLI, a script, the factory, Thread Voice and a T3 thread all count as the user, and Loom does not tell them apart. |
+| A call a schedule makes, or a peer whose `/proc` entries can't be read | Nobody. |
+
+`threads.launch` stores who called it on the new thread as the thread's launcher. A delegated
+child, at any depth, keeps its top-level thread's launcher; no call result shows it.
+
+- `requests: "any"` (the default): any caller may answer, other Loom threads included, except
+  the thread that asked.
+- `requests: "caller"`: only the launcher may answer. A thread that Loom thread `A` launched, and
+  every thread delegated under it, takes answers only from `A`. A thread that the user launched
+  takes answers from any of the user's outside processes. Every other caller gets `forbidden`,
+  `only the caller that launched this thread may answer its requests`. So a delegating thread
+  never answers its child's requests: the child's launcher is its top-level thread's, never its
+  parent.
+- A launcher of nobody matches no caller, not even another nobody. A `caller` thread that a
+  schedule or an unchecked caller launched, or one launched before Loom stored launchers, takes
+  no answer, and each of its requests is denied when `request_timeout` runs out.
+- A thread never answers its own requests, whatever its `requests`: it gets `forbidden`,
+  `a thread may not answer its own requests`.
+
+A process with `LOOM_THREAD` set to another thread's id answers a `caller` thread that the user
+launched:
+
+```json
+{"v": "v1", "call": "requests.respond", "params": {"id": "c4", "request_id": "7ac9…", "decision": "allow"}}
+{"ok":false,"error":{"code":"forbidden","message":"only the caller that launched this thread may answer its requests"}}
+```
+
+The thread `2cc7…`, launched with the default `requests`, answers its own request:
+
+```json
+{"v": "v1", "call": "requests.respond", "params": {"id": "d2", "request_id": "ea4e…", "decision": "allow"}}
+{"ok":false,"error":{"code":"forbidden","message":"a thread may not answer its own requests"}}
+```
+
+**Limits.** As for projects, this guards against an agent's own calls. It is not a sandbox.
+
+- `LOOM_THREAD` is whatever the calling process says. An agent that runs a command such as
+  `LOOM_THREAD=<another thread id> loom ...` is taken for that thread. So under `caller` an agent
+  that knows the launching thread's id (`threads.list` shows it) can answer as that thread, and
+  under `any` an agent can answer its own requests this way. To answer for a thread the user
+  launched, an agent must leave Loom's process tree and unset `LOOM_THREAD`, as above.
+- A process of the same user that leaves Loom's process tree and unsets `LOOM_THREAD` counts as
+  the user.
+- Under `any`, a thread can still have another thread answer for it, such as a child it
+  delegates or a thread it launches.
 
 ## Results
 
@@ -325,7 +386,7 @@ root is not a git repo, the branch exists already, the base is not a commit), ma
 | [`projects.set_mode`](#projectsset_mode) | yes | yes |
 | [`projects.remove`](#projectsremove) | yes | yes |
 | [`projects.list`](#projectslist) | yes | no |
-| [`requests.respond`](#requestsrespond) | LM-9 | yes |
+| [`requests.respond`](#requestsrespond) | yes | yes |
 | [`schedules.add`](#schedulesadd) | yes | yes |
 | [`schedules.list`](#scheduleslist) | yes | no |
 | [`schedules.pause`](#schedulespause) | yes | yes |
@@ -347,7 +408,7 @@ Starts a new top-level thread in a project with a first message.
 | `workspace` | object | Default `{"strategy": "worktree"}`. See [Workspaces](#workspaces). |
 | `runner` | string | Default `"claude"`. `claude` and `codex` are served; `t3` answers `invalid`, `runner t3 is not available`. |
 | `model` | string | Not empty. Default: the agent's own. |
-| `requests` | string | `"any"` (default) or `"caller"`: who may answer the thread's permission prompts (§8 Requests). Stored now, used once `requests.respond` is served. |
+| `requests` | string | Who may answer the thread's permission prompts (§8 Requests): `"any"` (default), any caller but the thread itself, or `"caller"`, only the caller that launched it. A delegated child keeps both. See [Who may answer a request](#who-may-answer-a-request). A null answers `invalid`, `requests must not be null`; any other value `requests must be one of caller, any`. |
 | `origin` | string | Who started the thread, for clients to show. |
 | `audience` | string | `"agent"` (default) or `"person"`: who talks with the thread (§15 Audience). |
 | `concurrency_key` | string | 1 to 200 characters, such as `pm:demo-repo`. At most one thread holds a key (see Concurrency keys below). Default: no key. A null answers `invalid`, `concurrency_key must not be null`; another type, an empty string or a longer one answers `invalid`, `concurrency_key must be a string of 1 to 200 characters`. |
@@ -395,8 +456,9 @@ While another thread holds the key:
   another project or was delegated, it answers `conflict`,
   `concurrency key <key> is waiting in another project or under another parent`, and changes
   nothing. A joining launch's `title`, `workspace`, `runner`, `model`, `requests`, `origin`,
-  `audience` and `settle` are checked but not used: the waiting thread keeps its own. A retry
-  with the same command id answers the same thread and adds the message once.
+  `audience` and `settle` are checked but not used: the waiting thread keeps its own, and its
+  launcher (see [Who may answer a request](#who-may-answer-a-request)). A retry with the same
+  command id answers the same thread and adds the message once.
 
 A waiting thread that is settled or stopped leaves the wait. A thread that let its key go, or
 left the wait, never takes the key again: a later message to it runs it beside the new holder.
@@ -467,8 +529,10 @@ Nothing is posted while the child or the parent is being stopped, or once the pa
 | `on_busy` | string | `"queue"` (default) or `"coalesce"`, as under [`threads.launch`](#threadslaunch). |
 
 The child's title is the first line of `task`, cut at 80 characters. It runs in the parent's
-project with the project's mode, and it inherits the parent's `requests`. Its audience is always
-`agent`, whatever the parent's is.
+project with the project's mode, and it inherits the parent's `requests` and keeps the top-level
+thread's launcher, so under `caller` that launcher answers its requests, never the parent (see
+[Who may answer a request](#who-may-answer-a-request)). Its audience is always `agent`, whatever
+the parent's is.
 
 A key works as under Concurrency keys in [`threads.launch`](#threadslaunch): a child holds it,
 or waits for it.
@@ -803,6 +867,82 @@ Lists projects, oldest first. It takes no params.
 {"ok":true,"result":[{"id":"demo-repo","title":"Demo repo","workspace_root":"/home/me/src/demo","permission_mode":null,"created_at":"2026-10-24T18:47:12.927+00:00"}]}
 ```
 
+### `requests.respond`
+
+Answers a permission prompt: an agent that asks to use a tool opens a request, sent as a
+[`request.opened`](#requestopened) event, and its thread is `waiting` until the request closes
+(§8 Requests). [Who may answer a request](#who-may-answer-a-request) says which callers may
+answer it.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string, required | Command id. |
+| `request_id` | string, required | The `request_id` of the `request.opened` event. |
+| `decision` | string, required | `"allow"` or `"deny"`. |
+| `message` | string | At most 2,000 characters. What the agent is told with a `deny`; with an `allow` it is not sent. When it is missing or empty, the agent is told `Denied.` |
+
+**Result:** the request's thread after the answer. Its `waiting` is `false` once it has no other
+open request, with a `thread.state` event (`running`, `waiting: false`). The answer goes to the
+agent after the call answers.
+
+**The first answer wins.** A request closes once. The first answer closes it, with a
+[`request.closed`](#requestclosed) event, and goes to the agent. Any later answer with another
+command id gets `conflict`, `request <request_id> is closed`, and nothing is sent. A retry with
+the same `id` returns the first answer word for word, even after the turn has moved on, and sends
+nothing again (see [Command ids](#command-ids-and-safe-retries)). When the answer can't reach the
+agent, for example because its process has gone, the decision stays recorded and the call still
+answers with the thread. Loom never allows a request on its own: an `allow` comes only from a
+`requests.respond` (§11).
+
+**When nobody answers.** A request expires `request_timeout` seconds after it opened (default
+600, see [`config.toml`](#configtoml)); its `request.opened` event gives the time as
+`expires_at`. Loom checks once a second and denies each expired request: a `request.closed` event
+with `reason: "timeout"`, and the agent is told
+`No answer came within <request_timeout> s, so Loom denied this request.` So the deny comes up to
+about a second after `expires_at`.
+
+**When the turn ends first.** When the thread leaves `running` with a request still open (its
+turn's result, a stop, sleep, a crash, a settle, a failure, or a restart of `loom serve`), Loom
+closes the request as `deny` with `reason: "ended"`, and sends the agent nothing. A turn resumed
+after a restart may ask again, as a new request.
+
+**Errors**, checked in this order:
+
+| Problem | Code | Message |
+|---|---|---|
+| `params` is not an object | `invalid` | `params must be an object` |
+| `request_id` is missing or null | `invalid` | `request_id is required` |
+| `request_id` is not a string | `invalid` | `request_id must be a string` |
+| `decision` is missing or null | `invalid` | `decision is required` |
+| `decision` is not `allow` or `deny` | `invalid` | `decision must be one of allow, deny` |
+| `message` is null | `invalid` | `message must not be null` |
+| `message` is not a string, or is over 2,000 characters | `invalid` | `message must be a string of at most 2000 characters` |
+| A missing or bad `id` | `invalid` | `id must be a string of 1 to 200 characters` |
+| The `id` was used for another call | `conflict` | `id was already used for <call>` |
+| No request has this id | `not_found` | `no request with id '<request_id>'` |
+| The caller is the thread that asked | `forbidden` | `a thread may not answer its own requests` |
+| The thread's `requests` is `caller` and the caller is not its launcher | `forbidden` | `only the caller that launched this thread may answer its requests` |
+| The thread is being stopped | `conflict` | `thread <thread id> is stopping` |
+| The request is closed: answered, timed out or ended | `conflict` | `request <request_id> is closed` |
+
+A retry with an `id` already used for `requests.respond` returns its first answer before the
+checks after `id` run.
+
+The person who launched `8408…` with `requests: "caller"` allows its request, in a run with
+`request_timeout = 3`:
+
+```json
+{"v": "v1", "call": "requests.respond", "params": {"id": "c5", "request_id": "7ac9…", "decision": "allow"}}
+{"ok":true,"result":{"id":"8408…","title":"Clean the build","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"approval-required","state":"running","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"created_at":"2026-10-25T03:06:10.778+00:00"}}
+```
+
+A second answer, with another command id, comes too late:
+
+```json
+{"v": "v1", "call": "requests.respond", "params": {"id": "c6", "request_id": "7ac9…", "decision": "deny", "message": "Not now."}}
+{"ok":false,"error":{"code":"conflict","message":"request 7ac9… is closed"}}
+```
+
 ### How schedules run
 
 A schedule runs a text on a trigger, with one of three actions (§7). The scheduler starts and
@@ -1027,30 +1167,12 @@ missing (`schedule_id is required`) or not a string (`schedule_id must be a stri
 {"ok":false,"error":{"code":"not_found","message":"no schedule with id '2cbf…'"}}
 ```
 
-### Not served yet
-
-This call is part of `v1` and its params are fixed in `loom_contracts/calls.py`, but the server
-answers it `invalid`, `requests.respond is not served yet`, until its issue is done. The Python
-API already has a method for it; the CLI has no command for it.
-
-#### `requests.respond`
-
-Not served yet (LM-9). Answers a permission prompt (a `request.opened` event); the first answer
-wins (§8 Requests).
-
-| Param | Type | |
-|---|---|---|
-| `id` | string, required | Command id. |
-| `request_id` | string, required | From the `request.opened` event. |
-| `decision` | string, required | `allow` or `deny`. |
-| `message` | string | A note for the agent. |
-
 ## Events
 
 Every change of a thread's state or audience, every turn's text and tool calls, every turn's
-result and every schedule run that fired is an event, with an id that only grows. Read them with
-[`threads.events`](#threadsevents). The state in `threads.get` is the truth; events are a log to
-follow, kept 30 days (§4 Events).
+result, every permission request that opened or closed and every schedule run that fired is an
+event, with an id that only grows. Read them with [`threads.events`](#threadsevents). The state
+in `threads.get` is the truth; events are a log to follow, kept 30 days (§4 Events).
 
 ```json
 {"id": 5, "type": "turn.tool", "at": "2026-10-24T18:47:13.004+00:00", "thread_id": "3f2a…", "data": {"tool_use_id": "toolu_fake_1", "name": "Bash", "input": {"command": "true", "description": "Fake tool call 1"}}}
@@ -1065,9 +1187,10 @@ follow, kept 30 days (§4 Events).
 | `data` | object | Depends on `type`. |
 
 A turn in the log runs `thread.state` (`running`), `turn.started`, any number of `turn.tool` and
-`turn.text`, `turn.result`, then `thread.state` (`idle`). Text in events is written by the agent:
-show it as text, never as markup or terminal codes (§11). A client should skip event types it does
-not know.
+`turn.text`, `turn.result`, then `thread.state` (`idle`). A turn that asks for permission also
+holds `request.opened`, then `thread.state` with `waiting: true`, and later `request.closed`,
+then `thread.state` with `waiting: false`. Text in events is written by the agent: show it as
+text, never as markup or terminal codes (§11). A client should skip event types it does not know.
 
 ### `thread.state`
 
@@ -1187,32 +1310,48 @@ The turn ended.
 
 ### `request.opened`
 
-The agent asks for permission to run a tool, and the thread is `waiting`. Nothing can answer it
-until `requests.respond` is served (LM-9), so for now a thread that asks waits until it is
-stopped.
+The agent asks for permission to use a tool, and the thread is `waiting`: a `thread.state` event
+(`running`, `waiting: true`) follows. Answer it with [`requests.respond`](#requestsrespond); with
+no answer by `expires_at`, Loom denies it.
 
 | Field | Type | |
 |---|---|---|
-| `request_id` | string | |
+| `request_id` | string | The id to answer with. |
 | `tool_name` | string | |
 | `input` | object | |
 | `description` | string | Only when the agent gave one. |
+| `expires_at` | string | When Loom denies the request if nobody has answered: the time it opened plus `request_timeout` seconds, ISO 8601, UTC, with milliseconds. Every new request has it; an event stored before Loom wrote it has none. |
 
 ```json
-{"id": 12, "type": "request.opened", "at": "2026-10-24T19:02:41.120+00:00", "thread_id": "3f2a…", "data": {"request_id": "req-1", "tool_name": "Bash", "input": {"command": "rm -rf build"}, "description": "Remove the build directory"}}
+{"id": 18, "type": "request.opened", "at": "2026-10-25T03:06:10.979+00:00", "thread_id": "8408…", "data": {"request_id": "7ac9…", "tool_name": "Bash", "input": {"command": "echo spike-233 > a.txt", "description": "Write spike-233 to a.txt"}, "description": "Write spike-233 to a.txt", "expires_at": "2026-10-25T03:06:13.979+00:00"}}
 ```
+
+Loom opens no request, and denies it at once with the message
+`Loom could not open this request.`, when the thread is not `running`, is being stopped, or asks
+with a `request_id` Loom already has, or when the asking agent process is no longer the thread's.
+No `request.opened` is sent for it.
 
 ### `request.closed`
 
-A request was answered. Not sent yet (LM-9).
+A request closed: a client answered it, nobody answered in time, or the thread left `running`
+first. It is sent once for each request. When the thread is still `running` and has no other
+open request, a `thread.state` event (`running`, `waiting: false`) follows. When a turn ends with
+a request open, the events come as `turn.result`, `request.closed`, then `thread.state`.
 
 | Field | Type | |
 |---|---|---|
 | `request_id` | string | |
 | `decision` | string | `allow` or `deny`. |
+| `reason` | string | Left out when a client answered. `timeout` when nobody answered by `expires_at`, `ended` when the thread left `running` with the request still open (see [`requests.respond`](#requestsrespond)). Both come with `deny`. |
 
 ```json
-{"id": 13, "type": "request.closed", "at": "2026-10-24T19:02:55.004+00:00", "thread_id": "3f2a…", "data": {"request_id": "req-1", "decision": "allow"}}
+{"id": 20, "type": "request.closed", "at": "2026-10-25T03:06:11.045+00:00", "thread_id": "8408…", "data": {"request_id": "7ac9…", "decision": "allow"}}
+```
+
+A request nobody answered, with `request_timeout = 3`:
+
+```json
+{"id": 57, "type": "request.closed", "at": "2026-10-25T03:06:39.522+00:00", "thread_id": "9498…", "data": {"request_id": "3b6f…", "decision": "deny", "reason": "timeout"}}
 ```
 
 ### `schedule.fired`
@@ -1269,8 +1408,8 @@ and stops when the server stops. Runs missed while the server was down follow th
 
 ### `config.toml`
 
-Every key is optional. `agents_max` and `idle_after` are whole numbers of 1 or more; every
-other value is a string.
+Every key is optional. `agents_max`, `idle_after` and `request_timeout` are whole numbers of 1
+or more; every other value is a string.
 
 | Key | Default | |
 |---|---|---|
@@ -1280,6 +1419,7 @@ other value is a string.
 | `permission_mode` | `auto` | The mode for projects with none; one of the [permission modes](#permission-modes). |
 | `agents_max` | The available memory at start, less 2 GiB, divided by 350 MiB, at least 1 | How many agent processes may be live at once (§4). |
 | `idle_after` | `1200` | Seconds a thread may stay `idle` before it goes to `sleeping`. Loom checks every 30 s. |
+| `request_timeout` | `600` | Seconds a permission request may stay open before Loom denies it (see [`requests.respond`](#requestsrespond)). Loom checks every second. |
 | `codex_bin` | `codex` | The Codex program to run. When its directory holds `node`, that directory goes on the end of the agent's `PATH`. |
 | `codex_home` | none | Given to Codex as `CODEX_HOME`. |
 
@@ -1288,12 +1428,13 @@ claude_bin = "/usr/local/bin/claude"
 permission_mode = "auto-accept-edits"
 agents_max = 8
 idle_after = 1800
+request_timeout = 300
 ```
 
 An unknown key, a string key whose value is not a string, a bad mode or a TOML error stops the
-server with exit 2, naming the file and the problem. So does an `agents_max` or `idle_after`
-that is not a whole number of 1 or more (a string, a float, `true`, 0 or less):
-`<path>: agents_max must be a whole number of 1 or more`.
+server with exit 2, naming the file and the problem. So does an `agents_max`, `idle_after` or
+`request_timeout` that is not a whole number of 1 or more (a string, a float, `true`, 0 or
+less): `<path>: request_timeout must be a whole number of 1 or more`, with the key's name.
 
 ### `agent-token`
 
@@ -1405,9 +1546,10 @@ They go before the command.
 | `loom schedules list [--thread T] [--project P]` | `schedules.list` |
 | `loom schedules pause <schedule_id> [--id ID]` | `schedules.pause` |
 | `loom schedules remove <schedule_id> [--id ID]` | `schedules.remove` |
+| `loom requests respond <request_id> allow\|deny [--message M] [--id ID]` | `requests.respond` |
 
-- `loom project ...` is the same as `loom projects ...`, and `loom schedule ...` as
-  `loom schedules ...`.
+- `loom project ...` is the same as `loom projects ...`, `loom schedule ...` as
+  `loom schedules ...`, and `loom request ...` as `loom requests ...`.
 - `--branch` and `--base` go with `--workspace worktree`, `--path` and `--branch` with
   `--workspace existing_worktree`; any other mix is a usage error.
 - `--audience` sends `audience`: on `threads launch` the new thread's audience, on `threads list`
@@ -1433,7 +1575,8 @@ They go before the command.
   write command fails with exit 3 after it reached Loom, stderr ends in `retry with --id <id>`,
   the id it sent (`LoomConnectionError.command_id`), so run the same command again with that
   `--id`.
-- There are no `requests` commands yet (LM-9).
+- `requests respond` sends `message` only with `--message`; the agent gets it only with `deny`.
+  `--message` is not read from stdin, so it shows in the `loom` process's command line.
 
 ### Examples
 
@@ -1538,6 +1681,41 @@ usage: loom threads update [-h] --audience {person,agent} [--id ID] thread_id
 loom threads update: error: the following arguments are required: --audience
 ```
 
+Permission requests, in another run with `request_timeout = 3` in the config. The agent asks to
+run a Bash command; the first answer denies it, and the second comes too late. The second thread
+gets no answer, so Loom denies its request after 3 s:
+
+```text
+$ loom projects add Demo . --mode approval-required
+demo  approval-required  /home/me/src/demo  Demo
+$ loom threads launch demo "Clean the build" "Ask for permission." --workspace root --requests caller
+e3b3…  queued  demo  Clean the build
+$ loom threads list
+e3b3…  running waiting  demo  Clean the build
+$ loom requests respond 2038… deny --message "Not now."
+e3b3…  running  demo  Clean the build
+$ loom request respond 2038… allow
+loom: conflict: request 2038… is closed
+$ loom threads events --after 5
+6 2026-10-25T03:09:43.444+00:00 e3b3… request.opened 2038… Bash Write spike-233 to a.txt {"command": "echo spike-233 > a.txt", "description": "Write spike-233 to a.txt"}
+7 2026-10-25T03:09:43.444+00:00 e3b3… thread.state running waiting
+8 2026-10-25T03:09:44.250+00:00 e3b3… request.closed 2038… deny
+9 2026-10-25T03:09:44.250+00:00 e3b3… thread.state running
+10 2026-10-25T03:09:44.318+00:00 e3b3… turn.text The tool call was denied.
+11 2026-10-25T03:09:44.382+00:00 e3b3… turn.result completed The tool call was denied.
+12 2026-10-25T03:09:44.382+00:00 e3b3… thread.state idle
+$ loom threads launch demo "Clean the build" "Ask for permission." --workspace root
+8ed2…  queued  demo  Clean the build
+$ loom threads events --after 17
+18 2026-10-25T03:09:45.692+00:00 8ed2… request.opened a1ea… Bash Write spike-233 to a.txt {"command": "echo spike-233 > a.txt", "description": "Write spike-233 to a.txt"}
+19 2026-10-25T03:09:45.692+00:00 8ed2… thread.state running waiting
+20 2026-10-25T03:09:48.922+00:00 8ed2… request.closed a1ea… deny timeout
+21 2026-10-25T03:09:48.922+00:00 8ed2… thread.state running
+22 2026-10-25T03:09:48.947+00:00 8ed2… turn.text The tool call was denied.
+23 2026-10-25T03:09:48.971+00:00 8ed2… turn.result completed The tool call was denied.
+24 2026-10-25T03:09:48.972+00:00 8ed2… thread.state idle
+```
+
 ### Following events
 
 `loom threads events` without `--follow` prints every event after `--after` (default 0), asking
@@ -1569,7 +1747,10 @@ is the event object, so any language can follow Loom by reading the CLI's stdout
   `done`), action, trigger (`at <at>`, `every <seconds>s`, `<timeOfDay>` or
   `<timeOfDay> on <weekdays>`), the thread or else the project it targets, and its title, else
   its text. An event is one line: id, time, thread (or `-`), type and its data fields, with single
-  spaces. A null prints as `-`.
+  spaces. A null prints as `-`. A field an event lacks is left out: a `request.closed` line
+  shows `request_id`, `decision` and, when it has one, `reason`
+  (`request.closed r1 deny timeout`). A `request.opened` line shows `request_id`, `tool_name`,
+  `description` and `input`, not `expires_at`.
 - Agent-written text is shown as text: each control character (newline and tab too, DEL and the
   C1 range) prints as an escape such as `\n`, `\t` or `\x1b`, so each event is one line. Each text
   is cut at 2,000 characters and then marked `…`; `--json` prints it whole.
@@ -1895,7 +2076,7 @@ not_found no thread with id 'nope'
   - `schedules_add(trigger, text, *, action=None, thread_id=None, project_id=None, title=None, id=None)`
   - `schedules_list(thread_id=None, project_id=None)`
   - `schedules_pause(schedule_id, *, id=None)`, `schedules_remove(schedule_id, *, id=None)`
-  - Not served yet: `requests_respond(request_id, decision, *, message=None, id=None)`.
+  - `requests_respond(request_id, decision, *, message=None, id=None)`
 - A call that changes something sends a new uuid4 `id` when `id` is `None`. Pass the same `id`
   again to retry it safely. When such a call fails after it connected (the connection dropped,
   the answer timed out or broke the protocol), the `LoomConnectionError` has `command_id`, the
