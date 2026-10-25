@@ -21,6 +21,13 @@ NEEDS_PROJECT = 'project_id is required outside a Loom thread'
 UNKNOWN_PROJECT = "cannot tell this thread's project; give project_id"
 MAY_HAVE_RUN = 'the call may have run, so check with threads or schedules before calling again'
 
+CONCURRENCY_KEY = ('A key, such as pm:demo, that at most one thread holds at a time; the launch '
+                   'waits while another thread holds it.')
+ON_BUSY = ('With concurrency_key: queue (default) waits, coalesce joins the waiting launch for '
+           'the key.')
+SETTLE = ('on_result: the thread settles after its first completed or failed result instead of '
+          'going idle.')
+
 
 class ToolError(Exception):
     pass
@@ -57,6 +64,13 @@ def _runner_args() -> tuple[Arg, ...]:
     )
 
 
+def _key_args() -> tuple[Arg, ...]:
+    return (
+        Arg('concurrency_key', STRING, CONCURRENCY_KEY),
+        Arg('on_busy', STRING, ON_BUSY),
+    )
+
+
 TOOLS = (
     Tool('launch_thread',
          "Start a new top-level Loom thread with a first message. It runs with its project's "
@@ -67,12 +81,15 @@ TOOLS = (
                  "The project to start it in. Default: this thread's project."),
              *_runner_args(),
              Arg('audience', STRING, 'Who talks with it: person or agent (default).'),
+             *_key_args(),
+             Arg('settle', STRING, SETTLE),
          )),
     Tool('delegate',
          "Start a child thread for a task. Its result is posted back to this thread as a "
          'message.', (
              Arg('task', STRING, "The child's first message.", True),
              *_runner_args(),
+             *_key_args(),
          )),
     Tool('task_status', "Read one of this thread's tasks.", (
         Arg('task_id', STRING, 'The task_id delegate answered.', True),
@@ -192,13 +209,16 @@ class Tools:
         return _write(lambda command_id: client.threads_launch(
             project_id, values['title'], values['message'], workspace=values.get('workspace'),
             runner=values.get('runner'), model=values.get('model'), origin=caller.origin,
-            audience=values.get('audience'), id=command_id))
+            audience=values.get('audience'), concurrency_key=values.get('concurrency_key'),
+            on_busy=values.get('on_busy'), settle=values.get('settle'), id=command_id))
 
     def _delegate(self, client: Client, values: dict) -> object:
         parent_id = self._loom_thread(client)
         thread = _write(lambda command_id: client.threads_delegate(
             parent_id, values['task'], workspace=values.get('workspace'),
-            runner=values.get('runner'), model=values.get('model'), id=command_id))
+            runner=values.get('runner'), model=values.get('model'),
+            concurrency_key=values.get('concurrency_key'), on_busy=values.get('on_busy'),
+            id=command_id))
         task_id = thread.get('id') if isinstance(thread, dict) else None
         return {'task_id': task_id, 'thread': thread}
 

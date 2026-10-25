@@ -39,12 +39,19 @@ COMMANDS = [
      {'project_id': 'demo', 'title': 'First', 'message': 'hello', 'audience': 'person'}),
     (['threads', 'launch', 'demo', 'First', 'hello', '--cause', '7'], 'threads.launch',
      {'project_id': 'demo', 'title': 'First', 'message': 'hello', 'cause': 7}),
+    (['threads', 'launch', 'demo', 'T', 'm', '--concurrency-key', 'k', '--on-busy', 'coalesce',
+      '--settle', 'on_result'], 'threads.launch',
+     {'project_id': 'demo', 'title': 'T', 'message': 'm', 'concurrency_key': 'k',
+      'on_busy': 'coalesce', 'settle': 'on_result'}),
     (['threads', 'delegate', 't1', 'check it'], 'threads.delegate',
      {'parent_id': 't1', 'task': 'check it'}),
     (['threads', 'delegate', 't1', 'check it', '--workspace', 'root', '--runner', 'claude',
       '--model', 'm'], 'threads.delegate',
      {'parent_id': 't1', 'task': 'check it', 'workspace': {'strategy': 'root'},
       'runner': 'claude', 'model': 'm'}),
+    (['threads', 'delegate', 't1', 'task', '--concurrency-key', 'k', '--on-busy', 'queue'],
+     'threads.delegate',
+     {'parent_id': 't1', 'task': 'task', 'concurrency_key': 'k', 'on_busy': 'queue'}),
     (['threads', 'send', 't1', 'again'], 'threads.send', {'thread_id': 't1', 'message': 'again'}),
     (['threads', 'send', 't1', 'again', '--mode', 'interrupt'], 'threads.send',
      {'thread_id': 't1', 'message': 'again', 'mode': 'interrupt'}),
@@ -98,6 +105,10 @@ COMMANDS = [
       '--project', 'demo'], 'schedules.add',
      {'trigger': {'type': 'event', 'topic': 'thread.settled'}, 'text': 'Look',
       'action': 'launch', 'project_id': 'demo'}),
+    (['schedules', 'add', 'x', '--every', '3600', '--action', 'launch', '--project', 'demo',
+      '--concurrency-key', 'k', '--on-busy', 'queue', '--settle', 'on_result'], 'schedules.add',
+     {'trigger': {'type': 'interval', 'everyMs': 3600000}, 'text': 'x', 'action': 'launch',
+      'project_id': 'demo', 'concurrency_key': 'k', 'on_busy': 'queue', 'settle': 'on_result'}),
     (['schedules', 'list'], 'schedules.list', {}),
     (['schedules', 'list', '--thread', 't1', '--project', 'demo'], 'schedules.list',
      {'thread_id': 't1', 'project_id': 'demo'}),
@@ -139,6 +150,9 @@ USAGE_ERRORS = [
     ['threads', 'launch', 'demo', 'First', 'm', '--workspace', 'root', '--branch', 'b'],
     ['threads', 'launch', 'demo', 'First', 'm', '--workspace', 'worktree', '--path', '/p'],
     ['threads', 'delegate', 't1', 'task', '--workspace', 'existing_worktree', '--base', 'b'],
+    ['threads', 'delegate', 't1', 'task', '--settle', 'on_result'],
+    ['threads', 'launch', 'demo', 'T', 'm', '--on-busy', 'wait'],
+    ['threads', 'launch', 'demo', 'T', 'm', '--settle', 'idle'],
     ['threads', 'events', '--after', '-1'],
     ['threads', 'events', '--after', 'x'],
     ['threads', 'update', 't1'],
@@ -378,6 +392,23 @@ class UsageTest(CliCase):
                 self.assertIn(message, err)
         self.assertEqual(self.server.requests, [])
 
+    def test_on_busy_and_settle_take_only_their_values(self) -> None:
+        for argv, message in (
+            (['threads', 'launch', 'demo', 'T', 'm', '--on-busy', 'wait'],
+             "argument --on-busy: invalid choice: 'wait'"),
+            (['threads', 'launch', 'demo', 'T', 'm', '--settle', 'idle'],
+             "argument --settle: invalid choice: 'idle'"),
+            (['threads', 'delegate', 't1', 'task', '--on-busy', 'wait'],
+             "argument --on-busy: invalid choice: 'wait'"),
+            (['schedules', 'add', 'x', '--every', '60', '--settle', 'idle'],
+             "argument --settle: invalid choice: 'idle'"),
+        ):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_cli(*argv)
+                self.assertEqual((code, out), (2, ''))
+                self.assertIn(message, err)
+        self.assertEqual(self.server.requests, [])
+
     def test_help_lists_the_commands_and_exits_0(self) -> None:
         for argv, names in (
             (['--help'], ['serve', 'install', 'threads', 'projects', 'schedules', 'requests',
@@ -433,6 +464,17 @@ class ExitTest(CliCase):
         self.assertEqual(err, 'loom: invalid: everyMs must be at least 60000\n')
         self.assertEqual(self.server.requests[-1]['params']['trigger'],
                          {'type': 'interval', 'everyMs': 30000})
+
+    def test_on_busy_without_a_key_is_sent_and_the_servers_invalid_exits_1(self) -> None:
+        self.answer(failed('invalid', 'on_busy needs concurrency_key'))
+        code, out, err = self.run_cli('threads', 'launch', 'demo', 'T', 'm', '--on-busy',
+                                      'coalesce')
+        self.assertEqual((code, out), (1, ''))
+        self.assertEqual(err, 'loom: invalid: on_busy needs concurrency_key\n')
+        params = dict(self.server.requests[-1]['params'])
+        self.assertTrue(params.pop('id'))
+        self.assertEqual(params, {'project_id': 'demo', 'title': 'T', 'message': 'm',
+                                  'on_busy': 'coalesce'})
 
     def test_an_api_error_message_is_escaped_on_stderr(self) -> None:
         self.answer(failed('invalid', 'bad\x1b[2J\nthing'))

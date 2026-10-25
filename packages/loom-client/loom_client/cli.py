@@ -6,7 +6,7 @@ import sys
 from collections.abc import Callable
 from typing import TextIO
 
-from loom_contracts.calls import Audience, CallName
+from loom_contracts.calls import Audience, CallName, OnBusy, Settle
 from loom_contracts.runners import Decision, DispatchMode, PermissionMode, RunnerName
 from loom_contracts.triggers import ScheduleAction, TriggerType
 from loom_contracts.workspaces import WorkspaceStrategy
@@ -156,6 +156,17 @@ def _add_audience(command: argparse.ArgumentParser, text: str, required: bool = 
     command.add_argument('--audience', choices=_values(Audience), required=required, help=text)
 
 
+def _add_key(command: argparse.ArgumentParser, settle: bool = True) -> None:
+    command.add_argument('--concurrency-key', metavar='K',
+                         help='a key at most one thread holds at a time')
+    command.add_argument('--on-busy', choices=_values(OnBusy),
+                         help='with --concurrency-key, wait in line (default) or join the '
+                              'waiting launch')
+    if settle:
+        command.add_argument('--settle', choices=_values(Settle),
+                             help='settle after the first completed or failed result')
+
+
 def _add_workspace(command: argparse.ArgumentParser) -> None:
     command.add_argument('--workspace', choices=_values(WorkspaceStrategy),
                          help='where the thread works')
@@ -175,6 +186,7 @@ def _launch_args(command: argparse.ArgumentParser) -> None:
                          help='who may answer its permission prompts')
     command.add_argument('--origin', help='where the thread comes from')
     _add_audience(command, 'who talks with the thread (default agent)')
+    _add_key(command)
     _add_cause(command)
     _add_id(command)
 
@@ -183,19 +195,22 @@ def _launch(client: Client, args: argparse.Namespace) -> object:
     return client.threads_launch(
         args.project_id, args.title, _stdin_or(args.message), workspace=args.workspace,
         runner=args.runner, model=args.model, requests=args.requests, origin=args.origin,
-        audience=args.audience, cause=args.cause, id=args.id)
+        audience=args.audience, concurrency_key=args.concurrency_key, on_busy=args.on_busy,
+        settle=args.settle, cause=args.cause, id=args.id)
 
 
 def _delegate_args(command: argparse.ArgumentParser) -> None:
     command.add_argument('parent_id')
     command.add_argument('task', help='the task, or - to read it from stdin')
     _add_workspace(command)
+    _add_key(command, settle=False)
     _add_id(command)
 
 
 def _delegate(client: Client, args: argparse.Namespace) -> object:
-    return client.threads_delegate(args.parent_id, _stdin_or(args.task), workspace=args.workspace,
-                                   runner=args.runner, model=args.model, id=args.id)
+    return client.threads_delegate(
+        args.parent_id, _stdin_or(args.task), workspace=args.workspace, runner=args.runner,
+        model=args.model, concurrency_key=args.concurrency_key, on_busy=args.on_busy, id=args.id)
 
 
 def _send_args(command: argparse.ArgumentParser) -> None:
@@ -278,13 +293,15 @@ def _schedule_add_args(command: argparse.ArgumentParser) -> None:
     command.add_argument('--thread', help='thread it posts into')
     command.add_argument('--project', help='project it launches in')
     command.add_argument('--title', help='its title, also of a thread it launches')
+    _add_key(command)
     _add_id(command)
 
 
 def _schedule_add(client: Client, args: argparse.Namespace) -> object:
     return client.schedules_add(
         args.trigger, _stdin_or(args.text), action=args.action, thread_id=args.thread,
-        project_id=args.project, title=args.title, id=args.id)
+        project_id=args.project, title=args.title, concurrency_key=args.concurrency_key,
+        on_busy=args.on_busy, settle=args.settle, id=args.id)
 
 
 def _schedule_list_args(command: argparse.ArgumentParser) -> None:
