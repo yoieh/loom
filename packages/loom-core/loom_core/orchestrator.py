@@ -171,7 +171,8 @@ class Orchestrator:
                 'audience': audience,
             })
             threads.add_start(tx, thread_id, source, row['created_at'])
-            self._add_message(tx, thread_id, f'{command_id}:message', message, DispatchMode.STEER)
+            self._add_message(tx, thread_id, f'{command_id}:message', message, DispatchMode.STEER,
+                              source=source)
             return thread_info(row)
 
         receipt = self.store.command(command_id, CallName.THREADS_LAUNCH, change)
@@ -228,7 +229,8 @@ class Orchestrator:
                 'audience': Audience.AGENT,
             })
             threads.add_start(tx, thread_id, source, row['created_at'])
-            self._add_message(tx, thread_id, f'{command_id}:message', task, DispatchMode.STEER)
+            self._add_message(tx, thread_id, f'{command_id}:message', task, DispatchMode.STEER,
+                              source=source)
             return thread_info(row)
 
         receipt = self.store.command(command_id, CallName.THREADS_DELEGATE, change)

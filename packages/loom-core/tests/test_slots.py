@@ -7,8 +7,9 @@ from unittest import mock
 
 from loom_contracts.events import EventType
 from loom_contracts.runners import DispatchMode
+from loom_contracts.states import ThreadState
 
-from loom_core import slots
+from loom_core import slots, threads
 from loom_core.clock import iso
 from loom_core.orchestrator import Orchestrator
 from loom_core.projects import Projects
@@ -118,6 +119,12 @@ class SlotsTest(DelegateTest):
     def start_row(self, thread_id: str) -> tuple | None:
         return self.store.connection.execute(
             'SELECT rank, queued_at FROM starts WHERE thread_id = ?', (thread_id,)).fetchone()
+
+    async def queued(self, source: StartSource) -> str:
+        with mock.patch.object(self.orchestrator.lanes, 'submit'):
+            info = await self.orchestrator.launch(self.launch_params(), source=source)
+        self.clock.advance(1)
+        return info['id']
 
 
 class AdmissionTest(SlotsTest):
@@ -306,12 +313,6 @@ class CrashTest(SlotsTest):
 
 
 class RestartTest(SlotsTest):
-    async def queued(self, source: StartSource) -> str:
-        with mock.patch.object(self.orchestrator.lanes, 'submit'):
-            info = await self.orchestrator.launch(self.launch_params(), source=source)
-        self.clock.advance(1)
-        return info['id']
-
     async def test_queued_threads_start_in_queue_order_within_agents_max(self) -> None:
         schedule = await self.queued(StartSource.SCHEDULE)
         agent = await self.queued(StartSource.AGENT)
@@ -488,6 +489,69 @@ class HeldTest(SlotsTest):
         self.assertEqual((self.state(crashed), self.state(waiting)), ('queued', 'running'))
         self.assertEqual(self.sources(crashed),
                          [(f'{crashed}:continuation:1', StartSource.AGENT)])
+
+    async def queued_child(self, parent_id: str, source: StartSource) -> str:
+        with mock.patch.object(self.orchestrator.lanes, 'submit'):
+            info = await self.orchestrator.delegate(self.delegate_params(parent_id),
+                                                    source=source)
+        self.clock.advance(1)
+        return info['id']
+
+    def cut_boot(self, thread_id: str) -> None:
+        with self.store.transaction() as tx:
+            threads.transition(self.store, tx, thread_id, ThreadState.STARTING)
+        self.assertIsNone(self.start_row(thread_id))
+
+    async def test_a_launchs_first_message_keeps_its_calls_source(self) -> None:
+        for source in StartSource:
+            with self.subTest(source=source):
+                params = self.launch_params()
+                with mock.patch.object(self.orchestrator.lanes, 'submit'):
+                    info = await self.orchestrator.launch(params, source=source)
+                self.assertEqual(self.sources(info['id']),
+                                 [(f'{params["id"]}:message', source)])
+                self.assertEqual(self.start_row(info['id'])[0], source)
+
+    async def test_a_delegated_first_message_keeps_its_calls_source(self) -> None:
+        parent_id, _ = await self.running()
+        for source in (StartSource.AGENT, StartSource.PERSON):
+            with self.subTest(source=source):
+                params = self.delegate_params(parent_id)
+                with mock.patch.object(self.orchestrator.lanes, 'submit'):
+                    info = await self.orchestrator.delegate(params, source=source)
+                self.assertEqual(self.sources(info['id']),
+                                 [(f'{params["id"]}:message', source)])
+                self.assertEqual(self.start_row(info['id'])[0], source)
+
+    async def test_a_persons_first_message_held_across_a_restart_goes_before_an_earlier_agent(
+            self) -> None:
+        agent = await self.queued(StartSource.AGENT)
+        thread_id = await self.queued(StartSource.PERSON)
+        self.cut_boot(thread_id)
+        await self.restart()
+        self.assertEqual(self.started(), [(thread_id, False)])
+        self.assertEqual(self.session(thread_id).sent, [('Hello', QUEUE)])
+        self.assertEqual(self.state(agent), 'queued')
+        await self.finish(thread_id, self.session(thread_id))
+        self.assertEqual(self.started()[-1], (agent, False))
+
+    async def test_a_delegated_first_message_held_across_a_restart_ranks_as_an_agents(
+            self) -> None:
+        parent_id = await self.sleeping_thread()
+        agent = await self.queued(StartSource.AGENT)
+        child = await self.queued_child(parent_id, StartSource.AGENT)
+        self.cut_boot(child)
+        person = await self.queued(StartSource.PERSON)
+        count = len(self.runner.starts)
+        await self.restart()
+        self.assertEqual(self.started()[count:], [(person, False)])
+        self.assertEqual((self.state(agent), self.state(child)), ('queued', 'queued'))
+        await self.finish(person, self.session(person))
+        self.assertEqual(self.started()[-1], (agent, False))
+        self.assertEqual(self.state(child), 'queued')
+        await self.finish(agent, self.session(agent))
+        self.assertEqual(self.started()[-1], (child, False))
+        self.assertEqual(self.session(child).sent, [('Review it', QUEUE)])
 
 
 class SourceTest(ServiceTest):
