@@ -30,6 +30,7 @@ GROUPS = {
     'projects': ('manage the projects threads run in', ('project',)),
     'schedules': ('add, list, pause and remove schedules', ('schedule',)),
     'requests': ("answer threads' permission prompts", ('request',)),
+    'signals': ('emit signals for event triggers', ('signal',)),
 }
 
 WORKSPACE_FIELDS = {
@@ -55,6 +56,13 @@ def _event_id(text: str) -> int:
     return value
 
 
+def _cause(text: str) -> int:
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f'not an event id: {text!r}') from None
+
+
 def _seconds(text: str) -> int:
     try:
         value = int(text)
@@ -74,6 +82,17 @@ def _weekdays(text: str) -> list[int]:
 
 def _stdin_or(value: str) -> str:
     return sys.stdin.read() if value == STDIN else value
+
+
+def _payload(args: argparse.Namespace, parser: argparse.ArgumentParser) -> dict:
+    text = _stdin_or(args.payload)
+    try:
+        payload = json.loads(text)
+    except (ValueError, RecursionError):
+        parser.error('--payload is not JSON')
+    if not isinstance(payload, dict):
+        parser.error('--payload must be a JSON object')
+    return payload
 
 
 def _workspace(args: argparse.Namespace, parser: argparse.ArgumentParser) -> dict | None:
@@ -107,6 +126,11 @@ def _add_id(command: argparse.ArgumentParser) -> None:
     command.add_argument('--id', help='command id, to retry a call safely (default: a new one)')
 
 
+def _add_cause(command: argparse.ArgumentParser) -> None:
+    command.add_argument('--cause', metavar='EVENT_ID', type=_cause,
+                         help='id of the event behind this call')
+
+
 def _add_audience(command: argparse.ArgumentParser, text: str, required: bool = False) -> None:
     command.add_argument('--audience', choices=_values(Audience), required=required, help=text)
 
@@ -130,6 +154,7 @@ def _launch_args(command: argparse.ArgumentParser) -> None:
                          help='who may answer its permission prompts')
     command.add_argument('--origin', help='where the thread comes from')
     _add_audience(command, 'who talks with the thread (default agent)')
+    _add_cause(command)
     _add_id(command)
 
 
@@ -137,7 +162,7 @@ def _launch(client: Client, args: argparse.Namespace) -> object:
     return client.threads_launch(
         args.project_id, args.title, _stdin_or(args.message), workspace=args.workspace,
         runner=args.runner, model=args.model, requests=args.requests, origin=args.origin,
-        audience=args.audience, id=args.id)
+        audience=args.audience, cause=args.cause, id=args.id)
 
 
 def _delegate_args(command: argparse.ArgumentParser) -> None:
@@ -156,12 +181,13 @@ def _send_args(command: argparse.ArgumentParser) -> None:
     command.add_argument('thread_id')
     command.add_argument('message', help='the message, or - to read it from stdin')
     command.add_argument('--mode', choices=_values(DispatchMode), help='how to deliver it')
+    _add_cause(command)
     _add_id(command)
 
 
 def _send(client: Client, args: argparse.Namespace) -> object:
     return client.threads_send(args.thread_id, _stdin_or(args.message), mode=args.mode,
-                               id=args.id)
+                               cause=args.cause, id=args.id)
 
 
 def _list_args(command: argparse.ArgumentParser) -> None:
@@ -255,6 +281,21 @@ def _respond(client: Client, args: argparse.Namespace) -> object:
                                    id=args.id)
 
 
+def _emit_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument('topic')
+    command.add_argument('--payload', metavar='JSON', default='{}',
+                         help='a JSON object, or - to read it from stdin (default {})')
+    command.add_argument('--project', help='project the signal is about')
+    command.add_argument('--key', help='what the signal is about, such as a run id')
+    _add_cause(command)
+    _add_id(command)
+
+
+def _emit(client: Client, args: argparse.Namespace) -> object:
+    return client.signals_emit(args.topic, args.payload, project_id=args.project, key=args.key,
+                               cause=args.cause, id=args.id)
+
+
 def _no_args(command: argparse.ArgumentParser) -> None:
     pass
 
@@ -301,6 +342,7 @@ COMMANDS: dict[CallName, tuple[str, Callable[[argparse.ArgumentParser], None], R
         'remove a schedule', _schedule_write_args,
         lambda client, args: client.schedules_remove(args.schedule_id, id=args.id)),
     CallName.REQUESTS_RESPOND: ('answer a permission prompt', _respond_args, _respond),
+    CallName.SIGNALS_EMIT: ('emit a signal', _emit_args, _emit),
 }
 
 
@@ -403,6 +445,8 @@ def _run(args: argparse.Namespace) -> int:
         args.workspace = _workspace(args, args.parser)
     if args.call is CallName.SCHEDULES_ADD:
         args.trigger = _trigger(args, args.parser)
+    if args.call is CallName.SIGNALS_EMIT:
+        args.payload = _payload(args, args.parser)
     try:
         client = Client(args.socket)
         if args.call is CallName.THREADS_EVENTS:

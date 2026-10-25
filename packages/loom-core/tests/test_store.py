@@ -275,14 +275,16 @@ class MessageSourceTest(TracedOpenTest):
         db.close()
         store, seen = self.open_traced()
         self.assertEqual(self.columns(store).count('source'), 1)
-        self.assertEqual(self.alters(seen),
-                         ['ALTER TABLE messages ADD COLUMN source INTEGER NOT NULL DEFAULT 1'])
+        self.assertEqual(self.alters(seen), [
+            'ALTER TABLE messages ADD COLUMN source INTEGER NOT NULL DEFAULT 1',
+            'ALTER TABLE messages ADD COLUMN cause INTEGER',
+            'ALTER TABLE messages ADD COLUMN hops INTEGER NOT NULL DEFAULT 0'])
         alter = seen.index(self.alters(seen)[0])
         begin = max(at for at, statement in enumerate(seen[:alter])
                     if statement == 'BEGIN IMMEDIATE')
         self.assertNotIn('COMMIT', seen[begin:alter])
         self.assertEqual(seen[begin + 1], SCHEMA[0])
-        self.assertEqual(seen[alter + 1], 'COMMIT')
+        self.assertEqual(seen[seen.index(self.alters(seen)[-1]) + 1], 'COMMIT')
         self.assertEqual(store.connection.execute(
             'SELECT thread_id, text, source FROM messages').fetchall(), [('t1', 'held', 1)])
         store.close()
@@ -326,7 +328,9 @@ class ThreadAudienceTest(TracedOpenTest):
             'ALTER TABLE threads ADD COLUMN concurrency_key TEXT',
             'ALTER TABLE threads ADD COLUMN settle TEXT',
             'ALTER TABLE threads ADD COLUMN key_state TEXT',
-            'ALTER TABLE threads ADD COLUMN launched_by TEXT'])
+            'ALTER TABLE threads ADD COLUMN launched_by TEXT',
+            'ALTER TABLE threads ADD COLUMN cause INTEGER',
+            'ALTER TABLE threads ADD COLUMN hops INTEGER NOT NULL DEFAULT 0'])
         alter = seen.index(self.alters(seen)[0])
         begin = max(at for at, statement in enumerate(seen[:alter])
                     if statement == 'BEGIN IMMEDIATE')

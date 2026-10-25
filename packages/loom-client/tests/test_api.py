@@ -27,6 +27,8 @@ CALLS = [
       'runner': 'claude', 'model': 'm', 'requests': 'caller', 'origin': 'cli'}),
     ('threads_launch', ('demo', 'First', 'hello'), {'audience': 'person'}, 'threads.launch',
      {'project_id': 'demo', 'title': 'First', 'message': 'hello', 'audience': 'person'}),
+    ('threads_launch', ('demo', 'First', 'hello'), {'cause': 7}, 'threads.launch',
+     {'project_id': 'demo', 'title': 'First', 'message': 'hello', 'cause': 7}),
     ('threads_delegate', ('t1', 'check it'), {}, 'threads.delegate',
      {'parent_id': 't1', 'task': 'check it'}),
     ('threads_delegate', ('t1', 'check it'),
@@ -36,6 +38,8 @@ CALLS = [
     ('threads_send', ('t1', 'again'), {}, 'threads.send', {'thread_id': 't1', 'message': 'again'}),
     ('threads_send', ('t1', 'again'), {'mode': 'queue'}, 'threads.send',
      {'thread_id': 't1', 'message': 'again', 'mode': 'queue'}),
+    ('threads_send', ('t1', 'again'), {'cause': 7}, 'threads.send',
+     {'thread_id': 't1', 'message': 'again', 'cause': 7}),
     ('threads_list', (), {}, 'threads.list', {}),
     ('threads_list', ('demo',), {}, 'threads.list', {'project_id': 'demo'}),
     ('threads_list', (), {'audience': 'person'}, 'threads.list', {'audience': 'person'}),
@@ -56,6 +60,12 @@ CALLS = [
      {'request_id': 'r1', 'decision': 'allow'}),
     ('requests_respond', ('r1', 'deny'), {'message': 'no'}, 'requests.respond',
      {'request_id': 'r1', 'decision': 'deny', 'message': 'no'}),
+    ('signals_emit', ('demo.done', {}), {}, 'signals.emit',
+     {'topic': 'demo.done', 'payload': {}}),
+    ('signals_emit', ('demo.done', {'to': 'done'}),
+     {'project_id': 'demo', 'key': 'k', 'cause': 3}, 'signals.emit',
+     {'topic': 'demo.done', 'payload': {'to': 'done'}, 'project_id': 'demo', 'key': 'k',
+      'cause': 3}),
     ('schedules_add', (TRIGGER, 'tick'), {}, 'schedules.add',
      {'trigger': TRIGGER, 'text': 'tick'}),
     ('schedules_add', (TRIGGER, 'tick'),
@@ -80,8 +90,8 @@ CALLS = [
 
 WRITES = {
     'threads.launch', 'threads.delegate', 'threads.send', 'threads.stop', 'threads.settle',
-    'threads.update', 'requests.respond', 'schedules.add', 'schedules.pause', 'schedules.remove',
-    'projects.add', 'projects.set_mode', 'projects.remove',
+    'threads.update', 'requests.respond', 'signals.emit', 'schedules.add', 'schedules.pause',
+    'schedules.remove', 'projects.add', 'projects.set_mode', 'projects.remove',
 }
 
 BAD_ANSWERS = {

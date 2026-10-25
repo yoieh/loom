@@ -572,14 +572,14 @@ class SourceTest(ServiceTest):
             with self.subTest(caller=caller, call='send'), mock.patch.object(
                     self.orchestrator, 'send', new_callable=mock.AsyncMock) as send:
                 await self.call('threads.send', {'thread_id': 'x'}, caller)
-                self.assertEqual(send.call_args.kwargs, {'source': source})
+                self.assertEqual(send.call_args.kwargs['source'], source)
 
     async def test_delegate_is_an_agents_start(self) -> None:
         for caller in (Caller(), Caller(scheduled=True)):
             with mock.patch.object(self.orchestrator, 'delegate',
                                    new_callable=mock.AsyncMock) as delegate:
                 await self.call('threads.delegate', {'parent_id': 'x'}, caller)
-            self.assertEqual(delegate.call_args.kwargs, {'source': StartSource.AGENT})
+            self.assertEqual(delegate.call_args.kwargs['source'], StartSource.AGENT)
 
 
 if __name__ == '__main__':

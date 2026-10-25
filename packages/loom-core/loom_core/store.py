@@ -26,7 +26,10 @@ THREAD_KEY = 'concurrency_key TEXT'
 THREAD_SETTLE = 'settle TEXT'
 THREAD_KEY_STATE = 'key_state TEXT'
 THREAD_LAUNCHED_BY = 'launched_by TEXT'
+CAUSE = 'cause INTEGER'
+HOPS = 'hops INTEGER NOT NULL DEFAULT 0'
 THREAD_KEY_INDEX = 'CREATE INDEX IF NOT EXISTS threads_key ON threads (concurrency_key, key_state)'
+PERSON_THREADLESS = (EventType.SCHEDULE_FIRED,)
 
 SCHEMA: list[str] = [
     '''CREATE TABLE IF NOT EXISTS commands (
@@ -76,7 +79,9 @@ SCHEMA: list[str] = [
         {THREAD_KEY},
         {THREAD_SETTLE},
         {THREAD_KEY_STATE},
-        {THREAD_LAUNCHED_BY}
+        {THREAD_LAUNCHED_BY},
+        {CAUSE},
+        {HOPS}
     )''',
     'CREATE INDEX IF NOT EXISTS threads_project ON threads (project_id, state)',
     'CREATE INDEX IF NOT EXISTS threads_parent ON threads (parent_id)',
@@ -88,7 +93,9 @@ SCHEMA: list[str] = [
         mode TEXT NOT NULL,
         priority INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
-        {MESSAGE_SOURCE}
+        {MESSAGE_SOURCE},
+        {CAUSE},
+        {HOPS}
     )''',
     'CREATE INDEX IF NOT EXISTS messages_next ON messages (thread_id, priority DESC, seq)',
     'CREATE TABLE IF NOT EXISTS continuations (thread_id TEXT NOT NULL, at TEXT NOT NULL)',
@@ -147,6 +154,16 @@ def _check_command_id(command_id: object) -> str:
     return command_id
 
 
+def _event(row: tuple) -> Event:
+    return {
+        'id': row[0],
+        'type': EventType(row[1]),
+        'at': row[2],
+        'thread_id': row[3],
+        'data': json.loads(row[4]),
+    }
+
+
 class Store:
     def __init__(self, connection: sqlite3.Connection, clock: Clock, data_dir: Path) -> None:
         self.connection = connection
@@ -171,10 +188,12 @@ class Store:
                 for statement in SCHEMA:
                     tx.execute(statement)
                 _add_column(tx, 'threads', THREAD_AUDIENCE)
-                for column in (THREAD_KEY, THREAD_SETTLE, THREAD_KEY_STATE, THREAD_LAUNCHED_BY):
+                for column in (THREAD_KEY, THREAD_SETTLE, THREAD_KEY_STATE, THREAD_LAUNCHED_BY,
+                               CAUSE, HOPS):
                     _add_column(tx, 'threads', column)
                 tx.execute(THREAD_KEY_INDEX)
-                _add_column(tx, 'messages', MESSAGE_SOURCE)
+                for column in (MESSAGE_SOURCE, CAUSE, HOPS):
+                    _add_column(tx, 'messages', column)
             store.prune_events()
         except BaseException:
             connection.close()
@@ -281,22 +300,22 @@ class Store:
             sql += ' AND thread_id = ?'
             args.append(thread_id)
         if audience is not None:
-            sql += (' AND (thread_id IS NULL'
+            threadless = 'thread_id IS NULL'
+            if audience != Audience.AGENT:
+                threadless += f' AND type IN ({", ".join("?" for _ in PERSON_THREADLESS)})'
+                args.extend(str(kind) for kind in PERSON_THREADLESS)
+            sql += (f' AND (({threadless})'
                     ' OR thread_id IN (SELECT id FROM threads WHERE audience = ?)'
                     " OR (type = ? AND json_extract(data, '$.previous_audience') = ?))")
             args.extend((str(audience), str(EventType.THREAD_UPDATED), str(audience)))
         sql += ' ORDER BY id LIMIT ?'
         args.append(min(limit, MAX_EVENTS))
-        return [
-            {
-                'id': row[0],
-                'type': EventType(row[1]),
-                'at': row[2],
-                'thread_id': row[3],
-                'data': json.loads(row[4]),
-            }
-            for row in self.connection.execute(sql, args)
-        ]
+        return [_event(row) for row in self.connection.execute(sql, args)]
+
+    def event(self, tx: sqlite3.Connection, event_id: int) -> Event | None:
+        row = tx.execute('SELECT id, type, at, thread_id, data FROM events WHERE id = ?',
+                         (event_id,)).fetchone()
+        return None if row is None else _event(row)
 
     def prune_events(self) -> int:
         cutoff = iso(self.clock() - timedelta(days=EVENT_DAYS))

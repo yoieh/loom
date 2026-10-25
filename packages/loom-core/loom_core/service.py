@@ -9,13 +9,14 @@ from . import keys
 from .errors import LoomError
 from .orchestrator import Orchestrator
 from .projects import Projects
+from .signals import Signals
 from .slots import StartSource
 from .store import MAX_EVENT_ID, MAX_EVENTS, Store
 
 SERVED: tuple[str, ...] = (
     'threads.launch', 'threads.delegate', 'threads.send', 'threads.list', 'threads.get',
     'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
-    'projects.set_mode', 'projects.remove', 'projects.list', 'requests.respond',
+    'projects.set_mode', 'projects.remove', 'projects.list', 'requests.respond', 'signals.emit',
 )
 
 
@@ -74,6 +75,12 @@ def _identity(caller: Caller) -> str | None:
     return 'person' if caller.verified is True else None
 
 
+def _own_thread(caller: Caller) -> str | None:
+    if caller.scheduled or caller.schedule_id is not None:
+        return None
+    return caller.thread_id
+
+
 def _source(caller: Caller) -> StartSource:
     if caller.scheduled:
         return StartSource.SCHEDULE
@@ -105,6 +112,7 @@ class Service:
         self.store = store
         self.projects = projects
         self.orchestrator = orchestrator
+        self.signals = Signals(store, projects)
         self._methods: dict[str, Method] = {
             'threads.launch': self._launch,
             'threads.delegate': self._delegate,
@@ -120,6 +128,7 @@ class Service:
             'projects.remove': self._remove_project,
             'projects.list': self._list_projects,
             'requests.respond': self._respond,
+            'signals.emit': self._emit,
         }
 
     def method(self, call: object) -> Method:
@@ -175,7 +184,8 @@ class Service:
             if self._stopping(_params(params).get('id'), thread_id):
                 raise LoomError('conflict', f'thread {thread_id} is stopping')
         return await self.orchestrator.launch(params, source=_source(caller),
-                                              launcher=_identity(caller))
+                                              launcher=_identity(caller),
+                                              caller_thread=_own_thread(caller))
 
     def _stopping(self, command_id: object, thread_id: str) -> bool:
         with self.store.transaction() as tx:
@@ -187,10 +197,12 @@ class Service:
         return row is not None and bool(row[0])
 
     async def _delegate(self, params: object, caller: Caller) -> ThreadInfo:
-        return await self.orchestrator.delegate(params, source=StartSource.AGENT)
+        return await self.orchestrator.delegate(params, source=StartSource.AGENT,
+                                                caller_thread=_own_thread(caller))
 
     async def _send(self, params: object, caller: Caller) -> ThreadInfo:
-        return await self.orchestrator.send(params, source=_source(caller))
+        return await self.orchestrator.send(params, source=_source(caller),
+                                            caller_thread=_own_thread(caller))
 
     async def _list_threads(self, params: object, caller: Caller) -> list[ThreadInfo]:
         params = _params(params)
@@ -238,3 +250,6 @@ class Service:
     async def _respond(self, params: object, caller: Caller) -> ThreadInfo:
         return await self.orchestrator.respond(params, answerer=_identity(caller),
                                                answerer_thread=caller.thread_id)
+
+    async def _emit(self, params: object, caller: Caller) -> Event:
+        return self.signals.emit(params, caller_thread=_own_thread(caller))

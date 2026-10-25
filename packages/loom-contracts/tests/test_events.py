@@ -3,7 +3,10 @@ from enum import StrEnum
 from typing import get_args, get_type_hints
 
 from loom_contracts.calls import Audience
-from loom_contracts.events import EVENT_DATA, Event, EventData, EventType, ThreadSettledData
+from loom_contracts.events import (
+    EVENT_DATA, Event, EventData, EventType, SignalData, SkipReason, ThreadSettledData,
+    TriggerSkippedData,
+)
 from loom_contracts.runners import Decision
 from loom_contracts.states import ThreadState, TurnState
 from loom_contracts.triggers import ScheduleAction
@@ -19,7 +22,9 @@ DATA: dict[str, tuple[set[str], set[str]]] = {
     'turn.result': ({'state'}, {'text', 'reason'}),
     'request.opened': ({'request_id', 'tool_name', 'input'}, {'description', 'expires_at'}),
     'request.closed': ({'request_id', 'decision'}, {'reason'}),
-    'schedule.fired': ({'schedule_id', 'action', 'text'}, {'by', 'late'}),
+    'schedule.fired': ({'schedule_id', 'action', 'text'}, {'by', 'late', 'cause', 'hops'}),
+    'signal': ({'topic', 'payload', 'hops'}, {'project_id', 'key', 'cause', 'by'}),
+    'trigger.skipped': ({'schedule_id', 'event_id', 'reason'}, set()),
 }
 
 
@@ -36,6 +41,20 @@ class ThreadSettledTest(unittest.TestCase):
         self.assertIn(ThreadSettledData, get_args(EventData))
         self.assertEqual(ThreadSettledData.__required_keys__, frozenset())
         self.assertEqual(ThreadSettledData.__optional_keys__, frozenset({'result'}))
+
+
+class SignalTest(unittest.TestCase):
+    def test_the_types_and_their_data(self) -> None:
+        self.assertEqual((EventType.SIGNAL, EventType.TRIGGER_SKIPPED),
+                         ('signal', 'trigger.skipped'))
+        self.assertIs(EVENT_DATA[EventType.SIGNAL], SignalData)
+        self.assertIs(EVENT_DATA[EventType.TRIGGER_SKIPPED], TriggerSkippedData)
+        self.assertIn(SignalData, get_args(EventData))
+        self.assertIn(TriggerSkippedData, get_args(EventData))
+
+    def test_skip_reasons(self) -> None:
+        self.assertTrue(issubclass(SkipReason, StrEnum))
+        self.assertEqual([item.value for item in SkipReason], ['own', 'hops', 'rate'])
 
 
 class EventEnvelopeTest(unittest.TestCase):
@@ -81,10 +100,24 @@ class EventDataTest(unittest.TestCase):
             ('request.closed', 'reason'): str,
             ('schedule.fired', 'action'): ScheduleAction,
             ('schedule.fired', 'late'): bool,
+            ('schedule.fired', 'cause'): int,
+            ('schedule.fired', 'hops'): int,
+            ('signal', 'topic'): str,
+            ('signal', 'hops'): int,
+            ('signal', 'project_id'): str,
+            ('signal', 'key'): str,
+            ('signal', 'cause'): int,
+            ('signal', 'by'): str,
+            ('trigger.skipped', 'schedule_id'): str,
+            ('trigger.skipped', 'event_id'): int,
+            ('trigger.skipped', 'reason'): SkipReason,
         }
         for (kind, key), field_type in expected.items():
             with self.subTest(kind=kind, key=key):
                 self.assertIs(get_type_hints(EVENT_DATA[EventType(kind)])[key], field_type)
+
+    def test_a_signals_payload_is_an_object(self) -> None:
+        self.assertEqual(get_type_hints(SignalData)['payload'], dict[str, object])
 
 
 if __name__ == '__main__':

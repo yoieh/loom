@@ -19,6 +19,14 @@ class EventType(StrEnum):
     REQUEST_OPENED = 'request.opened'
     REQUEST_CLOSED = 'request.closed'
     SCHEDULE_FIRED = 'schedule.fired'
+    SIGNAL = 'signal'
+    TRIGGER_SKIPPED = 'trigger.skipped'
+
+
+class SkipReason(StrEnum):
+    OWN = 'own'
+    HOPS = 'hops'
+    RATE = 'rate'
 
 
 class ThreadStateData(TypedDict):
@@ -80,6 +88,24 @@ class ScheduleFiredData(TypedDict):
     text: str
     by: NotRequired[str]
     late: NotRequired[bool]
+    cause: NotRequired[int]
+    hops: NotRequired[int]
+
+
+class SignalData(TypedDict):
+    topic: str
+    payload: dict[str, object]
+    hops: int
+    project_id: NotRequired[str]
+    key: NotRequired[str]
+    cause: NotRequired[int]
+    by: NotRequired[str]
+
+
+class TriggerSkippedData(TypedDict):
+    schedule_id: str
+    event_id: int
+    reason: SkipReason
 
 
 EventData = (
@@ -94,6 +120,8 @@ EventData = (
     | RequestOpenedData
     | RequestClosedData
     | ScheduleFiredData
+    | SignalData
+    | TriggerSkippedData
 )
 
 
@@ -117,4 +145,6 @@ EVENT_DATA: dict[EventType, type] = {
     EventType.REQUEST_OPENED: RequestOpenedData,
     EventType.REQUEST_CLOSED: RequestClosedData,
     EventType.SCHEDULE_FIRED: ScheduleFiredData,
+    EventType.SIGNAL: SignalData,
+    EventType.TRIGGER_SKIPPED: TriggerSkippedData,
 }

@@ -7,6 +7,10 @@ from .triggers import ScheduleAction, Trigger
 from .workspaces import Workspace
 
 MAX_CONCURRENCY_KEY = 200
+MAX_TOPIC = 200
+MAX_SIGNAL_KEY = 200
+MAX_PAYLOAD = 16_384
+TOPIC_PATTERN = r'[A-Za-z0-9][A-Za-z0-9._:-]*'
 
 
 class CallName(StrEnum):
@@ -20,6 +24,7 @@ class CallName(StrEnum):
     THREADS_UPDATE = 'threads.update'
     THREADS_EVENTS = 'threads.events'
     REQUESTS_RESPOND = 'requests.respond'
+    SIGNALS_EMIT = 'signals.emit'
     SCHEDULES_ADD = 'schedules.add'
     SCHEDULES_LIST = 'schedules.list'
     SCHEDULES_PAUSE = 'schedules.pause'
@@ -58,6 +63,7 @@ class ThreadsLaunchParams(TypedDict):
     concurrency_key: NotRequired[str]
     on_busy: NotRequired[OnBusy]
     settle: NotRequired[Settle]
+    cause: NotRequired[int]
 
 
 class ThreadsDelegateParams(TypedDict):
@@ -76,6 +82,7 @@ class ThreadsSendParams(TypedDict):
     thread_id: str
     message: str
     mode: NotRequired[DispatchMode]
+    cause: NotRequired[int]
 
 
 class ThreadsListParams(TypedDict):
@@ -115,6 +122,15 @@ class RequestsRespondParams(TypedDict):
     request_id: str
     decision: Decision
     message: NotRequired[str]
+
+
+class SignalsEmitParams(TypedDict):
+    id: str
+    topic: str
+    payload: dict[str, object]
+    project_id: NotRequired[str]
+    key: NotRequired[str]
+    cause: NotRequired[int]
 
 
 class SchedulesAddParams(TypedDict):
@@ -178,6 +194,7 @@ CALL_PARAMS: dict[CallName, type] = {
     CallName.THREADS_UPDATE: ThreadsUpdateParams,
     CallName.THREADS_EVENTS: ThreadsEventsParams,
     CallName.REQUESTS_RESPOND: RequestsRespondParams,
+    CallName.SIGNALS_EMIT: SignalsEmitParams,
     CallName.SCHEDULES_ADD: SchedulesAddParams,
     CallName.SCHEDULES_LIST: SchedulesListParams,
     CallName.SCHEDULES_PAUSE: SchedulesPauseParams,
@@ -206,6 +223,8 @@ class ThreadInfo(TypedDict):
     audience: Audience
     concurrency_key: str | None
     settle: Settle | None
+    cause: int | None
+    hops: int
     created_at: str
 
 
