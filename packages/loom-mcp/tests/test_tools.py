@@ -4,9 +4,11 @@ import uuid
 
 from loom_mcp.tools import BY_NAME, ToolError, check_arguments
 
-from .support import McpCase, dropped, failed, ok, schedule_info, thread_info
+from .support import McpCase, dropped, failed, ok, schedule_info, signal_event, thread_info
 
 AT_TRIGGER = {'type': 'at', 'at': '2026-10-26T09:00'}
+EVENT_TRIGGER = {'type': 'event', 'topic': 'factory.run.status', 'project_id': 'demo',
+                 'match': {'to': 'done'}, 'hops_max': 2, 'rate_max': 5}
 WORKSPACE = {'strategy': 'worktree', 'branch': 'fix', 'base': 'main'}
 MAY_HAVE_RUN = 'the call may have run, so check with threads or schedules before calling again'
 LOST = 'the connection closed before a full answer line'
@@ -18,6 +20,7 @@ VALID = {
     'task_cancel': {'task_id': 'c1'},
     'thread_send': {'thread_id': 't2', 'message': 'Hi.'},
     'threads': {},
+    'emit': {'topic': 'demo.done', 'payload': {'to': 'done'}},
     'schedule': {'trigger': AT_TRIGGER, 'text': 'Stand-up'},
     'schedules': {},
     'unschedule': {'id': 'sc1'},
@@ -26,7 +29,7 @@ VALID = {
 REQUIRED_STRINGS = [('launch_thread', 'title'), ('launch_thread', 'message'),
                     ('delegate', 'task'), ('task_status', 'task_id'), ('task_cancel', 'task_id'),
                     ('thread_send', 'thread_id'), ('thread_send', 'message'),
-                    ('schedule', 'text'), ('unschedule', 'id')]
+                    ('emit', 'topic'), ('schedule', 'text'), ('unschedule', 'id')]
 
 OPTIONAL = [('launch_thread', 'project_id', 'string'), ('launch_thread', 'workspace', 'object'),
             ('launch_thread', 'runner', 'string'), ('launch_thread', 'model', 'string'),
@@ -37,11 +40,17 @@ OPTIONAL = [('launch_thread', 'project_id', 'string'), ('launch_thread', 'worksp
             ('delegate', 'model', 'string'), ('delegate', 'concurrency_key', 'string'),
             ('delegate', 'on_busy', 'string'),
             ('thread_send', 'mode', 'string'), ('threads', 'project_id', 'string'),
+            ('emit', 'project_id', 'string'), ('emit', 'key', 'string'),
+            ('emit', 'cause', 'integer'),
             ('schedule', 'action', 'string'), ('schedule', 'thread_id', 'string'),
-            ('schedule', 'project_id', 'string'), ('schedule', 'title', 'string')]
+            ('schedule', 'project_id', 'string'), ('schedule', 'title', 'string'),
+            ('schedule', 'concurrency_key', 'string'), ('schedule', 'on_busy', 'string'),
+            ('schedule', 'settle', 'string')]
 
-GIVEN = {'string': 'value', 'object': {'strategy': 'root'}}
-WRONG = {'string': [5, True, ['x'], {'a': 1}], 'object': ['root', 5, ['root'], False]}
+GIVEN = {'string': 'value', 'object': {'strategy': 'root'}, 'integer': 5}
+WRONG = {'string': [5, True, ['x'], {'a': 1}], 'object': ['root', 5, ['root'], False],
+         'integer': ['5', True, 5.5, 5.0, [5], {'a': 1}]}
+ARTICLES = {'string': 'a string', 'object': 'an object', 'integer': 'an integer'}
 
 
 def compact(value: object) -> str:
@@ -71,6 +80,7 @@ class ToolsCase(McpCase):
         self.loom.on('threads.stop', ok(own_child()))
         self.loom.on('threads.send', ok(thread_info('t2')))
         self.loom.on('threads.list', ok([thread_info('t1')]))
+        self.loom.on('signals.emit', ok(signal_event()))
         self.loom.on('schedules.add', ok(schedule_info()))
         self.loom.on('schedules.list', ok([schedule_info()]))
         self.loom.on('schedules.remove', ok(schedule_info()))
@@ -173,6 +183,66 @@ class EachToolTest(ToolsCase):
         self.assertEqual({key: value for key, value in params.items() if key != 'id'}, {
             'trigger': trigger, 'text': 'Stand-up', 'action': 'launch', 'thread_id': 't2',
             'project_id': 'demo', 'title': 'Notes'})
+
+    def test_emit(self) -> None:
+        event = signal_event(7, project_id='demo', key='LM-12', cause=3, by='t1', hops=1)
+        self.loom.on('signals.emit', ok(event))
+        mcp = self.start_thread()
+        self.assertEqual(mcp.tool('emit', {
+            'topic': 'demo.done', 'payload': {'to': 'done'}, 'project_id': 'demo',
+            'key': 'LM-12', 'cause': 3}), (compact(event), False))
+        [(call, params)] = self.loom.calls
+        self.assertEqual(call, 'signals.emit')
+        self.assert_command_id(params)
+        self.assertEqual({key: value for key, value in params.items() if key != 'id'}, {
+            'topic': 'demo.done', 'payload': {'to': 'done'}, 'project_id': 'demo',
+            'key': 'LM-12', 'cause': 3})
+
+    def test_emit_sends_only_what_is_given(self) -> None:
+        mcp = self.start_thread()
+        mcp.ok('emit', VALID['emit'])
+        mcp.ok('emit', {**VALID['emit'], 'project_id': None, 'key': None, 'cause': None})
+        for call, params in self.loom.calls:
+            self.assertEqual(call, 'signals.emit')
+            self.assertEqual(set(params), {'id', 'topic', 'payload'})
+
+    def test_emit_sends_cause_0_and_passes_the_refusal_on(self) -> None:
+        self.loom.on('signals.emit', failed('invalid', 'cause must be an event id'))
+        mcp = self.start_thread()
+        self.assertEqual(mcp.tool('emit', {**VALID['emit'], 'cause': 0}),
+                         ('invalid: cause must be an event id', True))
+        [(call, params)] = self.loom.calls
+        self.assertEqual((call, params['cause']), ('signals.emit', 0))
+
+    def test_schedule_event_trigger(self) -> None:
+        mcp = self.start_thread()
+        mcp.ok('schedule', {'trigger': EVENT_TRIGGER, 'text': 'Done: {{payload.to}}',
+                            'action': 'notify'})
+        [(call, params)] = self.loom.calls
+        self.assertEqual(call, 'schedules.add')
+        self.assertEqual(params['trigger'], EVENT_TRIGGER)
+        self.assertEqual(params['text'], 'Done: {{payload.to}}')
+
+    def test_schedule_launch_keys(self) -> None:
+        mcp = self.start_thread()
+        launch = {'trigger': EVENT_TRIGGER, 'text': 'Land {{payload.run}}', 'action': 'launch',
+                  'project_id': 'demo'}
+        keys = {'concurrency_key': 'pm:demo', 'on_busy': 'coalesce', 'settle': 'on_result'}
+        mcp.ok('schedule', {**launch, **keys})
+        mcp.ok('schedule', launch)
+        mcp.ok('schedule', {**launch, **{key: None for key in keys}})
+        given, missing, null = (params for _, params in self.loom.calls)
+        self.assertEqual({key: value for key, value in given.items()
+                          if key not in ('id', 'trigger', 'text')},
+                         {'action': 'launch', 'project_id': 'demo', **keys})
+        for params in (missing, null):
+            self.assertEqual(set(params) & set(keys), set())
+        self.loom.requests.clear()
+        for key in keys:
+            with self.subTest(key=key):
+                self.assertEqual(mcp.tool('schedule', {**launch, key: 5}),
+                                 (f'{key} must be a string', True))
+        self.assertEqual(self.loom.requests, [])
 
     def test_schedules(self) -> None:
         mcp = self.start_thread()
@@ -289,6 +359,20 @@ class ArgumentCheckTest(ToolsCase):
                 self.assertEqual(mcp.tool('schedule', arguments), (expected, True))
         self.assertEqual(self.loom.requests, [])
 
+    def test_payload(self) -> None:
+        mcp = self.start_thread()
+        for value, expected in ((..., 'payload is required'), (None, 'payload is required'),
+                                ('{}', 'payload must be an object'),
+                                (5, 'payload must be an object'),
+                                ([{'to': 'done'}], 'payload must be an object'),
+                                (False, 'payload must be an object')):
+            with self.subTest(value=value):
+                arguments = {'topic': 'demo.done'}
+                if value is not ...:
+                    arguments['payload'] = value
+                self.assertEqual(mcp.tool('emit', arguments), (expected, True))
+        self.assertEqual(self.loom.requests, [])
+
     def test_optional_arguments_missing_or_null_are_left_out(self) -> None:
         mcp = self.start_thread()
         for tool, name, kind in OPTIONAL:
@@ -320,9 +404,8 @@ class ArgumentCheckTest(ToolsCase):
         for tool, name, kind in OPTIONAL:
             for value in WRONG[kind]:
                 with self.subTest(tool=tool, name=name, value=value):
-                    article = 'an object' if kind == 'object' else 'a string'
                     self.assertEqual(mcp.tool(tool, {**VALID[tool], name: value}),
-                                     (f'{name} must be {article}', True))
+                                     (f'{name} must be {ARTICLES[kind]}', True))
         self.assertEqual(self.loom.requests, [])
 
     def test_arguments_are_checked_in_schema_order(self) -> None:
@@ -350,6 +433,17 @@ class ArgumentCheckTest(ToolsCase):
         with self.assertRaises(ToolError) as caught:
             check_arguments(tool, {'thread_id': 't', 'message': 'm', 'mode': 1})
         self.assertEqual(str(caught.exception), 'mode must be a string')
+
+    def test_an_integer_is_an_int_and_never_a_bool(self) -> None:
+        tool = BY_NAME['emit']
+        arguments = {'topic': 'demo.done', 'payload': {}}
+        self.assertEqual(check_arguments(tool, {**arguments, 'cause': 5})['cause'], 5)
+        self.assertEqual(check_arguments(tool, {**arguments, 'cause': 0})['cause'], 0)
+        for value in (True, False, 5.0):
+            with self.subTest(value=value):
+                with self.assertRaises(ToolError) as caught:
+                    check_arguments(tool, {**arguments, 'cause': value})
+                self.assertEqual(str(caught.exception), 'cause must be an integer')
 
 
 class OwnTaskTest(ToolsCase):
@@ -385,6 +479,7 @@ class ErrorMappingTest(ToolsCase):
                  ('delegate', 'threads.delegate', 'conflict', 'thread t1 is being stopped'),
                  ('thread_send', 'threads.send', 'conflict', 'thread t2 is settled'),
                  ('threads', 'threads.list', 'invalid', 'project_id must be a string'),
+                 ('emit', 'signals.emit', 'invalid', 'topic must not be a Loom event type'),
                  ('schedule', 'schedules.add', 'invalid',
                   'trigger.type must be one of at, interval, fixed_time'),
                  ('schedules', 'schedules.list', 'failed', 'internal error'),
@@ -397,6 +492,15 @@ class ErrorMappingTest(ToolsCase):
                 self.loom.on(call, failed(code, message))
                 self.assertEqual(mcp.tool(tool, VALID[tool]), (f'{code}: {message}', True))
                 self.assertEqual(self.loom.names().count(call), 1)
+
+    def test_a_key_without_a_launch_is_left_to_the_server(self) -> None:
+        self.loom.on('schedules.add', failed('invalid', 'concurrency_key goes only with launch'))
+        mcp = self.start_thread()
+        self.assertEqual(mcp.tool('schedule', {**VALID['schedule'], 'action': 'post',
+                                               'thread_id': 't2', 'concurrency_key': 'pm:demo'}),
+                         ('invalid: concurrency_key goes only with launch', True))
+        [(call, params)] = self.loom.calls
+        self.assertEqual((call, params['concurrency_key']), ('schedules.add', 'pm:demo'))
 
     def test_a_stopping_caller_gets_the_conflict_word_for_word(self) -> None:
         self.loom.on('threads.launch', failed('conflict', 'thread t1 is stopping'))
@@ -423,6 +527,14 @@ class RetryTest(ToolsCase):
         self.assertEqual(first, second)
         self.assertEqual(first[0], 'threads.launch')
 
+    def test_a_dropped_emit_is_sent_once_more_with_the_same_id(self) -> None:
+        self.loom.on('signals.emit', dropped(), ok(signal_event()))
+        mcp = self.start_thread()
+        self.assertEqual(mcp.tool('emit', VALID['emit']), (compact(signal_event()), False))
+        first, second = self.loom.calls
+        self.assertEqual(first, second)
+        self.assertEqual(first[0], 'signals.emit')
+
     def test_two_drops_say_the_call_may_have_run(self) -> None:
         self.loom.on('threads.launch', dropped())
         mcp = self.start_thread()
@@ -440,8 +552,8 @@ class RetryTest(ToolsCase):
 
     def test_every_write_is_retried_once_with_the_same_id(self) -> None:
         writes = [('delegate', 'threads.delegate'), ('task_cancel', 'threads.stop'),
-                  ('thread_send', 'threads.send'), ('schedule', 'schedules.add'),
-                  ('unschedule', 'schedules.remove')]
+                  ('thread_send', 'threads.send'), ('emit', 'signals.emit'),
+                  ('schedule', 'schedules.add'), ('unschedule', 'schedules.remove')]
         mcp = self.start_thread()
         for tool, call in writes:
             with self.subTest(tool=tool):

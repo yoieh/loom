@@ -6,8 +6,8 @@ from loom_mcp.server import MAX_LINE, Server
 
 from .support import McpCase, ok
 
-NINE = ['launch_thread', 'delegate', 'task_status', 'task_cancel', 'thread_send', 'threads',
-        'schedule', 'schedules', 'unschedule']
+TEN = ['launch_thread', 'delegate', 'task_status', 'task_cancel', 'thread_send', 'threads',
+       'emit', 'schedule', 'schedules', 'unschedule']
 
 PROPERTIES = {
     'launch_thread': ['title', 'message', 'project_id', 'workspace', 'runner', 'model',
@@ -17,7 +17,9 @@ PROPERTIES = {
     'task_cancel': ['task_id'],
     'thread_send': ['thread_id', 'message', 'mode'],
     'threads': ['project_id'],
-    'schedule': ['trigger', 'text', 'action', 'thread_id', 'project_id', 'title'],
+    'emit': ['topic', 'payload', 'project_id', 'key', 'cause'],
+    'schedule': ['trigger', 'text', 'action', 'thread_id', 'project_id', 'title',
+                 'concurrency_key', 'on_busy', 'settle'],
     'schedules': [],
     'unschedule': ['id'],
 }
@@ -58,10 +60,10 @@ class InitializeTest(McpCase):
 
 
 class ToolsListTest(McpCase):
-    def test_lists_exactly_the_nine_tools(self) -> None:
+    def test_lists_exactly_the_ten_tools(self) -> None:
         mcp = self.start()
         tools = mcp.request('tools/list')['result']['tools']
-        self.assertEqual([tool['name'] for tool in tools], NINE)
+        self.assertEqual([tool['name'] for tool in tools], TEN)
         for tool in tools:
             with self.subTest(tool=tool['name']):
                 self.assertIsInstance(tool['description'], str)
@@ -97,8 +99,19 @@ class ToolsListTest(McpCase):
             'launch_thread': ['title', 'message'], 'delegate': ['task'],
             'task_status': ['task_id'], 'task_cancel': ['task_id'],
             'thread_send': ['thread_id', 'message'], 'threads': [],
-            'schedule': ['trigger', 'text'], 'schedules': [], 'unschedule': ['id'],
+            'emit': ['topic', 'payload'], 'schedule': ['trigger', 'text'], 'schedules': [],
+            'unschedule': ['id'],
         })
+
+    def test_schedule_takes_event_triggers_and_emit_an_integer_cause(self) -> None:
+        mcp = self.start()
+        tools = {tool['name']: tool for tool in mcp.request('tools/list')['result']['tools']}
+        trigger = tools['schedule']['inputSchema']['properties']['trigger']['description']
+        self.assertIn('"type": "event"', trigger)
+        self.assertIn('"topic"', trigger)
+        self.assertIn('event trigger', tools['schedule']['description'])
+        self.assertEqual(tools['emit']['inputSchema']['properties']['cause']['type'], 'integer')
+        self.assertEqual(tools['emit']['inputSchema']['properties']['payload']['type'], 'object')
 
     def test_params_missing_or_null_lists_the_tools(self) -> None:
         mcp = self.start()
@@ -108,7 +121,7 @@ class ToolsListTest(McpCase):
                 mcp.send(message)
                 answer = mcp.read()
                 self.assertEqual(answer['id'], message['id'])
-                self.assertEqual(len(answer['result']['tools']), 9)
+                self.assertEqual(len(answer['result']['tools']), 10)
 
 
 class NotificationTest(McpCase):
@@ -178,7 +191,7 @@ class EnvelopeErrorTest(McpCase):
     def test_tool_name_missing_null_not_a_string_or_unknown(self) -> None:
         mcp = self.start()
         for params in ({}, {'name': None}, {'name': 5}, {'name': 'projects_add'},
-                       {'name': 'projects.set_mode'}, {'name': 'emit'}):
+                       {'name': 'projects.set_mode'}, {'name': 'signals.emit'}):
             with self.subTest(params=params):
                 answer = mcp.request('tools/call', params)
                 self.assert_error(answer, -32602, answer['id'])

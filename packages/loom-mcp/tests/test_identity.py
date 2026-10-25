@@ -1,6 +1,6 @@
 import unittest
 
-from .support import McpCase, dropped, failed, ok, schedule_info, thread_info
+from .support import McpCase, dropped, failed, ok, schedule_info, signal_event, thread_info
 
 OUTSIDE_ERROR = 'this agent is not a Loom thread, so it has no tasks; use launch_thread'
 LAUNCH = {'title': 'Fix it', 'message': 'Make the test pass.'}
@@ -118,17 +118,19 @@ class NoLookupTest(McpCase):
     def test_other_tools_never_look_up_the_session(self) -> None:
         self.loom.on('threads.send', ok(thread_info('t2')))
         self.loom.on('threads.list', ok([]))
+        self.loom.on('signals.emit', ok(signal_event()))
         self.loom.on('schedules.add', ok(schedule_info()))
         self.loom.on('schedules.list', ok([]))
         self.loom.on('schedules.remove', ok(schedule_info()))
         mcp = self.start(CLAUDE_CODE_SESSION_ID='s1')
         mcp.ok('thread_send', {'thread_id': 't2', 'message': 'Hi.'})
         mcp.ok('threads')
+        mcp.ok('emit', {'topic': 'demo.done', 'payload': {'to': 'done'}})
         mcp.ok('schedule', {'trigger': {'type': 'at', 'at': '2026-10-26T09:00'}, 'text': 'x'})
         mcp.ok('schedules')
         mcp.ok('unschedule', {'id': 'sc1'})
         self.assertEqual(self.loom.names(), [
-            'threads.send', 'threads.list', 'schedules.add', 'schedules.list',
+            'threads.send', 'threads.list', 'signals.emit', 'schedules.add', 'schedules.list',
             'schedules.remove'])
 
 
