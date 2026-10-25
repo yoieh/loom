@@ -1471,6 +1471,158 @@ $ loom --socket /tmp/nothing.sock threads list
 loom: cannot reach Loom at /tmp/nothing.sock: No such file or directory
 ```
 
+## `loom-mcp`
+
+`loom-mcp` is the stdio MCP server that gives agents Loom's tools (§9): any agent can launch,
+delegate to, message and schedule threads with one tool call. It is the `loom-mcp` package. It
+depends only on `loom-client` and makes each call through `loom_client.Client`, so the server
+checks every call as it checks any client's.
+
+### Running it
+
+```sh
+uv run python -m loom_mcp
+```
+
+`python -m loom_mcp` and the `loom-mcp` script are the same server. It takes no arguments and is
+run by an MCP client, such as Claude Code or Codex, which `loom install` registers it with as the
+MCP server `loom`. Use the `python` of the workspace's venv, which has `loom_mcp` installed.
+
+It reads four environment variables: `LOOM_THREAD` and `CLAUDE_CODE_SESSION_ID` (see
+[Who it serves](#who-it-serves)), and `LOOM_SOCKET` and `XDG_RUNTIME_DIR`, which give the socket
+as for any client: `LOOM_SOCKET` when it is set and not empty, else
+`$XDG_RUNTIME_DIR/loom/api.sock` (see [The socket](#the-socket)). With neither, each tool answers
+a tool error that begins `no socket path`. It opens one connection per call and waits at most
+30 s for each answer.
+
+### Protocol
+
+MCP over stdin and stdout: JSON-RPC 2.0, one JSON object per line on stdin and one answer per
+line on stdout. stdout carries nothing else; tracebacks go to stderr. When stdin ends, it exits 0.
+
+| Method | Answer |
+|---|---|
+| `initialize` | `{"protocolVersion": <v>, "capabilities": {"tools": {}}, "serverInfo": {"name": "loom", "version": "0.1.0"}}`. `<v>` is the client's `protocolVersion` when it is `2024-11-05`, `2025-03-26`, `2025-06-18` or `2025-11-25`, else `2025-11-25`. |
+| `ping` | `{}` |
+| `tools/list` | `{"tools": [...]}`: the nine tools below, each with a `name`, a `description` and an `inputSchema`. |
+| `tools/call` | `{"content": [{"type": "text", "text": <text>}], "isError": <bool>}`. On success `<text>` is the tool's result as compact JSON; on a tool error it is a one-line message. |
+
+A message without `id` is a notification and gets no answer, whatever its method. It has no
+resources, prompts, logging or progress. Errors come as JSON-RPC `error` objects, and the next
+line is read as usual:
+
+| Problem | Code | `id` |
+|---|---|---|
+| The line is not JSON | `-32700` | null |
+| The JSON value is not an object, a batch (array) included | `-32600` | null |
+| The line is over 1,048,576 bytes before its `\n` (`request line is over 1048576 bytes`) | `-32600` | null |
+| `method` is missing or not a string | `-32600` | the request's |
+| An unknown method (`unknown method: <method>`) | `-32601` | the request's |
+| `params` is not an object (null counts as missing) | `-32602` | the request's |
+| `tools/call` whose `name` is missing, not a string, or not one of the nine (`unknown tool: <name>`) | `-32602` | the request's |
+| `tools/call` whose `arguments` is not an object (missing or null means `{}`) | `-32602` | the request's |
+| An error inside a tool (`internal error`; the traceback goes to stderr) | `-32603` | the request's |
+
+A line of exactly 1,048,576 bytes is read and answered. The rest of a longer line is skipped
+without being kept in memory.
+
+### Who it serves
+
+`loom-mcp` works out once which thread it acts for, the caller:
+
+- `LOOM_THREAD`, when it is set and not empty, is the caller's Loom thread. Every agent Loom
+  starts has it (see [The agent's environment](#the-agents-environment)).
+- Else `CLAUDE_CODE_SESSION_ID`, when it is set and not empty, is looked up with `threads.get`.
+  When Loom has that thread, it is the caller's thread; when it answers `not_found`, the caller is
+  an outside thread with that session id. Either answer is kept until the process ends. Any other
+  error fails the tool call that needed it, and the next such call looks it up again.
+- Else the caller is an outside thread with no id: an agent Loom didn't start, such as Claude
+  Code in a terminal or a T3 thread.
+
+Only `launch_thread`, `delegate`, `task_status` and `task_cancel` need the caller; the other tools
+never look it up. `v1` has no call that registers an outside thread, so `launch_thread` records
+the caller in the new thread's `origin`: `thread:<thread id>` for a Loom thread,
+`outside:<CLAUDE_CODE_SESSION_ID>` for an outside thread with a session id, and `outside`
+otherwise. An outside thread has no tasks, so `delegate`, `task_status` and `task_cancel` answer
+it `this agent is not a Loom thread, so it has no tasks; use launch_thread`.
+
+### Tools
+
+Each tool makes the call in its row, and its result is the call's result. `?` marks an optional
+argument. Every argument is a string, except `workspace` and `trigger`, which are objects.
+
+| Tool | Arguments | Call | Result |
+|---|---|---|---|
+| `launch_thread` | `title`, `message`, `project_id?`, `workspace?`, `runner?`, `model?`, `audience?` | [`threads.launch`](#threadslaunch), with `origin` as above | the new thread |
+| `delegate` | `task`, `workspace?`, `runner?`, `model?` | [`threads.delegate`](#threadsdelegate) with `parent_id` the caller's thread | `{"task_id": <the child's id>, "thread": <the child>}` |
+| `task_status` | `task_id` | [`threads.get`](#threadsget) | the task's thread |
+| `task_cancel` | `task_id` | [`threads.get`](#threadsget), then [`threads.stop`](#threadsstop) | the thread `threads.stop` answers |
+| `thread_send` | `thread_id`, `message`, `mode?` | [`threads.send`](#threadssend) | the thread |
+| `threads` | `project_id?` | [`threads.list`](#threadslist) | the list of threads |
+| `schedule` | `trigger`, `text`, `action?`, `thread_id?`, `project_id?`, `title?` | [`schedules.add`](#schedulesadd) | the new schedule |
+| `schedules` | none | [`schedules.list`](#scheduleslist) | the list of schedules |
+| `unschedule` | `id` | [`schedules.remove`](#schedulesremove) with `schedule_id` the `id` | the removed schedule |
+
+- `launch_thread` without `project_id` starts the thread in the caller's thread's project, which
+  it reads with `threads.get`. An outside thread must give `project_id`. Without `audience` the
+  thread is `agent`, the server's default.
+- `task_status` and `task_cancel` act only on the caller's own tasks: the threads whose
+  `parent_id` is the caller's thread. On any other thread they answer
+  `<task_id> is not a task of this thread`, and `task_cancel` stops nothing.
+- No tool adds a project, changes a project's mode or removes a project, and no tool takes a
+  permission mode, `requests` or a command id. A thread a tool starts gets its project's mode
+  (§11), and the server tells an agent's calls apart as under
+  [Callers](#agents-may-not-add-projects-or-change-a-projects-mode).
+
+### Tool errors
+
+A tool error is a tool result with `isError: true` and a one-line `text`:
+
+| Problem | Text |
+|---|---|
+| A required argument is missing or null | `<name> is required` |
+| An argument of the wrong JSON type | `<name> must be a string`, or `<name> must be an object` for `workspace` and `trigger` |
+| An outside thread's `launch_thread` without `project_id` | `project_id is required outside a Loom thread` |
+| A `launch_thread` without `project_id`, when the caller's thread has no `project_id` string | `cannot tell this thread's project; give project_id` |
+| An outside thread's `delegate`, `task_status` or `task_cancel` | `this agent is not a Loom thread, so it has no tasks; use launch_thread` |
+| A `task_status` or `task_cancel` on a thread that is not the caller's task | `<task_id> is not a task of this thread` |
+| Loom answers `ok: false` | `<code>: <message>`, such as `conflict: thread <id> is stopping` |
+| Loom can't be reached, the connection drops, or the answer breaks the protocol | the [`loom_client` error](#errors)'s message |
+
+The arguments are checked in the table's order before any call. An optional argument that is
+null is the same as one left out, and arguments a tool doesn't list are ignored. Values, such as
+an empty `title`, a `runner` or a trigger, are checked by the server, and its answer comes back as
+`invalid: <message>`.
+
+**Retries.** Each call that changes something (`launch_thread`, `delegate`, `task_cancel`'s
+stop, `thread_send`, `schedule` and `unschedule`) sends a new command id. When the connection
+fails before the answer, it sends the same request once more with the same id, so a call that
+already ran returns its first answer and runs only once (see
+[Command ids](#command-ids-and-safe-retries)). When that fails too, the text is the error's
+message followed by `; the call may have run, so check with threads or schedules before calling
+again`. A read (`threads`, `schedules`, `task_status`, and the `threads.get` calls) is not tried
+again.
+
+### Example
+
+An agent Loom didn't start launches a thread, and the project gives it its mode:
+
+```json
+{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "demo", "version": "1"}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"loom","version":"0.1.0"}}}
+{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "launch_thread", "arguments": {"title": "Fix the login test", "message": "Make the login test pass.", "project_id": "demo", "workspace": {"strategy": "root"}}}}
+{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"id\":\"a33b…\",\"title\":\"Fix the login test\",\"runner\":\"claude\",\"project_id\":\"demo\",\"workspace_path\":\"/home/me/src/demo\",\"branch\":null,\"model\":null,\"permission_mode\":\"approval-required\",\"state\":\"queued\",\"waiting\":false,\"reason\":null,\"parent_id\":null,\"origin\":\"outside\",\"audience\":\"agent\",\"created_at\":\"2026-10-25T00:50:10.571+00:00\"}"}],"isError":false}}
+{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "delegate", "arguments": {"task": "Review it."}}}
+{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"this agent is not a Loom thread, so it has no tasks; use launch_thread"}],"isError":true}}
+```
+
+The launched thread's agent, with `LOOM_THREAD=a33b…`, delegates a task:
+
+```json
+{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "delegate", "arguments": {"task": "Review the login test fix."}}}
+{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"task_id\":\"43e0…\",\"thread\":{\"id\":\"43e0…\",\"title\":\"Review the login test fix.\",\"runner\":\"claude\",\"project_id\":\"demo\",\"workspace_path\":\"/home/me/src/demo\",\"branch\":null,\"model\":null,\"permission_mode\":\"approval-required\",\"state\":\"queued\",\"waiting\":false,\"reason\":null,\"parent_id\":\"a33b…\",\"origin\":null,\"audience\":\"agent\",\"created_at\":\"2026-10-25T00:50:19.080+00:00\"}}"}],"isError":false}}
+```
+
 ## The Python API
 
 `loom_client` is a stdlib-only client, in the `loom-client` package (it depends only on
