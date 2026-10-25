@@ -140,7 +140,9 @@ string of 1 to 200 characters`. The CLI and the Python API make one for you.
 
 - Sending the same call again with the same `id` changes nothing and returns the first answer
   word for word, even if the thread has moved on since (§4 Command ids). So when a connection
-  drops before the answer arrives, send the request again with the same `id`.
+  drops before the answer arrives, send the request again with the same `id`. The Python API and
+  the CLI give that id back: `LoomConnectionError.command_id` (see [Errors](#errors)) and the
+  CLI's `retry with --id <id>`.
 - Using an `id` again for a different call is a `conflict`, `id was already used for <call>`.
 - The calls that take an `id` are `threads.launch`, `threads.delegate`, `threads.send`,
   `threads.stop`, `threads.settle`, `threads.update`, `projects.add`, `projects.set_mode`,
@@ -1308,7 +1310,10 @@ They go before the command.
   and agents: a message given as an argument shows in the `loom` process's command line, which
   other users on the machine can read.
 - `--id` sets the command id, to retry a call safely (see
-  [Command ids](#command-ids-and-safe-retries)). Without it, each run sends a new one.
+  [Command ids](#command-ids-and-safe-retries)). Without it, each run sends a new one. When a
+  write command fails with exit 3 after it reached Loom, stderr ends in `retry with --id <id>`,
+  the id it sent (`LoomConnectionError.command_id`), so run the same command again with that
+  `--id`.
 - There are no `requests` commands yet (LM-9).
 
 ### Examples
@@ -1532,7 +1537,9 @@ not_found no thread with id 'nope'
   - `schedules_pause(schedule_id, *, id=None)`, `schedules_remove(schedule_id, *, id=None)`
   - Not served yet: `requests_respond(request_id, decision, *, message=None, id=None)`.
 - A call that changes something sends a new uuid4 `id` when `id` is `None`. Pass the same `id`
-  again to retry it safely.
+  again to retry it safely. When such a call fails after it connected (the connection dropped,
+  the answer timed out or broke the protocol), the `LoomConnectionError` has `command_id`, the
+  `id` it sent: pass it as `id=` on the retry. It is missing when the socket couldn't be reached.
 - `Client.follow_events(after=0, thread_id=None, *, audience=None) -> Iterator[Event]`: yields
   every event after `after`, then each new one, until you stop iterating. When the connection is
   lost it raises `LoomConnectionError` whose `last_event_id` is the id of the last event it
@@ -1543,5 +1550,5 @@ not_found no thread with id 'nope'
 | Class | When |
 |---|---|
 | `LoomApiError` | The answer was `ok: false`. It has `.code` and `.message`. |
-| `LoomConnectionError` | The socket can't be reached, or the connection dropped. It has `.message` and `.last_event_id` (an int after a lost follow, else `None`). |
+| `LoomConnectionError` | The socket can't be reached, or the connection dropped. It has `.message` and `.last_event_id` (an int after a lost follow, else `None`). When a call whose params hold a string `id` fails after the socket connected, it also has `.command_id`, the `id` it sent; otherwise that attribute is missing, so read it with `getattr(error, 'command_id', None)`. The subclass `LoomProtocolError` carries it the same way. |
 | `LoomProtocolError` | A subclass of `LoomConnectionError`: the answer broke this protocol, for example a line that is not JSON. |
