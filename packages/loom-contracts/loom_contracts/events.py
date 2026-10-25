@@ -65,11 +65,13 @@ class RequestOpenedData(TypedDict):
     tool_name: str
     input: dict[str, object]
     description: NotRequired[str]
+    expires_at: NotRequired[str]
 
 
 class RequestClosedData(TypedDict):
     request_id: str
     decision: Decision
+    reason: NotRequired[str]
 
 
 class ScheduleFiredData(TypedDict):

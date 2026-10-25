@@ -9,13 +9,14 @@ from pathlib import Path
 from loom_contracts.calls import Audience, CallName, OnBusy, ProjectInfo, Settle, ThreadInfo
 from loom_contracts.events import EventType
 from loom_contracts.runners import (
-    Capability, DispatchMode, Exited, PermissionMode, PermissionRequest, Runner, RunnerEvent,
-    RunnerHost, RunnerName, RunnerSession, TextOut, ThreadSpec, ToolUse, TurnResult, TurnStarted,
+    Capability, Decision, DispatchMode, Exited, PermissionMode, PermissionRequest, RequestAnswer,
+    Runner, RunnerEvent, RunnerHost, RunnerName, RunnerSession, TextOut, ThreadSpec, ToolUse,
+    TurnResult, TurnStarted,
 )
 from loom_contracts.states import ThreadState, TurnState
 from loom_contracts.workspaces import WorkspaceStrategy
 
-from . import concurrency, delegation, keys, threads
+from . import concurrency, delegation, keys, requests, threads
 from .clock import iso
 from .errors import LoomError
 from .lanes import Lanes
@@ -106,7 +107,8 @@ def _reason(error: BaseException) -> str:
 class Orchestrator:
     def __init__(self, store: Store, projects: Projects, runners: Mapping[str, Runner],
                  host: RunnerHost, *, stop_grace: float = 5.0, agents_max: int = 1000,
-                 idle_after: int = 1200, idle_check: float = 30.0) -> None:
+                 idle_after: int = 1200, idle_check: float = 30.0, request_timeout: int = 600,
+                 request_check: float = 1.0) -> None:
         self.store = store
         self.projects = projects
         self.runners = runners
@@ -115,6 +117,8 @@ class Orchestrator:
         self.agents_max = agents_max
         self.idle_after = idle_after
         self.idle_check = idle_check
+        self.request_timeout = request_timeout
+        self.request_check = request_check
         self.lanes = Lanes()
         self._sessions: dict[str, RunnerSession] = {}
         self._pumps: dict[RunnerSession, asyncio.Task] = {}
@@ -126,10 +130,11 @@ class Orchestrator:
         self._sleepers: set[str] = set()
         self._idle_since: dict[str, datetime] = {}
         self._idle_task: asyncio.Task | None = None
+        self._request_task: asyncio.Task | None = None
         store.on_handed = self._submit_start
 
-    async def launch(self, params: object, *,
-                     source: StartSource = StartSource.PERSON) -> ThreadInfo:
+    async def launch(self, params: object, *, source: StartSource = StartSource.PERSON,
+                     launcher: str | None = None) -> ThreadInfo:
         params = _params(params)
         title = _text(_required(params, 'title'), 'title')
         message = _text(_required(params, 'message'), 'message')
@@ -147,10 +152,10 @@ class Orchestrator:
         model = None
         if 'model' in params:
             model = _text(_not_null(params, 'model'), 'model')
-        requests = 'any'
+        answered_by = 'any'
         if 'requests' in params:
-            requests = _not_null(params, 'requests')
-            if requests not in REQUESTS:
+            answered_by = _not_null(params, 'requests')
+            if answered_by not in REQUESTS:
                 raise LoomError('invalid', 'requests must be one of caller, any')
         origin = None
         if 'origin' in params:
@@ -187,7 +192,8 @@ class Orchestrator:
                 'base': plan.base,
                 'model': model,
                 'permission_mode': mode,
-                'requests': requests,
+                'requests': answered_by,
+                'launched_by': launcher,
                 'origin': origin,
                 'audience': audience,
                 'concurrency_key': key,
@@ -257,6 +263,7 @@ class Orchestrator:
                 'model': model if has_model else parent['model'],
                 'permission_mode': self.projects.effective_mode(project_id),
                 'requests': parent['requests'],
+                'launched_by': parent['launched_by'],
                 'parent_id': parent_id,
                 'audience': Audience.AGENT,
                 'concurrency_key': key,
@@ -354,6 +361,48 @@ class Orchestrator:
                 self.lanes.submit(target, lambda target=target: self._stop_turn(target))
         return receipt.answer
 
+    async def respond(self, params: object, *, answerer: str | None,
+                      answerer_thread: str | None) -> ThreadInfo:
+        params = _params(params)
+        request_id = _string(_required(params, 'request_id'), 'request_id')
+        decision = _choice(_required(params, 'decision'), 'decision', Decision)
+        message = None
+        if 'message' in params:
+            message = requests.message_of(_not_null(params, 'message'))
+        command_id = params.get('id')
+        thread_id = None
+
+        def change(tx: sqlite3.Connection) -> ThreadInfo:
+            nonlocal thread_id
+            request = requests.fetch(tx, request_id)
+            thread_id = request['thread_id']
+            thread = fetch(tx, thread_id)
+            requests.check_answerer(thread, answerer, answerer_thread)
+            if thread['stop_requested']:
+                raise LoomError('conflict', f'thread {thread_id} is stopping')
+            if request['closed_at'] is not None:
+                raise LoomError('conflict', f'request {request_id} is closed')
+            self._close_request(tx, request, decision)
+            return thread_info(fetch(tx, thread_id))
+
+        receipt = self.store.command(command_id, CallName.REQUESTS_RESPOND, change)
+        if not receipt.replayed:
+            told = (message or None) if decision is Decision.DENY else None
+            answer = RequestAnswer(decision, told)
+            self.lanes.submit(thread_id, lambda: self._answer(thread_id, request_id, answer))
+        return receipt.answer
+
+    async def expire_requests(self) -> None:
+        with self.store.transaction() as tx:
+            due = requests.expired(tx, self.store.clock())
+            for request in due:
+                self._close_request(tx, request, Decision.DENY, requests.TIMEOUT)
+        answer = RequestAnswer(Decision.DENY, requests.timeout_message(self.request_timeout))
+        waits = [self.lanes.submit(request['thread_id'], lambda request=request: self._answer(
+            request['thread_id'], request['id'], answer)) for request in due]
+        if waits:
+            await asyncio.wait(waits)
+
     def get(self, thread_id: str) -> ThreadInfo:
         return thread_info(fetch(self.store.connection, _string(thread_id, 'thread_id')))
 
@@ -365,10 +414,11 @@ class Orchestrator:
 
     async def close(self) -> None:
         self._closing = True
-        if self._idle_task is not None:
-            self._idle_task.cancel()
-            await asyncio.gather(self._idle_task, return_exceptions=True)
-            self._idle_task = None
+        loops = [task for task in (self._idle_task, self._request_task) if task is not None]
+        for task in loops:
+            task.cancel()
+        await asyncio.gather(*loops, return_exceptions=True)
+        self._idle_task = self._request_task = None
         waits = list(self._stop_waits.values())
         for wait in waits:
             wait.cancel()
@@ -407,6 +457,9 @@ class Orchestrator:
         if self._idle_task is None and not self._closing:
             self._idle_task = asyncio.get_running_loop().create_task(
                 self._check_idle(), name='loom-idle')
+        if self._request_task is None and not self._closing:
+            self._request_task = asyncio.get_running_loop().create_task(
+                self._check_requests(), name='loom-requests')
 
     async def sleep_idle(self) -> None:
         cutoff = self.store.clock() - timedelta(seconds=self.idle_after)
@@ -427,6 +480,36 @@ class Orchestrator:
                 await self.sleep_idle()
             except Exception:
                 pass
+
+    async def _check_requests(self) -> None:
+        while True:
+            await asyncio.sleep(self.request_check)
+            try:
+                await self.expire_requests()
+            except Exception:
+                pass
+
+    def _close_request(self, tx: sqlite3.Connection, request: sqlite3.Row, decision: Decision,
+                       reason: str | None = None) -> None:
+        requests.close(self.store, tx, request, decision, reason)
+        thread_id = request['thread_id']
+        row = fetch(tx, thread_id)
+        if (row['state'] == ThreadState.RUNNING and row['waiting']
+                and not requests.has_open(tx, thread_id)):
+            transition(self.store, tx, thread_id, ThreadState.RUNNING, row['reason'],
+                       waiting=False)
+
+    async def _answer(self, thread_id: str, request_id: str, answer: RequestAnswer) -> None:
+        session = self._sessions.get(thread_id)
+        if session is not None:
+            await self._respond(session, request_id, answer)
+
+    async def _respond(self, session: RunnerSession, request_id: str,
+                       answer: RequestAnswer) -> None:
+        try:
+            await session.respond(request_id, answer)
+        except Exception:
+            pass
 
     def _recover(self, tx: sqlite3.Connection, row: sqlite3.Row) -> None:
         thread_id = row['id']
@@ -800,19 +883,25 @@ class Orchestrator:
         current = self._sessions.get(thread_id) is session
         turn_over = False
         settled = False
+        opened = False
         posted = None
         with self.store.transaction() as tx:
             row = fetch(tx, thread_id)
             state = ThreadState(row['state'])
             live = current and state not in ENDED
             self._log(tx, thread_id, event, state if live else None)
-            if live and (isinstance(event, Exited) and state is ThreadState.RUNNING
-                         and not row['stop_requested']):
+            if isinstance(event, PermissionRequest):
+                opened = live and self._open_request(tx, row, event)
+            elif live and (isinstance(event, Exited) and state is ThreadState.RUNNING
+                           and not row['stop_requested']):
                 posted = self._crash(tx, row)
             elif live:
                 posted = self._post_result(tx, row, event)
                 settled = self._settle_on_result(tx, row, event)
                 turn_over = not settled and self._apply(tx, row, event)
+        if isinstance(event, PermissionRequest) and not opened:
+            await self._respond(session, event.request_id,
+                                RequestAnswer(Decision.DENY, requests.COULD_NOT_OPEN))
         if current and isinstance(event, (TurnResult, Exited)):
             ended = self._turn_ends.pop(thread_id, None)
             if ended is not None and not ended.done():
@@ -830,6 +919,15 @@ class Orchestrator:
         elif turn_over and not row['stop_requested']:
             await self._dispatch_next(thread_id)
             self._hand_over(thread_id)
+
+    def _open_request(self, tx: sqlite3.Connection, row: sqlite3.Row,
+                      event: PermissionRequest) -> bool:
+        if (row['state'] != ThreadState.RUNNING or row['stop_requested']
+                or requests.is_known(tx, event.request_id)):
+            return False
+        requests.open_request(self.store, tx, row['id'], event, self.request_timeout)
+        transition(self.store, tx, row['id'], ThreadState.RUNNING, row['reason'], waiting=True)
+        return True
 
     def _post_result(self, tx: sqlite3.Connection, row: sqlite3.Row,
                      event: RunnerEvent) -> tuple[str, int] | None:
@@ -883,12 +981,6 @@ class Orchestrator:
         elif isinstance(event, ToolUse):
             append(tx, EventType.TURN_TOOL, thread_id, {'tool_use_id': event.tool_use_id,
                                                         'name': event.name, 'input': event.input})
-        elif isinstance(event, PermissionRequest):
-            data = {'request_id': event.request_id, 'tool_name': event.tool_name,
-                    'input': event.input}
-            if event.description is not None:
-                data['description'] = event.description
-            append(tx, EventType.REQUEST_OPENED, thread_id, data)
         elif isinstance(event, TurnResult):
             data = {'state': event.state}
             if event.text is not None:
@@ -903,9 +995,7 @@ class Orchestrator:
     def _apply(self, tx: sqlite3.Connection, row: sqlite3.Row, event: RunnerEvent) -> bool:
         thread_id = row['id']
         state = ThreadState(row['state'])
-        if isinstance(event, PermissionRequest) and state is ThreadState.RUNNING:
-            transition(self.store, tx, thread_id, state, row['reason'], waiting=True)
-        elif isinstance(event, TurnResult) and state is ThreadState.RUNNING:
+        if isinstance(event, TurnResult) and state is ThreadState.RUNNING:
             transition(self.store, tx, thread_id, ThreadState.IDLE)
             self._idle_since[thread_id] = self.store.clock()
             return True

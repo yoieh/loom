@@ -25,6 +25,7 @@ THREAD_AUDIENCE = "audience TEXT NOT NULL DEFAULT 'agent'"
 THREAD_KEY = 'concurrency_key TEXT'
 THREAD_SETTLE = 'settle TEXT'
 THREAD_KEY_STATE = 'key_state TEXT'
+THREAD_LAUNCHED_BY = 'launched_by TEXT'
 THREAD_KEY_INDEX = 'CREATE INDEX IF NOT EXISTS threads_key ON threads (concurrency_key, key_state)'
 
 SCHEMA: list[str] = [
@@ -74,7 +75,8 @@ SCHEMA: list[str] = [
         {THREAD_AUDIENCE},
         {THREAD_KEY},
         {THREAD_SETTLE},
-        {THREAD_KEY_STATE}
+        {THREAD_KEY_STATE},
+        {THREAD_LAUNCHED_BY}
     )''',
     'CREATE INDEX IF NOT EXISTS threads_project ON threads (project_id, state)',
     'CREATE INDEX IF NOT EXISTS threads_parent ON threads (parent_id)',
@@ -96,6 +98,17 @@ SCHEMA: list[str] = [
         rank INTEGER NOT NULL,
         queued_at TEXT NOT NULL
     )''',
+    '''CREATE TABLE IF NOT EXISTS permission_requests (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        opened_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        closed_at TEXT,
+        decision TEXT,
+        reason TEXT
+    )''',
+    'CREATE INDEX IF NOT EXISTS permission_requests_open '
+    'ON permission_requests (thread_id, expires_at) WHERE closed_at IS NULL',
 ]
 
 
@@ -158,7 +171,7 @@ class Store:
                 for statement in SCHEMA:
                     tx.execute(statement)
                 _add_column(tx, 'threads', THREAD_AUDIENCE)
-                for column in (THREAD_KEY, THREAD_SETTLE, THREAD_KEY_STATE):
+                for column in (THREAD_KEY, THREAD_SETTLE, THREAD_KEY_STATE, THREAD_LAUNCHED_BY):
                     _add_column(tx, 'threads', column)
                 tx.execute(THREAD_KEY_INDEX)
                 _add_column(tx, 'messages', MESSAGE_SOURCE)

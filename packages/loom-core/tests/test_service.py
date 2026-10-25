@@ -26,7 +26,7 @@ SCHEDULED = (
 ALL_CALLS = (
     'threads.launch', 'threads.delegate', 'threads.send', 'threads.list', 'threads.get',
     'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
-    'projects.set_mode', 'projects.remove', 'projects.list',
+    'projects.set_mode', 'projects.remove', 'projects.list', 'requests.respond',
 )
 
 
@@ -76,7 +76,7 @@ class ServiceTest(OrchestratorTest):
 
 
 class MethodTest(ServiceTest):
-    async def test_served_names_the_thirteen_calls_in_order(self) -> None:
+    async def test_served_names_the_fourteen_calls_in_order(self) -> None:
         self.assertEqual(SERVED, ALL_CALLS)
 
     async def test_method_gives_a_callable_for_each_served_call(self) -> None:
@@ -98,8 +98,7 @@ class MethodTest(ServiceTest):
                          ('invalid', 'unknown call: threads.nope'))
 
     async def test_method_refuses_v1_calls_not_served_yet(self) -> None:
-        for call in ('requests.respond', 'schedules.add', 'schedules.list', 'schedules.pause',
-                     'schedules.remove'):
+        for call in ('schedules.add', 'schedules.list', 'schedules.pause', 'schedules.remove'):
             with self.subTest(call=call), self.assertRaises(LoomError) as caught:
                 self.service.method(call)
             self.assertEqual((caught.exception.code, caught.exception.message),
