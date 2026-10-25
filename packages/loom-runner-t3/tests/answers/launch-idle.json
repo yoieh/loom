@@ -1,0 +1,73 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "body": {
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "name": "t3_thread_launch",
+        "arguments": {
+          "projectId": "mcp:00000000-0000-4000-8001-000000000001",
+          "title": "Loom t3-record A (idle launch)",
+          "workspaceStrategy": {
+            "type": "root"
+          },
+          "runtimeMode": "approval-required",
+          "modelSelection": {
+            "instanceId": "claude-proxy",
+            "model": "claude-opus-5-5",
+            "options": [
+              {
+                "id": "effort",
+                "value": "high"
+              },
+              {
+                "id": "contextWindow",
+                "value": "1m"
+              }
+            ]
+          }
+        }
+      },
+      "id": 7494891
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 7494891,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"threadId\":\"mcp:00000000-0000-4000-8000-000000000001\",\"projectId\":\"mcp:00000000-0000-4000-8001-000000000001\",\"modelSelection\":{\"instanceId\":\"claude-proxy\",\"model\":\"claude-opus-5-5\",\"options\":[{\"id\":\"effort\",\"value\":\"high\"},{\"id\":\"contextWindow\",\"value\":\"1m\"}]},\"runId\":null,\"status\":null}"
+        }
+      ],
+      "structuredContent": {
+        "threadId": "mcp:00000000-0000-4000-8000-000000000001",
+        "projectId": "mcp:00000000-0000-4000-8001-000000000001",
+        "modelSelection": {
+          "instanceId": "claude-proxy",
+          "model": "claude-opus-5-5",
+          "options": [
+            {
+              "id": "effort",
+              "value": "high"
+            },
+            {
+              "id": "contextWindow",
+              "value": "1m"
+            }
+          ]
+        },
+        "runId": null,
+        "status": null
+      },
+      "isError": false
+    }
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "body": {
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "name": "t3_thread_launch",
+        "arguments": {
+          "projectId": "mcp:00000000-0000-4000-8001-000000000001",
+          "title": "Loom t3-record C (unknown model)",
+          "workspaceStrategy": {
+            "type": "root"
+          },
+          "runtimeMode": "approval-required",
+          "modelSelection": {
+            "instanceId": "claude-proxy",
+            "model": "loom-t3-record-no-such-model"
+          }
+        }
+      },
+      "id": 7988904
+    }
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "jsonrpc": "2.0",
+    "id": 7988904,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"threadId\":\"mcp:00000000-0000-4000-8000-000000000003\",\"projectId\":\"mcp:00000000-0000-4000-8001-000000000001\",\"modelSelection\":{\"instanceId\":\"claude-proxy\",\"model\":\"loom-t3-record-no-such-model\"},\"runId\":null,\"status\":null}"
+        }
+      ],
+      "structuredContent": {
+        "threadId": "mcp:00000000-0000-4000-8000-000000000003",
+        "projectId": "mcp:00000000-0000-4000-8001-000000000001",
+        "modelSelection": {
+          "instanceId": "claude-proxy",
+          "model": "loom-t3-record-no-such-model"
+        },
+        "runId": null,
+        "status": null
+      },
+      "isError": false
+    }
+  }
+}

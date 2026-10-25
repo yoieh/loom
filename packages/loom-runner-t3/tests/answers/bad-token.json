@@ -1,0 +1,20 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "tools/list",
+      "params": {}
+    }
+  },
+  "status": 401,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": "invalid_mcp_credential",
+    "message": "A valid T3 Code MCP credential is required."
+  }
+}

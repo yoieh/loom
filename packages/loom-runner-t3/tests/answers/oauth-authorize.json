@@ -1,0 +1,12 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/oauth/mcp/authorize?response_type=code&client_id=replay-client-id&redirect_uri=http%3A%2F%2F127.0.0.1%2Floom%2Fcallback&code_challenge=replay-code-challenge&code_challenge_method=S256&state=replay-state&resource=http%3A%2F%2F127.0.0.1%3A41773%2Fmcp",
+    "body": null
+  },
+  "status": 302,
+  "headers": {
+    "location": "/connect-agent?response_type=code&client_id=replay-client-id&redirect_uri=http%3A%2F%2F127.0.0.1%2Floom%2Fcallback&code_challenge=replay-code-challenge&code_challenge_method=S256&state=replay-state&resource=http%3A%2F%2F127.0.0.1%3A41773%2Fmcp"
+  },
+  "body": ""
+}

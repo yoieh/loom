@@ -1,0 +1,31 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/oauth/mcp/register",
+    "body": {
+      "client_name": "Loom t3-record",
+      "redirect_uris": [
+        "http://127.0.0.1/loom/callback"
+      ],
+      "token_endpoint_auth_method": "none"
+    }
+  },
+  "status": 201,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "client_id": "replay-client-id",
+    "client_name": "Loom t3-record",
+    "redirect_uris": [
+      "http://127.0.0.1/loom/callback"
+    ],
+    "grant_types": [
+      "authorization_code"
+    ],
+    "response_types": [
+      "code"
+    ],
+    "token_endpoint_auth_method": "none"
+  }
+}

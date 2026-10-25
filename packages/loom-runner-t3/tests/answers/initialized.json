@@ -1,0 +1,15 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "body": {
+      "jsonrpc": "2.0",
+      "method": "notifications/initialized"
+    }
+  },
+  "status": 202,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": ""
+}

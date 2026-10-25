@@ -1,0 +1,15 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "tools/list",
+      "params": {}
+    }
+  },
+  "status": 404,
+  "headers": {},
+  "body": ""
+}
