@@ -10,6 +10,7 @@ import unittest
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from unittest import mock
 
 import loom_runner_codex
 from loom_contracts.runners import (
@@ -133,7 +134,7 @@ async def settle() -> None:
 def is_gone(pid: int) -> bool:
     try:
         text = Path(f'/proc/{pid}/stat').read_text()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return True
     return text[text.rindex(')') + 2] == 'Z'
 
@@ -1102,6 +1103,22 @@ class RealProcessTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
         self.assertIn(missing, str(caught.exception))
         self.assertNotIn(TOKEN, str(caught.exception))
+
+
+class IsGoneTest(unittest.TestCase):
+    def test_a_process_that_exits_mid_read_is_gone(self) -> None:
+        with mock.patch.object(Path, 'read_text', side_effect=ProcessLookupError):
+            self.assertTrue(is_gone(1))
+
+    def test_a_process_with_no_stat_file_is_gone(self) -> None:
+        with mock.patch.object(Path, 'read_text', side_effect=FileNotFoundError):
+            self.assertTrue(is_gone(1))
+
+    def test_only_a_zombie_stat_is_gone(self) -> None:
+        with mock.patch.object(Path, 'read_text', return_value='1 (sh) Z 0'):
+            self.assertTrue(is_gone(1))
+        with mock.patch.object(Path, 'read_text', return_value='1 (sh) S 0'):
+            self.assertFalse(is_gone(1))
 
 
 if __name__ == '__main__':
