@@ -7,11 +7,14 @@ from typing import get_args, get_type_hints
 import loom_contracts
 from loom_contracts.calls import (
     CALL_PARAMS,
+    MAX_CONCURRENCY_KEY,
     ApiError,
     Audience,
     CallName,
+    OnBusy,
     ProjectInfo,
     ScheduleInfo,
+    Settle,
     ThreadInfo,
 )
 from loom_contracts.events import EVENT_DATA, Event
@@ -28,9 +31,13 @@ from loom_contracts.workspaces import Workspace
 PARAMS: dict[str, tuple[set[str], set[str]]] = {
     'threads.launch': (
         {'id', 'title', 'message', 'project_id'},
-        {'workspace', 'runner', 'model', 'requests', 'origin', 'audience'},
+        {'workspace', 'runner', 'model', 'requests', 'origin', 'audience', 'concurrency_key',
+         'on_busy', 'settle'},
     ),
-    'threads.delegate': ({'id', 'parent_id', 'task'}, {'workspace', 'runner', 'model'}),
+    'threads.delegate': (
+        {'id', 'parent_id', 'task'},
+        {'workspace', 'runner', 'model', 'concurrency_key', 'on_busy'},
+    ),
     'threads.send': ({'id', 'thread_id', 'message'}, {'mode'}),
     'threads.list': (set(), {'project_id', 'audience'}),
     'threads.get': ({'thread_id'}, set()),
@@ -40,7 +47,8 @@ PARAMS: dict[str, tuple[set[str], set[str]]] = {
     'threads.events': (set(), {'after', 'thread_id', 'follow', 'audience'}),
     'requests.respond': ({'id', 'request_id', 'decision'}, {'message'}),
     'schedules.add': (
-        {'id', 'trigger', 'text'}, {'action', 'thread_id', 'project_id', 'title'},
+        {'id', 'trigger', 'text'},
+        {'action', 'thread_id', 'project_id', 'title', 'concurrency_key', 'on_busy', 'settle'},
     ),
     'schedules.list': (set(), {'thread_id', 'project_id'}),
     'schedules.pause': ({'id', 'schedule_id'}, set()),
@@ -64,6 +72,19 @@ class AudienceTest(unittest.TestCase):
     def test_values(self) -> None:
         self.assertTrue(issubclass(Audience, StrEnum))
         self.assertEqual([item.value for item in Audience], ['person', 'agent'])
+
+
+class ConcurrencyTest(unittest.TestCase):
+    def test_on_busy_values(self) -> None:
+        self.assertTrue(issubclass(OnBusy, StrEnum))
+        self.assertEqual([item.value for item in OnBusy], ['queue', 'coalesce'])
+
+    def test_settle_values(self) -> None:
+        self.assertTrue(issubclass(Settle, StrEnum))
+        self.assertEqual([item.value for item in Settle], ['on_result'])
+
+    def test_max_concurrency_key_is_200(self) -> None:
+        self.assertEqual(MAX_CONCURRENCY_KEY, 200)
 
 
 class CallParamsTest(unittest.TestCase):
@@ -91,9 +112,14 @@ class CallParamsTest(unittest.TestCase):
             ('threads.launch', 'workspace'): Workspace,
             ('threads.launch', 'runner'): RunnerName,
             ('threads.launch', 'audience'): Audience,
+            ('threads.launch', 'concurrency_key'): str,
+            ('threads.launch', 'on_busy'): OnBusy,
+            ('threads.launch', 'settle'): Settle,
             ('threads.delegate', 'parent_id'): str,
             ('threads.delegate', 'workspace'): Workspace,
             ('threads.delegate', 'runner'): RunnerName,
+            ('threads.delegate', 'concurrency_key'): str,
+            ('threads.delegate', 'on_busy'): OnBusy,
             ('threads.send', 'mode'): DispatchMode,
             ('threads.list', 'project_id'): str,
             ('threads.list', 'audience'): Audience,
@@ -105,6 +131,9 @@ class CallParamsTest(unittest.TestCase):
             ('schedules.add', 'trigger'): Trigger,
             ('schedules.add', 'action'): ScheduleAction,
             ('schedules.add', 'project_id'): str,
+            ('schedules.add', 'concurrency_key'): str,
+            ('schedules.add', 'on_busy'): OnBusy,
+            ('schedules.add', 'settle'): Settle,
             ('schedules.list', 'project_id'): str,
             ('projects.add', 'permission_mode'): PermissionMode,
             ('projects.set_mode', 'permission_mode'): PermissionMode,
@@ -139,26 +168,43 @@ class RecordTest(unittest.TestCase):
             frozenset({
                 'id', 'title', 'runner', 'project_id', 'workspace_path', 'branch', 'model',
                 'permission_mode', 'state', 'waiting', 'reason', 'parent_id', 'origin',
-                'audience', 'created_at',
+                'audience', 'concurrency_key', 'settle', 'created_at',
             }),
         )
         self.assertEqual(ThreadInfo.__optional_keys__, frozenset())
         self.assertIs(get_type_hints(ThreadInfo)['permission_mode'], PermissionMode)
         self.assertIs(get_type_hints(ThreadInfo)['audience'], Audience)
+        self.assertEqual(get_type_hints(ThreadInfo)['concurrency_key'], str | None)
+        self.assertEqual(get_type_hints(ThreadInfo)['settle'], Settle | None)
 
     def test_thread_info_has_audience_right_after_origin(self) -> None:
         names = list(ThreadInfo.__annotations__)
         self.assertEqual(names[names.index('origin') + 1], 'audience')
 
+    def test_thread_info_has_concurrency_key_and_settle_right_after_audience(self) -> None:
+        names = list(ThreadInfo.__annotations__)
+        at = names.index('audience')
+        self.assertEqual(names[at + 1:at + 4], ['concurrency_key', 'settle', 'created_at'])
+
     def test_schedule_info_keys(self) -> None:
         self.assertEqual(
             ScheduleInfo.__required_keys__,
             frozenset({
-                'id', 'trigger', 'action', 'text', 'thread_id', 'project_id', 'title', 'by',
-                'paused', 'next_run', 'created_at',
+                'id', 'trigger', 'action', 'text', 'thread_id', 'project_id', 'title',
+                'concurrency_key', 'on_busy', 'settle', 'by', 'paused', 'next_run',
+                'created_at',
             }),
         )
         self.assertEqual(ScheduleInfo.__optional_keys__, frozenset())
+        hints = get_type_hints(ScheduleInfo)
+        self.assertEqual(hints['concurrency_key'], str | None)
+        self.assertEqual(hints['on_busy'], OnBusy | None)
+        self.assertEqual(hints['settle'], Settle | None)
+
+    def test_schedule_info_has_the_launch_options_right_after_title(self) -> None:
+        names = list(ScheduleInfo.__annotations__)
+        at = names.index('title')
+        self.assertEqual(names[at + 1:at + 5], ['concurrency_key', 'on_busy', 'settle', 'by'])
 
     def test_api_error_keys(self) -> None:
         self.assertEqual(ApiError.__required_keys__, frozenset({'code', 'message'}))

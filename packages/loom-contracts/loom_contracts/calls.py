@@ -6,6 +6,8 @@ from .states import ThreadState
 from .triggers import ScheduleAction, Trigger
 from .workspaces import Workspace
 
+MAX_CONCURRENCY_KEY = 200
+
 
 class CallName(StrEnum):
     THREADS_LAUNCH = 'threads.launch'
@@ -33,6 +35,15 @@ class Audience(StrEnum):
     AGENT = 'agent'
 
 
+class OnBusy(StrEnum):
+    QUEUE = 'queue'
+    COALESCE = 'coalesce'
+
+
+class Settle(StrEnum):
+    ON_RESULT = 'on_result'
+
+
 class ThreadsLaunchParams(TypedDict):
     id: str
     title: str
@@ -44,6 +55,9 @@ class ThreadsLaunchParams(TypedDict):
     requests: NotRequired[Literal['caller', 'any']]
     origin: NotRequired[str]
     audience: NotRequired[Audience]
+    concurrency_key: NotRequired[str]
+    on_busy: NotRequired[OnBusy]
+    settle: NotRequired[Settle]
 
 
 class ThreadsDelegateParams(TypedDict):
@@ -53,6 +67,8 @@ class ThreadsDelegateParams(TypedDict):
     workspace: NotRequired[Workspace]
     runner: NotRequired[RunnerName]
     model: NotRequired[str]
+    concurrency_key: NotRequired[str]
+    on_busy: NotRequired[OnBusy]
 
 
 class ThreadsSendParams(TypedDict):
@@ -109,6 +125,9 @@ class SchedulesAddParams(TypedDict):
     thread_id: NotRequired[str]
     project_id: NotRequired[str]
     title: NotRequired[str]
+    concurrency_key: NotRequired[str]
+    on_busy: NotRequired[OnBusy]
+    settle: NotRequired[Settle]
 
 
 class SchedulesListParams(TypedDict):
@@ -185,6 +204,8 @@ class ThreadInfo(TypedDict):
     parent_id: str | None
     origin: str | None
     audience: Audience
+    concurrency_key: str | None
+    settle: Settle | None
     created_at: str
 
 
@@ -204,6 +225,9 @@ class ScheduleInfo(TypedDict):
     thread_id: str | None
     project_id: str | None
     title: str | None
+    concurrency_key: str | None
+    on_busy: OnBusy | None
+    settle: Settle | None
     by: str | None
     paused: bool
     next_run: str | None

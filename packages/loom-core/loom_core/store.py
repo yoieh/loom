@@ -22,6 +22,10 @@ MAX_EVENTS = 1000
 MAX_EVENT_ID = 2**63 - 1
 MESSAGE_SOURCE = 'source INTEGER NOT NULL DEFAULT 1'
 THREAD_AUDIENCE = "audience TEXT NOT NULL DEFAULT 'agent'"
+THREAD_KEY = 'concurrency_key TEXT'
+THREAD_SETTLE = 'settle TEXT'
+THREAD_KEY_STATE = 'key_state TEXT'
+THREAD_KEY_INDEX = 'CREATE INDEX IF NOT EXISTS threads_key ON threads (concurrency_key, key_state)'
 
 SCHEMA: list[str] = [
     '''CREATE TABLE IF NOT EXISTS commands (
@@ -67,7 +71,10 @@ SCHEMA: list[str] = [
         stop_requested INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        {THREAD_AUDIENCE}
+        {THREAD_AUDIENCE},
+        {THREAD_KEY},
+        {THREAD_SETTLE},
+        {THREAD_KEY_STATE}
     )''',
     'CREATE INDEX IF NOT EXISTS threads_project ON threads (project_id, state)',
     'CREATE INDEX IF NOT EXISTS threads_parent ON threads (parent_id)',
@@ -133,7 +140,9 @@ class Store:
         self.clock = clock
         self.data_dir = data_dir
         self.listeners: set[Callable[[], None]] = set()
+        self.on_handed: Callable[[str], None] | None = None
         self._wrote_events = False
+        self._handed: list[str] = []
 
     @classmethod
     def open(cls, data_dir: Path, clock: Clock = utc_now) -> 'Store':
@@ -149,6 +158,9 @@ class Store:
                 for statement in SCHEMA:
                     tx.execute(statement)
                 _add_column(tx, 'threads', THREAD_AUDIENCE)
+                for column in (THREAD_KEY, THREAD_SETTLE, THREAD_KEY_STATE):
+                    _add_column(tx, 'threads', column)
+                tx.execute(THREAD_KEY_INDEX)
                 _add_column(tx, 'messages', MESSAGE_SOURCE)
             store.prune_events()
         except BaseException:
@@ -160,21 +172,36 @@ class Store:
     def transaction(self) -> Iterator[sqlite3.Connection]:
         self.connection.execute('BEGIN IMMEDIATE')
         self._wrote_events = False
+        self._handed = []
         try:
             yield self.connection
             self.connection.execute('COMMIT')
         except BaseException:
             self._wrote_events = False
+            self._handed = []
             if self.connection.in_transaction:
                 self.connection.execute('ROLLBACK')
             raise
+        handed, self._handed = self._handed, []
         if self._wrote_events:
             self._wrote_events = False
             self._notify()
+        for thread_id in handed:
+            self._hand(thread_id)
 
     def listen(self, listener: Callable[[], None]) -> Callable[[], None]:
         self.listeners.add(listener)
         return lambda: self.listeners.discard(listener)
+
+    def hand_on(self, tx: sqlite3.Connection, thread_id: str) -> None:
+        if tx.in_transaction:
+            self._handed.append(thread_id)
+        else:
+            self._hand(thread_id)
+
+    def _hand(self, thread_id: str) -> None:
+        if self.on_handed is not None:
+            self.on_handed(thread_id)
 
     def _notify(self) -> None:
         for listener in tuple(self.listeners):

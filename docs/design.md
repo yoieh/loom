@@ -198,9 +198,10 @@ class RunnerSession(Protocol):
   - `{"type":"webhook"}`: later, once Loom can be reached from outside (with Thread Voice's
     relay, its §74). It then needs a per-schedule secret.
 - **Actions**: `post` (into a thread, which wakes it), `launch` (a new thread with the prompt,
-  T3's `bindToCurrentThread: false`), or `notify` (only a `schedule.fired` event with the text
-  and who set it; Thread Voice speaks it as that persona). The default is `post` into the
-  thread that made it. A reminder is `notify`.
+  T3's `bindToCurrentThread: false`; it can carry a concurrency key with `on_busy`, and
+  `settle: "on_result"`, which it passes on to `threads.launch`, §15), or `notify` (only a
+  `schedule.fired` event with the text and who set it; Thread Voice speaks it as that
+  persona). The default is `post` into the thread that made it. A reminder is `notify`.
 - **The loop.** A generic tick (T3's `Scheduler.ts`) that sources register on; the schedules
   source keeps a heap by next run and wakes at the first one due, but at least every 30 s, so
   a clock jump (WSL after sleep, a laptop lid) is noticed. The schedules are rows in a
@@ -379,9 +380,11 @@ only the parts below.
   from a thread it launched itself, and fires at most `rate_max` times an hour (default 30), so
   agents that start agents can't loop. Each skip is a `trigger.skipped` event.
 - **Concurrency keys.** A launch with `concurrency_key` (such as `pm:glantfolk`) waits while
-  another unsettled thread holds the key (`on_busy: "queue"`), or joins the one waiting launch
-  for it (`"coalesce"`), so one project manager works on a project at a time and a burst of
-  events becomes one thread.
+  another thread holds the key (`on_busy: "queue"`), or joins the one waiting launch for it
+  (`"coalesce"`), so one project manager works on a project at a time and a burst of events
+  becomes one thread. A thread holds its key until it settles, fails or is stopped, so a
+  stopped or failed thread does not hold it; then the next waiting launch starts, oldest first.
+  `coalesce` joins only a waiting launch of the same project and parent.
 - **One goal, then settled.** A launch with `settle: "on_result"` settles after its first
   `result` instead of going idle. Its `thread.settled` event carries the result, so the next
   step can trigger on it.
