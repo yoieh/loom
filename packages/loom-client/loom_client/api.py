@@ -168,18 +168,22 @@ class Client:
                        workspace: dict | None = None, runner: str | None = None,
                        model: str | None = None, requests: str | None = None,
                        origin: str | None = None, audience: str | None = None,
-                       cause: int | None = None, id: str | None = None) -> ThreadInfo:
+                       concurrency_key: str | None = None, on_busy: str | None = None,
+                       settle: str | None = None, cause: int | None = None,
+                       id: str | None = None) -> ThreadInfo:
         return self.call(CallName.THREADS_LAUNCH, _params(
             id=_command_id(id), project_id=project_id, title=title, message=message,
             workspace=workspace, runner=runner, model=model, requests=requests, origin=origin,
-            audience=audience, cause=cause))
+            audience=audience, concurrency_key=concurrency_key, on_busy=on_busy, settle=settle,
+            cause=cause))
 
     def threads_delegate(self, parent_id: str, task: str, *, workspace: dict | None = None,
                          runner: str | None = None, model: str | None = None,
+                         concurrency_key: str | None = None, on_busy: str | None = None,
                          id: str | None = None) -> ThreadInfo:
         return self.call(CallName.THREADS_DELEGATE, _params(
             id=_command_id(id), parent_id=parent_id, task=task, workspace=workspace,
-            runner=runner, model=model))
+            runner=runner, model=model, concurrency_key=concurrency_key, on_busy=on_busy))
 
     def threads_send(self, thread_id: str, message: str, *, mode: str | None = None,
                      cause: int | None = None, id: str | None = None) -> ThreadInfo:
@@ -229,10 +233,13 @@ class Client:
 
     def schedules_add(self, trigger: dict, text: str, *, action: str | None = None,
                       thread_id: str | None = None, project_id: str | None = None,
-                      title: str | None = None, id: str | None = None) -> ScheduleInfo:
+                      title: str | None = None, concurrency_key: str | None = None,
+                      on_busy: str | None = None, settle: str | None = None,
+                      id: str | None = None) -> ScheduleInfo:
         return self.call(CallName.SCHEDULES_ADD, _params(
             id=_command_id(id), trigger=trigger, text=text, action=action, thread_id=thread_id,
-            project_id=project_id, title=title))
+            project_id=project_id, title=title, concurrency_key=concurrency_key,
+            on_busy=on_busy, settle=settle))
 
     def schedules_list(self, thread_id: str | None = None,
                        project_id: str | None = None) -> list[ScheduleInfo]:

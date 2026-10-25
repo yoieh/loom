@@ -1832,8 +1832,8 @@ They go before the command.
 |---|---|
 | `loom serve [--socket PATH] [--data-dir DIR] [--config FILE]` | starts the server, see [`loom serve`](#loom-serve) |
 | `loom install` | registers `loom-mcp` with Claude Code and Codex, see [`loom install`](#loom-install) |
-| `loom threads launch <project_id> <title> <message> [--workspace root\|worktree\|existing_worktree] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--requests caller\|any] [--origin O] [--audience person\|agent] [--cause EVENT_ID] [--id ID]` | `threads.launch` |
-| `loom threads delegate <parent_id> <task> [--workspace ...] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--id ID]` | `threads.delegate` |
+| `loom threads launch <project_id> <title> <message> [--workspace root\|worktree\|existing_worktree] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--requests caller\|any] [--origin O] [--audience person\|agent] [--concurrency-key K] [--on-busy queue\|coalesce] [--settle on_result] [--cause EVENT_ID] [--id ID]` | `threads.launch` |
+| `loom threads delegate <parent_id> <task> [--workspace ...] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--concurrency-key K] [--on-busy queue\|coalesce] [--id ID]` | `threads.delegate` |
 | `loom threads send <thread_id> <message> [--mode steer\|queue\|interrupt] [--cause EVENT_ID] [--id ID]` | `threads.send` |
 | `loom threads list [--project P] [--audience person\|agent]` | `threads.list` |
 | `loom threads get <thread_id>` | `threads.get` |
@@ -1845,7 +1845,7 @@ They go before the command.
 | `loom projects set-mode <project_id> <mode> [--id ID]` | `projects.set_mode` |
 | `loom projects remove <project_id> [--id ID]` | `projects.remove` |
 | `loom projects list` | `projects.list` |
-| `loom schedules add <text> (--at DATETIME \| --every SECONDS \| --time H:MM [--weekdays LIST] \| --event TOPIC [--event-project P] [--match JSON]) [--action post\|launch\|notify] [--thread T] [--project P] [--title T] [--id ID]` | `schedules.add` |
+| `loom schedules add <text> (--at DATETIME \| --every SECONDS \| --time H:MM [--weekdays LIST] \| --event TOPIC [--event-project P] [--match JSON]) [--action post\|launch\|notify] [--thread T] [--project P] [--title T] [--concurrency-key K] [--on-busy queue\|coalesce] [--settle on_result] [--id ID]` | `schedules.add` |
 | `loom schedules list [--thread T] [--project P]` | `schedules.list` |
 | `loom schedules pause <schedule_id> [--id ID]` | `schedules.pause` |
 | `loom schedules remove <schedule_id> [--id ID]` | `schedules.remove` |
@@ -1873,8 +1873,9 @@ They go before the command.
     without `--event`, or a `--match` that is not JSON or not an object, is a usage error.
 
   The server checks the values (the 60 s floor, weekdays 0 to 6, the form of the time) and
-  answers `invalid`, exit 1. `--action`, `--thread`, `--project` and `--title` send `action`,
-  `thread_id`, `project_id` and `title`; one not given is not sent.
+  answers `invalid`, exit 1. `--action`, `--thread`, `--project`, `--title`,
+  `--concurrency-key`, `--on-busy` and `--settle` send `action`, `thread_id`, `project_id`,
+  `title`, `concurrency_key`, `on_busy` and `settle`; one not given is not sent.
 - A `<message>`, `<task>` or `<text>` of `-` is read from stdin to the end. Prefer it in scripts
   and agents: a message given as an argument shows in the `loom` process's command line, which
   other users on the machine can read.
@@ -1888,6 +1889,14 @@ They go before the command.
 - `signals emit` sends `payload` from `--payload`, a JSON object, or `{}` without it; a
   `--payload` of `-` is read from stdin. Text that is not JSON, or JSON that is not an object, is
   a usage error. `--project`, `--key` and `--cause` send `project_id`, `key` and `cause`.
+- `--concurrency-key K`, `--on-busy queue|coalesce` and `--settle on_result` on
+  `threads launch` and `schedules add` send `concurrency_key`, `on_busy` and `settle`;
+  `threads delegate` takes `--concurrency-key` and `--on-busy` only, so `--settle` there is a
+  usage error. A flag not given sends nothing, and another `--on-busy` or `--settle` value is a
+  usage error. The server checks the rest, such as `--on-busy` without `--concurrency-key` or
+  the three on a schedule that does not launch, and answers `invalid`, exit 1 (see Concurrency
+  keys and Settle on result under [`threads.launch`](#threadslaunch), and
+  [`schedules.add`](#schedulesadd)).
 - `--cause EVENT_ID` on `threads launch`, `threads send` and `signals emit` sends `cause` as an
   integer; without it no `cause` is sent. Text that is not an integer is a usage error; the
   server checks the rest (see [Cause chains](#cause-chains)).
@@ -2336,8 +2345,8 @@ argument. Every argument is a string, except `workspace` and `trigger`, which ar
 
 | Tool | Arguments | Call | Result |
 |---|---|---|---|
-| `launch_thread` | `title`, `message`, `project_id?`, `workspace?`, `runner?`, `model?`, `audience?` | [`threads.launch`](#threadslaunch), with `origin` as above | the new thread |
-| `delegate` | `task`, `workspace?`, `runner?`, `model?` | [`threads.delegate`](#threadsdelegate) with `parent_id` the caller's thread | `{"task_id": <the child's id>, "thread": <the child>}` |
+| `launch_thread` | `title`, `message`, `project_id?`, `workspace?`, `runner?`, `model?`, `audience?`, `concurrency_key?`, `on_busy?`, `settle?` | [`threads.launch`](#threadslaunch), with `origin` as above | the new thread |
+| `delegate` | `task`, `workspace?`, `runner?`, `model?`, `concurrency_key?`, `on_busy?` | [`threads.delegate`](#threadsdelegate) with `parent_id` the caller's thread | `{"task_id": <the child's id>, "thread": <the child>}` |
 | `task_status` | `task_id` | [`threads.get`](#threadsget) | the task's thread |
 | `task_cancel` | `task_id` | [`threads.get`](#threadsget), then [`threads.stop`](#threadsstop) | the thread `threads.stop` answers |
 | `thread_send` | `thread_id`, `message`, `mode?` | [`threads.send`](#threadssend) | the thread |
@@ -2394,7 +2403,7 @@ An agent Loom didn't start launches a thread, and the project gives it its mode:
 {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "demo", "version": "1"}}}
 {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"loom","version":"0.1.0"}}}
 {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "launch_thread", "arguments": {"title": "Fix the login test", "message": "Make the login test pass.", "project_id": "demo", "workspace": {"strategy": "root"}}}}
-{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"id\":\"a33b…\",\"title\":\"Fix the login test\",\"runner\":\"claude\",\"project_id\":\"demo\",\"workspace_path\":\"/home/me/src/demo\",\"branch\":null,\"model\":null,\"permission_mode\":\"approval-required\",\"state\":\"queued\",\"waiting\":false,\"reason\":null,\"parent_id\":null,\"origin\":\"outside\",\"audience\":\"agent\",\"created_at\":\"2026-10-25T00:50:10.571+00:00\"}"}],"isError":false}}
+{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"id\":\"a33b…\",\"title\":\"Fix the login test\",\"runner\":\"claude\",\"project_id\":\"demo\",\"workspace_path\":\"/home/me/src/demo\",\"branch\":null,\"model\":null,\"permission_mode\":\"approval-required\",\"state\":\"queued\",\"waiting\":false,\"reason\":null,\"parent_id\":null,\"origin\":\"outside\",\"audience\":\"agent\",\"concurrency_key\":null,\"settle\":null,\"cause\":null,\"hops\":0,\"created_at\":\"2026-10-25T00:50:10.571+00:00\"}"}],"isError":false}}
 {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "delegate", "arguments": {"task": "Review it."}}}
 {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"this agent is not a Loom thread, so it has no tasks; use launch_thread"}],"isError":true}}
 ```
@@ -2403,7 +2412,7 @@ The launched thread's agent, with `LOOM_THREAD=a33b…`, delegates a task:
 
 ```json
 {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "delegate", "arguments": {"task": "Review the login test fix."}}}
-{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"task_id\":\"43e0…\",\"thread\":{\"id\":\"43e0…\",\"title\":\"Review the login test fix.\",\"runner\":\"claude\",\"project_id\":\"demo\",\"workspace_path\":\"/home/me/src/demo\",\"branch\":null,\"model\":null,\"permission_mode\":\"approval-required\",\"state\":\"queued\",\"waiting\":false,\"reason\":null,\"parent_id\":\"a33b…\",\"origin\":null,\"audience\":\"agent\",\"created_at\":\"2026-10-25T00:50:19.080+00:00\"}}"}],"isError":false}}
+{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"task_id\":\"43e0…\",\"thread\":{\"id\":\"43e0…\",\"title\":\"Review the login test fix.\",\"runner\":\"claude\",\"project_id\":\"demo\",\"workspace_path\":\"/home/me/src/demo\",\"branch\":null,\"model\":null,\"permission_mode\":\"approval-required\",\"state\":\"queued\",\"waiting\":false,\"reason\":null,\"parent_id\":\"a33b…\",\"origin\":null,\"audience\":\"agent\",\"concurrency_key\":null,\"settle\":null,\"cause\":null,\"hops\":0,\"created_at\":\"2026-10-25T00:50:19.080+00:00\"}}"}],"isError":false}}
 ```
 
 ## The Python API
@@ -2455,8 +2464,8 @@ not_found no thread with id 'nope'
   `LoomApiError` on `ok: false`.
 - One method per `v1` call, named after it with `_` for `.`. Required params are positional; the
   rest are keywords, and a keyword left `None` is not sent:
-  - `threads_launch(project_id, title, message, *, workspace=None, runner=None, model=None, requests=None, origin=None, audience=None, cause=None, id=None)`
-  - `threads_delegate(parent_id, task, *, workspace=None, runner=None, model=None, id=None)`
+  - `threads_launch(project_id, title, message, *, workspace=None, runner=None, model=None, requests=None, origin=None, audience=None, concurrency_key=None, on_busy=None, settle=None, cause=None, id=None)`
+  - `threads_delegate(parent_id, task, *, workspace=None, runner=None, model=None, concurrency_key=None, on_busy=None, id=None)`
   - `threads_send(thread_id, message, *, mode=None, cause=None, id=None)`
   - `threads_list(project_id=None, *, audience=None)`, `threads_get(thread_id)`
   - `threads_stop(thread_id, *, id=None)`, `threads_settle(thread_id, *, id=None)`
@@ -2465,7 +2474,7 @@ not_found no thread with id 'nope'
   - `projects_add(title, path, *, permission_mode=None, id=None)`
   - `projects_set_mode(project_id, permission_mode, *, id=None)`
   - `projects_remove(project_id, *, id=None)`, `projects_list()`
-  - `schedules_add(trigger, text, *, action=None, thread_id=None, project_id=None, title=None, id=None)`
+  - `schedules_add(trigger, text, *, action=None, thread_id=None, project_id=None, title=None, concurrency_key=None, on_busy=None, settle=None, id=None)`
   - `schedules_list(thread_id=None, project_id=None)`
   - `schedules_pause(schedule_id, *, id=None)`, `schedules_remove(schedule_id, *, id=None)`
   - `requests_respond(request_id, decision, *, message=None, id=None)`

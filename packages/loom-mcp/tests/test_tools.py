@@ -30,8 +30,12 @@ REQUIRED_STRINGS = [('launch_thread', 'title'), ('launch_thread', 'message'),
 
 OPTIONAL = [('launch_thread', 'project_id', 'string'), ('launch_thread', 'workspace', 'object'),
             ('launch_thread', 'runner', 'string'), ('launch_thread', 'model', 'string'),
-            ('launch_thread', 'audience', 'string'), ('delegate', 'workspace', 'object'),
-            ('delegate', 'runner', 'string'), ('delegate', 'model', 'string'),
+            ('launch_thread', 'audience', 'string'),
+            ('launch_thread', 'concurrency_key', 'string'),
+            ('launch_thread', 'on_busy', 'string'), ('launch_thread', 'settle', 'string'),
+            ('delegate', 'workspace', 'object'), ('delegate', 'runner', 'string'),
+            ('delegate', 'model', 'string'), ('delegate', 'concurrency_key', 'string'),
+            ('delegate', 'on_busy', 'string'),
             ('thread_send', 'mode', 'string'), ('threads', 'project_id', 'string'),
             ('schedule', 'action', 'string'), ('schedule', 'thread_id', 'string'),
             ('schedule', 'project_id', 'string'), ('schedule', 'title', 'string')]
@@ -87,7 +91,8 @@ class EachToolTest(ToolsCase):
         mcp = self.start_thread()
         text, is_error = mcp.tool('launch_thread', {
             'title': 'Fix it', 'message': 'Make the test pass.', 'project_id': 'other',
-            'workspace': WORKSPACE, 'runner': 'codex', 'model': 'gpt-5', 'audience': 'person'})
+            'workspace': WORKSPACE, 'runner': 'codex', 'model': 'gpt-5', 'audience': 'person',
+            'concurrency_key': 'pm:demo', 'on_busy': 'coalesce', 'settle': 'on_result'})
         self.assertEqual((text, is_error), (compact(thread), False))
         [(call, params)] = self.loom.calls
         self.assertEqual(call, 'threads.launch')
@@ -95,13 +100,14 @@ class EachToolTest(ToolsCase):
         self.assertEqual({key: value for key, value in params.items() if key != 'id'}, {
             'project_id': 'other', 'title': 'Fix it', 'message': 'Make the test pass.',
             'workspace': WORKSPACE, 'runner': 'codex', 'model': 'gpt-5',
-            'origin': 'thread:t1', 'audience': 'person'})
+            'origin': 'thread:t1', 'audience': 'person', 'concurrency_key': 'pm:demo',
+            'on_busy': 'coalesce', 'settle': 'on_result'})
 
     def test_delegate(self) -> None:
         mcp = self.start_thread()
         text, is_error = mcp.tool('delegate', {
             'task': 'Review it.', 'workspace': {'strategy': 'root'}, 'runner': 'claude',
-            'model': 'opus'})
+            'model': 'opus', 'concurrency_key': 'review:demo', 'on_busy': 'queue'})
         self.assertEqual((text, is_error),
                          (compact({'task_id': 'c1', 'thread': own_child()}), False))
         [(call, params)] = self.loom.calls
@@ -109,7 +115,15 @@ class EachToolTest(ToolsCase):
         self.assert_command_id(params)
         self.assertEqual({key: value for key, value in params.items() if key != 'id'}, {
             'parent_id': 't1', 'task': 'Review it.', 'workspace': {'strategy': 'root'},
-            'runner': 'claude', 'model': 'opus'})
+            'runner': 'claude', 'model': 'opus', 'concurrency_key': 'review:demo',
+            'on_busy': 'queue'})
+
+    def test_delegate_ignores_settle(self) -> None:
+        mcp = self.start_thread()
+        mcp.ok('delegate', {'task': 'Review it.', 'settle': 'on_result'})
+        [(call, params)] = self.loom.calls
+        self.assertEqual(call, 'threads.delegate')
+        self.assertNotIn('settle', params)
 
     def test_task_status(self) -> None:
         mcp = self.start_thread()

@@ -29,12 +29,20 @@ CALLS = [
      {'project_id': 'demo', 'title': 'First', 'message': 'hello', 'audience': 'person'}),
     ('threads_launch', ('demo', 'First', 'hello'), {'cause': 7}, 'threads.launch',
      {'project_id': 'demo', 'title': 'First', 'message': 'hello', 'cause': 7}),
+    ('threads_launch', ('demo', 'First', 'hello'),
+     {'concurrency_key': 'pm:demo', 'on_busy': 'coalesce', 'settle': 'on_result'},
+     'threads.launch',
+     {'project_id': 'demo', 'title': 'First', 'message': 'hello', 'concurrency_key': 'pm:demo',
+      'on_busy': 'coalesce', 'settle': 'on_result'}),
     ('threads_delegate', ('t1', 'check it'), {}, 'threads.delegate',
      {'parent_id': 't1', 'task': 'check it'}),
     ('threads_delegate', ('t1', 'check it'),
      {'workspace': {'strategy': 'root'}, 'runner': 'claude', 'model': 'm'}, 'threads.delegate',
      {'parent_id': 't1', 'task': 'check it', 'workspace': {'strategy': 'root'},
       'runner': 'claude', 'model': 'm'}),
+    ('threads_delegate', ('t1', 'check it'), {'concurrency_key': 'k', 'on_busy': 'queue'},
+     'threads.delegate',
+     {'parent_id': 't1', 'task': 'check it', 'concurrency_key': 'k', 'on_busy': 'queue'}),
     ('threads_send', ('t1', 'again'), {}, 'threads.send', {'thread_id': 't1', 'message': 'again'}),
     ('threads_send', ('t1', 'again'), {'mode': 'queue'}, 'threads.send',
      {'thread_id': 't1', 'message': 'again', 'mode': 'queue'}),
@@ -73,6 +81,11 @@ CALLS = [
      'schedules.add',
      {'trigger': TRIGGER, 'text': 'tick', 'action': 'send', 'thread_id': 't1',
       'project_id': 'demo', 'title': 'Tick'}),
+    ('schedules_add', (TRIGGER, 'tick'),
+     {'action': 'launch', 'project_id': 'demo', 'concurrency_key': 'k', 'on_busy': 'coalesce',
+      'settle': 'on_result'}, 'schedules.add',
+     {'trigger': TRIGGER, 'text': 'tick', 'action': 'launch', 'project_id': 'demo',
+      'concurrency_key': 'k', 'on_busy': 'coalesce', 'settle': 'on_result'}),
     ('schedules_list', (), {}, 'schedules.list', {}),
     ('schedules_list', ('t1', 'demo'), {}, 'schedules.list',
      {'thread_id': 't1', 'project_id': 'demo'}),
@@ -191,6 +204,12 @@ class RequestTest(FakeServerCase):
             if call not in WRITES:
                 getattr(client, method)(*args, **kwargs)
                 self.assertNotIn('id', self.server.requests[-1]['params'])
+
+    def test_threads_delegate_takes_no_settle(self) -> None:
+        client = Client(str(self.socket))
+        with self.assertRaises(TypeError):
+            client.threads_delegate('t1', 'check it', settle='on_result')
+        self.assertEqual(self.server.requests, [])
 
     def test_events_returns_the_page(self) -> None:
         page = [event(1), event(2)]
