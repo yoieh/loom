@@ -23,6 +23,8 @@ class Config:
     permission_mode: str = DEFAULT_MODE
     agents_max: int | None = None
     idle_after: int = 1200
+    codex_bin: str | None = None
+    codex_home: str | None = None
 
 
 KEYS = tuple(field.name for field in dataclasses.fields(Config))

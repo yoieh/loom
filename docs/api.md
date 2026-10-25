@@ -1156,6 +1156,8 @@ other value is a string.
 | `permission_mode` | `auto` | The mode for projects with none; one of the [permission modes](#permission-modes). |
 | `agents_max` | The available memory at start, less 2 GiB, divided by 350 MiB, at least 1 | How many agent processes may be live at once (§4). |
 | `idle_after` | `1200` | Seconds a thread may stay `idle` before it goes to `sleeping`. Loom checks every 30 s. |
+| `codex_bin` | `codex` | The Codex program to run. When its directory holds `node`, that directory goes on the end of the agent's `PATH`. |
+| `codex_home` | none | Given to Codex as `CODEX_HOME`. |
 
 ```toml
 claude_bin = "/usr/local/bin/claude"
@@ -1179,6 +1181,9 @@ agent starts without a token. When it breaks a rule, the server writes one line
 `loom: warning: not using <path>: <why>` to stderr, never the token, and starts the agent without
 it.
 
+Loom gives the same token to Codex only as `CLIPROXY_API_KEY`, and never gives Codex the
+`ANTHROPIC_*` variables.
+
 ### The agent's environment
 
 Each agent gets only `HOME`, `LANG`, `LOGNAME`, `PATH`, `SHELL`, `USER` and `XDG_RUNTIME_DIR` from
@@ -1188,6 +1193,31 @@ the server's environment, those that are set, plus:
 - `LOOM_THREAD`: the agent's own thread id. A `LOOM_THREAD` in the server's own environment is
   never passed on.
 - The Claude settings above (§6 Environment). A message never goes in the agent's arguments.
+- For a Codex thread: `CODEX_HOME` from `codex_home` and `CLIPROXY_API_KEY` from the token, with
+  `codex_bin`'s directory appended to `PATH` when it holds `node`.
+
+### Codex threads
+
+The runner value `codex` is served by `threads.launch` and `threads.delegate` (`--runner codex`
+in the CLI). This replaces the older notes that `codex` comes later and that it answers
+`runner codex is not available`; `t3` still answers `invalid`, `runner t3 is not available`.
+
+A Codex thread's `id` is Loom's uuid, not Codex's session id. Codex picks its own thread id (its
+`thread.started` line), which Loom keeps in `<data_dir>/codex/<thread id>` (the folder mode 0700,
+each file 0600) to resume the thread after it sleeps or the server restarts. The data dir's
+`codex/` folder holds these records.
+
+Codex runs in the sandbox of the thread's permission mode:
+
+| Mode | Sandbox |
+|---|---|
+| `approval-required` | `read-only` |
+| `auto-accept-edits` | `workspace-write` |
+| `auto` | `workspace-write` |
+| `full-access` | `danger-full-access` |
+
+Codex never asks, so its threads open no requests. A `steer` message to a running Codex thread
+waits for the turn to end. `interrupt` ends the turn's process and leaves the thread `idle`.
 
 ### Output and exit codes
 

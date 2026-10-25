@@ -17,6 +17,7 @@ from loom_service.serve import Serving, start
 TIMEOUT = 5.0
 PLENTY = 64 * 2**30
 FAKE_CLAUDE = Path(__file__).resolve().parent / 'fake_claude.py'
+FAKE_CODEX = Path(__file__).resolve().parent / 'fake_codex.py'
 SETUP_ENV = {**os.environ, 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}
 
 CLIENT = '''
@@ -54,6 +55,13 @@ def make_repo(path: Path) -> Path:
 def make_claude_bin(directory: Path) -> Path:
     path = directory / 'claude'
     path.write_text(f'#!/bin/sh\nexec {sys.executable} {FAKE_CLAUDE} "$@"\n')
+    path.chmod(0o700)
+    return path
+
+
+def make_codex_bin(directory: Path) -> Path:
+    path = directory / 'codex'
+    path.write_text(f'#!/bin/sh\nexec {sys.executable} {FAKE_CODEX} "$@"\n')
     path.chmod(0o700)
     return path
 

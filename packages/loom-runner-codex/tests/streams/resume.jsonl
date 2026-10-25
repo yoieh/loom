@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a163a1-4140-78d3-b4ab-ee2d93e984ad"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"lynx"}}
+{"type":"turn.completed","usage":{"input_tokens":46644,"cached_input_tokens":41088,"cache_write_input_tokens":0,"output_tokens":89,"reasoning_output_tokens":0}}

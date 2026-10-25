@@ -1,0 +1,11 @@
+{"type":"thread.started","thread_id":"01a163a1-4140-78d3-b4ab-ee2d93e984ad"}
+{"type":"turn.started"}
+not json
+{"type":"item.completed","item":{"id":"item_9","type":"agent_message","text":"ÿþ"}}
+[{"type":"turn.completed"}]
+{"type":7}
+{"type":null}
+{"no_type":"turn.completed"}
+"turn.completed"
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}
