@@ -174,13 +174,21 @@ class StopTurnTest(StopTest):
         self.assertEqual(self.results(thread_id), [CUT])
         self.assertEqual((self.state(thread_id), self.reason(thread_id)), ('sleeping', None))
 
-    async def test_idle_and_sleeping_threads_keep_their_state(self) -> None:
+    async def test_an_idle_thread_with_a_session_is_closed_and_sleeps(self) -> None:
         thread_id, session = await self.idle()
         await self.stop(thread_id)
         await self.orchestrator.drain()
-        self.assertEqual((self.state(thread_id), self.reason(thread_id)), ('idle', None))
         self.assertEqual(session.interrupts, 0)
-        self.assertFalse(session.closed)
+        self.assertTrue(session.closed)
+        self.assertNotIn(CUT, self.results(thread_id))
+        self.assertEqual((self.state(thread_id), self.reason(thread_id)), ('sleeping', None))
+        await self.send(thread_id, 'Again')
+        await self.orchestrator.drain()
+        self.assertEqual([spec.resume for spec in self.runner.starts], [False, True])
+        self.assertEqual(self.runner.sessions[thread_id].sent, [('Again', QUEUE)])
+
+    async def test_a_sleeping_thread_keeps_its_state(self) -> None:
+        thread_id, session = await self.idle()
         session.emit(Exited(0))
         await wait_for(lambda: self.state(thread_id) == 'sleeping')
         await self.stop(thread_id)

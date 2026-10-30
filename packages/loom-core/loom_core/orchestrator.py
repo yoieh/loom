@@ -841,6 +841,12 @@ class Orchestrator:
                         self._wait_for_stop(thread_id, ended))
                     return
             await self._cut_turn(thread_id, session)
+        elif state is ThreadState.IDLE and session is not None:
+            # An idle agent may still run work it left in the background; only closing ends it.
+            del self._sessions[thread_id]
+            await self._close_session(session)
+            self._give_back(thread_id)
+            self._move(thread_id, ThreadState.SLEEPING)
         elif state in (ThreadState.QUEUED, ThreadState.STARTING):
             self._move(thread_id, ThreadState.SLEEPING)
         await self._end_stop(thread_id)
