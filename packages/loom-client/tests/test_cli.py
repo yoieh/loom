@@ -55,6 +55,8 @@ COMMANDS = [
     (['threads', 'send', 't1', 'again'], 'threads.send', {'thread_id': 't1', 'message': 'again'}),
     (['threads', 'send', 't1', 'again', '--mode', 'interrupt'], 'threads.send',
      {'thread_id': 't1', 'message': 'again', 'mode': 'interrupt'}),
+    (['threads', 'steer', 't1', 'c4'], 'threads.steer',
+     {'thread_id': 't1', 'message_id': 'c4'}),
     (['threads', 'send', 't1', 'again', '--cause', '7'], 'threads.send',
      {'thread_id': 't1', 'message': 'again', 'cause': 7}),
     (['threads', 'list'], 'threads.list', {}),
@@ -130,7 +132,7 @@ COMMANDS = [
      {'topic': 'demo.done', 'payload': {'n': [1, 2]}}),
 ]
 
-WRITES = {'threads.launch', 'threads.delegate', 'threads.send', 'threads.stop',
+WRITES = {'threads.launch', 'threads.delegate', 'threads.send', 'threads.steer', 'threads.stop',
           'threads.settle', 'threads.update', 'projects.add', 'projects.set_mode',
           'projects.remove', 'schedules.add', 'schedules.pause', 'schedules.remove',
           'requests.respond', 'signals.emit'}
@@ -274,8 +276,8 @@ class CommandTest(CliCase):
         names = [cli.command_name(call) for call in cli.COMMANDS]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual({call.value for call in cli.COMMANDS}, {
-            'threads.launch', 'threads.delegate', 'threads.send', 'threads.list', 'threads.get',
-            'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
+            'threads.launch', 'threads.delegate', 'threads.send', 'threads.steer', 'threads.list',
+            'threads.get', 'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
             'projects.set_mode', 'projects.remove', 'projects.list', 'schedules.add',
             'schedules.list', 'schedules.pause', 'schedules.remove', 'requests.respond',
             'signals.emit',

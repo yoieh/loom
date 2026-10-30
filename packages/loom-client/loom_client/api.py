@@ -190,6 +190,11 @@ class Client:
         return self.call(CallName.THREADS_SEND, _params(
             id=_command_id(id), thread_id=thread_id, message=message, mode=mode, cause=cause))
 
+    def threads_steer(self, thread_id: str, message_id: str, *,
+                      id: str | None = None) -> ThreadInfo:
+        return self.call(CallName.THREADS_STEER, _params(
+            id=_command_id(id), thread_id=thread_id, message_id=message_id))
+
     def threads_list(self, project_id: str | None = None, *,
                      audience: str | None = None) -> list[ThreadInfo]:
         return self.call(CallName.THREADS_LIST, _params(project_id=project_id, audience=audience))

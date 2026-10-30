@@ -14,7 +14,8 @@ from .slots import StartSource
 from .store import MAX_EVENT_ID, MAX_EVENTS, Store
 
 SERVED: tuple[str, ...] = (
-    'threads.launch', 'threads.delegate', 'threads.send', 'threads.list', 'threads.get',
+    'threads.launch', 'threads.delegate', 'threads.send', 'threads.steer', 'threads.list',
+    'threads.get',
     'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
     'projects.set_mode', 'projects.remove', 'projects.list', 'requests.respond', 'signals.emit',
 )
@@ -120,6 +121,7 @@ class Service:
             'threads.launch': self._launch,
             'threads.delegate': self._delegate,
             'threads.send': self._send,
+            'threads.steer': self._steer,
             'threads.list': self._list_threads,
             'threads.get': self._get_thread,
             'threads.stop': self._stop,
@@ -206,6 +208,9 @@ class Service:
     async def _send(self, params: object, caller: Caller) -> ThreadInfo:
         return await self.orchestrator.send(params, source=_source(caller),
                                             caller_thread=_own_thread(caller))
+
+    async def _steer(self, params: object, caller: Caller) -> ThreadInfo:
+        return await self.orchestrator.steer(params)
 
     async def _list_threads(self, params: object, caller: Caller) -> list[ThreadInfo]:
         params = _params(params)
