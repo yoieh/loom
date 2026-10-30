@@ -37,7 +37,7 @@ the changes ran in; each read shows the state at its point in that run, and `pro
 succeeded once both threads were settled. The `schedules.*` examples, those of `threads.update`
 and the `audience` filters, those of concurrency keys and `thread.settled`, those of
 permission requests, those of signals and cause chains, and those of event triggers, come from
-later runs of their own.
+later runs of their own. The `threads.steer` examples were written from its tests.
 
 ## Transport
 
@@ -150,9 +150,9 @@ string of 1 to 200 characters`. The CLI and the Python API make one for you.
   CLI's `retry with --id <id>`.
 - Using an `id` again for a different call is a `conflict`, `id was already used for <call>`.
 - The calls that take an `id` are `threads.launch`, `threads.delegate`, `threads.send`,
-  `threads.stop`, `threads.settle`, `threads.update`, `projects.add`, `projects.set_mode`,
-  `projects.remove`, `requests.respond`, `schedules.add`, `schedules.pause` and
-  `schedules.remove`.
+  `threads.steer`, `threads.stop`, `threads.settle`, `threads.update`, `projects.add`,
+  `projects.set_mode`, `projects.remove`, `requests.respond`, `schedules.add`,
+  `schedules.pause` and `schedules.remove`.
 - Loom's scheduler uses ids of the form `schedule:<schedule id>:<due>` for the calls its runs make
   (see [How schedules run](#how-schedules-run)), so don't choose ids that begin with `schedule:`.
 
@@ -427,6 +427,7 @@ root is not a git repo, the branch exists already, the base is not a commit), ma
 | [`threads.launch`](#threadslaunch) | yes | yes |
 | [`threads.delegate`](#threadsdelegate) | yes | yes |
 | [`threads.send`](#threadssend) | yes | yes |
+| [`threads.steer`](#threadssteer) | yes | yes |
 | [`threads.list`](#threadslist) | yes | no |
 | [`threads.get`](#threadsget) | yes | no |
 | [`threads.stop`](#threadsstop) | yes | yes |
@@ -657,6 +658,44 @@ message entered the agent's conversation.
 ```json
 {"v": "v1", "call": "threads.send", "params": {"id": "c4", "thread_id": "3f2a…", "message": "Also run the linter.", "mode": "queue"}}
 {"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"idle","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"cause":null,"hops":0,"created_at":"2026-10-24T18:47:12.958+00:00"}}
+```
+
+### `threads.steer`
+
+Moves a message that waits behind the running turn into that turn (§4 Dispatch modes), as T3's
+Steer button does with a queued message. The message is one a [`threads.send`](#threadssend)
+stored, usually with `mode: "queue"`, that has not entered the agent's conversation yet. It then
+goes as if it had been sent with `mode: "steer"`: it enters mid-turn, its
+[`message.entered`](#messageentered) event carries its send's `id` as `command_id`, it shares the
+running turn's `turn.result`, and it is not sent again when the turn ends. Messages queued
+before it keep their place.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string, required | Command id. |
+| `thread_id` | string, required | |
+| `message_id` | string, required | The `id` of the `threads.send` that queued the message. |
+
+**Result:** the thread as it was when the steer was stored. The message goes into the turn after
+the answer. When the turn ends before that, the message goes as the next turn's instead, as it
+would have without the steer.
+
+**Errors:** `not_found` for an unknown thread; `conflict` when the message is not waiting in the
+thread, because it has entered already or no send with that id queued one there (`message
+<message_id> is not waiting in thread <thread_id>`), when the thread has no running turn or is
+stopping (`thread <thread_id> has no running turn`), or when its runner can't steer, as Codex
+can't (`codex threads cannot steer`); the message then stays queued. `invalid` when `thread_id`
+or `message_id` is missing, null or not a string.
+
+```json
+{"v": "v1", "call": "threads.send", "params": {"id": "tv-reply:41", "thread_id": "3f2a…", "message": "Use the staging database.", "mode": "queue"}}
+{"v": "v1", "call": "threads.steer", "params": {"id": "c5", "thread_id": "3f2a…", "message_id": "tv-reply:41"}}
+{"ok":true,"result":{"id":"3f2a…","title":"Fix the login test","runner":"claude","project_id":"demo-repo","workspace_path":"/home/me/src/demo","branch":"main","model":null,"permission_mode":"auto-accept-edits","state":"running","waiting":false,"reason":null,"parent_id":null,"origin":null,"audience":"agent","concurrency_key":null,"settle":null,"cause":null,"hops":0,"created_at":"2026-10-24T18:47:12.958+00:00"}}
+```
+
+```json
+{"v": "v1", "call": "threads.steer", "params": {"id": "c6", "thread_id": "3f2a…", "message_id": "tv-reply:41"}}
+{"ok":false,"error":{"code":"conflict","message":"message tv-reply:41 is not waiting in thread 3f2a…"}}
 ```
 
 ### `threads.list`
@@ -1934,6 +1973,7 @@ They go before the command.
 | `loom threads launch <project_id> <title> <message> [--workspace root\|worktree\|existing_worktree] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--requests caller\|any] [--origin O] [--audience person\|agent] [--concurrency-key K] [--on-busy queue\|coalesce] [--settle on_result] [--cause EVENT_ID] [--id ID]` | `threads.launch` |
 | `loom threads delegate <parent_id> <task> [--workspace ...] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--concurrency-key K] [--on-busy queue\|coalesce] [--id ID]` | `threads.delegate` |
 | `loom threads send <thread_id> <message> [--mode steer\|queue\|interrupt] [--cause EVENT_ID] [--id ID]` | `threads.send` |
+| `loom threads steer <thread_id> <message_id> [--id ID]` | `threads.steer` |
 | `loom threads list [--project P] [--audience person\|agent]` | `threads.list` |
 | `loom threads get <thread_id>` | `threads.get` |
 | `loom threads stop <thread_id> [--id ID]` | `threads.stop` |
@@ -2634,6 +2674,7 @@ not_found no thread with id 'nope'
   - `threads_launch(project_id, title, message, *, workspace=None, runner=None, model=None, requests=None, origin=None, audience=None, concurrency_key=None, on_busy=None, settle=None, cause=None, id=None)`
   - `threads_delegate(parent_id, task, *, workspace=None, runner=None, model=None, concurrency_key=None, on_busy=None, id=None)`
   - `threads_send(thread_id, message, *, mode=None, cause=None, id=None)`
+  - `threads_steer(thread_id, message_id, *, id=None)`
   - `threads_list(project_id=None, *, audience=None)`, `threads_get(thread_id)`
   - `threads_stop(thread_id, *, id=None)`, `threads_settle(thread_id, *, id=None)`
   - `threads_update(thread_id, audience, *, id=None)`

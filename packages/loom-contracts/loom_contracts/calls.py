@@ -17,6 +17,7 @@ class CallName(StrEnum):
     THREADS_LAUNCH = 'threads.launch'
     THREADS_DELEGATE = 'threads.delegate'
     THREADS_SEND = 'threads.send'
+    THREADS_STEER = 'threads.steer'
     THREADS_LIST = 'threads.list'
     THREADS_GET = 'threads.get'
     THREADS_STOP = 'threads.stop'
@@ -83,6 +84,12 @@ class ThreadsSendParams(TypedDict):
     message: str
     mode: NotRequired[DispatchMode]
     cause: NotRequired[int]
+
+
+class ThreadsSteerParams(TypedDict):
+    id: str
+    thread_id: str
+    message_id: str
 
 
 class ThreadsListParams(TypedDict):
@@ -187,6 +194,7 @@ CALL_PARAMS: dict[CallName, type] = {
     CallName.THREADS_LAUNCH: ThreadsLaunchParams,
     CallName.THREADS_DELEGATE: ThreadsDelegateParams,
     CallName.THREADS_SEND: ThreadsSendParams,
+    CallName.THREADS_STEER: ThreadsSteerParams,
     CallName.THREADS_LIST: ThreadsListParams,
     CallName.THREADS_GET: ThreadsGetParams,
     CallName.THREADS_STOP: ThreadsStopParams,

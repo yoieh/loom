@@ -25,8 +25,8 @@ SCHEDULED = (
 )
 
 ALL_CALLS = (
-    'threads.launch', 'threads.delegate', 'threads.send', 'threads.list', 'threads.get',
-    'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
+    'threads.launch', 'threads.delegate', 'threads.send', 'threads.steer', 'threads.list',
+    'threads.get', 'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
     'projects.set_mode', 'projects.remove', 'projects.list', 'requests.respond', 'signals.emit',
 )
 

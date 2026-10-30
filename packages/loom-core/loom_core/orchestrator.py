@@ -319,6 +319,37 @@ class Orchestrator:
             self.lanes.submit(thread_id, lambda: self._deliver(thread_id, seq, source))
         return receipt.answer
 
+    async def steer(self, params: object) -> ThreadInfo:
+        """Moves a message that a threads.send queued behind the running turn into that turn,
+        as if it had been sent with mode steer (§4 Dispatch modes)."""
+        params = _params(params)
+        thread_id = _string(_required(params, 'thread_id'), 'thread_id')
+        message_id = _string(_required(params, 'message_id'), 'message_id')
+        seq = None
+
+        def change(tx: sqlite3.Connection) -> ThreadInfo:
+            nonlocal seq
+            row = fetch(tx, thread_id)
+            found = tx.execute(
+                'SELECT seq FROM messages WHERE thread_id = ? AND command_id = ?',
+                (thread_id, message_id),
+            ).fetchone()
+            if found is None:
+                raise LoomError('conflict', f'message {message_id} is not waiting in thread '
+                                            f'{thread_id}')
+            if row['state'] != ThreadState.RUNNING or row['stop_requested']:
+                raise LoomError('conflict', f'thread {thread_id} has no running turn')
+            if not self._capable(row, Capability.STEER):
+                raise LoomError('conflict', f'{row["runner"]} threads cannot steer')
+            seq = found[0]
+            tx.execute('UPDATE messages SET mode = ? WHERE seq = ?', (DispatchMode.STEER, seq))
+            return thread_info(row)
+
+        receipt = self.store.command(params.get('id'), CallName.THREADS_STEER, change)
+        if not receipt.replayed:
+            self.lanes.submit(thread_id, lambda: self._steer_queued(thread_id, seq))
+        return receipt.answer
+
     async def settle(self, params: object) -> ThreadInfo:
         params = _params(params)
         thread_id = _string(_required(params, 'thread_id'), 'thread_id')
@@ -810,6 +841,13 @@ class Orchestrator:
                 await session.interrupt()
         except Exception as error:
             await self._fail(thread_id, error)
+
+    async def _steer_queued(self, thread_id: str, seq: int) -> None:
+        # The turn may have ended since the steer was stored; then the message is sent
+        # as the next turn's, as it was queued.
+        row = self._row(thread_id)
+        if row['state'] == ThreadState.RUNNING and not row['stop_requested']:
+            await self._while_running(row, seq)
 
     async def _end_session(self, thread_id: str, before: ThreadState) -> None:
         session = self._sessions.pop(thread_id, None)

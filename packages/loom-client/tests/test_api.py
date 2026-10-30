@@ -48,6 +48,8 @@ CALLS = [
      {'thread_id': 't1', 'message': 'again', 'mode': 'queue'}),
     ('threads_send', ('t1', 'again'), {'cause': 7}, 'threads.send',
      {'thread_id': 't1', 'message': 'again', 'cause': 7}),
+    ('threads_steer', ('t1', 'c4'), {}, 'threads.steer',
+     {'thread_id': 't1', 'message_id': 'c4'}),
     ('threads_list', (), {}, 'threads.list', {}),
     ('threads_list', ('demo',), {}, 'threads.list', {'project_id': 'demo'}),
     ('threads_list', (), {'audience': 'person'}, 'threads.list', {'audience': 'person'}),
@@ -102,8 +104,8 @@ CALLS = [
 ]
 
 WRITES = {
-    'threads.launch', 'threads.delegate', 'threads.send', 'threads.stop', 'threads.settle',
-    'threads.update', 'requests.respond', 'signals.emit', 'schedules.add', 'schedules.pause',
+    'threads.launch', 'threads.delegate', 'threads.send', 'threads.steer', 'threads.stop',
+    'threads.settle', 'threads.update', 'requests.respond', 'signals.emit', 'schedules.add', 'schedules.pause',
     'schedules.remove', 'projects.add', 'projects.set_mode', 'projects.remove',
 }
 

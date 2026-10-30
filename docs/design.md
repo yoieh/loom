@@ -115,7 +115,9 @@ Rules, each checked by a packaging test:
   parent jumps ahead of the parent's other queued messages. A client shows a post as waiting
   to go in ("queued", which is not the thread state `queued`) until its `message.entered` event,
   and as entered after it; a steered post enters mid-turn and shares the running turn's
-  `result` (§73.13 row 2).
+  `result` (§73.13 row 2). `threads.steer` moves a message that a `queue` send left waiting
+  behind the running turn into that turn, as T3's own Steer button promotes a queued message
+  (Thread Voice's Steer now, TV §81): it then goes as a `steer` send would have gone, once.
 - **Stop is intent first.** Stop is recorded and shown at once; the runner's interrupt and the
   final `stopped` state follow as events. Stop on a thread stops everything it started, all the
   way down. An interrupted turn leaves its thread `idle`; when the turn has not ended 5 s after
@@ -419,7 +421,8 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
 
 ## §8 The API
 
-- **Calls** (`v1`): `threads.launch`, `threads.delegate`, `threads.send`, `threads.list`,
+- **Calls** (`v1`): `threads.launch`, `threads.delegate`, `threads.send`, `threads.steer`
+  (a queued message into the running turn, §4 Dispatch modes), `threads.list`,
   `threads.get`, `threads.stop`, `threads.settle`, `threads.update` (a thread's audience, §15),
   `threads.events` (a stream from a given event id, so a client that reconnects misses nothing),
   `requests.respond`, `signals.emit` (§15), `schedules.add`, `schedules.list`, `schedules.pause`,

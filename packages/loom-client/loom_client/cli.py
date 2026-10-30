@@ -232,6 +232,12 @@ def _send(client: Client, args: argparse.Namespace) -> object:
                                cause=args.cause, id=args.id)
 
 
+def _steer_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument('thread_id')
+    command.add_argument('message_id', help='the id of the threads.send that queued it')
+    _add_id(command)
+
+
 def _list_args(command: argparse.ArgumentParser) -> None:
     command.add_argument('--project', help='only threads of this project')
     _add_audience(command, 'only threads with this audience')
@@ -355,6 +361,9 @@ COMMANDS: dict[CallName, tuple[str, Callable[[argparse.ArgumentParser], None], R
     CallName.THREADS_LAUNCH: ('start a thread', _launch_args, _launch),
     CallName.THREADS_DELEGATE: ('start a child thread for a task', _delegate_args, _delegate),
     CallName.THREADS_SEND: ('send a message to a thread', _send_args, _send),
+    CallName.THREADS_STEER: (
+        'move a queued message into the running turn', _steer_args,
+        lambda client, args: client.threads_steer(args.thread_id, args.message_id, id=args.id)),
     CallName.THREADS_LIST: (
         'list threads', _list_args,
         lambda client, args: client.threads_list(args.project, audience=args.audience)),
