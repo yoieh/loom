@@ -747,7 +747,9 @@ A thread is listed when it matches every filter given. With no filter, every thr
 Stops a thread and every live thread it started, all the way down (§4 Stop). Their queued
 messages are dropped. A running turn is interrupted; when it has not ended 5 seconds later, the
 agent process is closed, the turn ends `stopped` and the thread goes to `sleeping`. An interrupted
-turn leaves the thread `idle`. A stopped thread can take messages again afterwards.
+turn leaves the thread `idle`. An `idle` thread's agent process is closed, ending any work it
+left running in the background, and the thread goes to `sleeping`. A stopped thread can take
+messages again afterwards.
 
 | Param | Type | |
 |---|---|---|

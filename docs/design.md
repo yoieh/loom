@@ -122,7 +122,9 @@ Rules, each checked by a packaging test:
   final `stopped` state follow as events. Stop on a thread stops everything it started, all the
   way down. An interrupted turn leaves its thread `idle`; when the turn has not ended 5 s after
   the interrupt (`stop_grace`), or the runner can't interrupt, the process is closed and the
-  thread is `sleeping`, as is a thread stopped before it started. A stopped child's result is
+  thread is `sleeping`, as is a thread stopped before it started. A stop on an `idle` thread
+  closes its process, which may still run work it left in the background, and the thread is
+  `sleeping`. A stopped thread takes messages again afterwards. A stopped child's result is
   not posted to its parent. A thread that is being stopped can't delegate or launch (`conflict`),
   so nothing it starts escapes the stop.
 - **Events.** Each change of state, each turn's text and tool lines, each message that entered
