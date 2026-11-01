@@ -415,11 +415,13 @@ class CliTest(LiveCase):
         self.assertEqual((done.returncode, done.stdout), (1, ''))
         self.assertTrue(done.stderr.startswith('loom: invalid: '), done.stderr)
 
-    def test_projects_add_from_an_agent_thread_is_forbidden(self) -> None:
+    def test_projects_set_mode_from_an_agent_thread_is_forbidden(self) -> None:
         done = self.cli('projects', 'add', 'Repo', str(self.repo), LOOM_THREAD='anything')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        done = self.cli('projects', 'set-mode', 'repo', 'full-access', LOOM_THREAD='anything')
         self.assertEqual(done.returncode, 1)
         self.assertTrue(done.stderr.startswith('loom: forbidden: '), done.stderr)
-        self.assertEqual(self.client.projects_list(), [])
+        self.assertIsNone(self.client.projects_list()[0]['permission_mode'])
 
     def test_loom_socket_is_used_and_socket_wins_over_it(self) -> None:
         done = self.cli('--json', 'projects', 'list', socket=False, LOOM_SOCKET=str(self.socket))

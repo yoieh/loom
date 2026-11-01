@@ -232,18 +232,15 @@ class CallerTest(ServiceTest):
         with self.assertRaises(AttributeError):
             PERSON.verified = False
 
-    async def test_agents_and_unknown_callers_may_not_add_projects(self) -> None:
+    async def test_agents_and_unknown_callers_may_add_projects(self) -> None:
         before = self.projects.list()
-        for caller in (AGENT, UNKNOWN):
+        for number, caller in enumerate((AGENT, UNKNOWN)):
             with self.subTest(caller=caller):
-                message = await self.refused('projects.add', self.project_params(
-                    'a1', f'repo-{caller.verified}'), 'forbidden', caller)
-                self.assertEqual(message, 'agent threads may not add projects')
-                self.assertEqual(self.projects.list(), before)
-                self.assertEqual(self.receipts('a1'), 0)
-        added = await self.call('projects.add', self.project_params('a1'))
-        self.assertEqual(added['title'], 'Other')
-        self.assertEqual(len(self.projects.list()), len(before) + 1)
+                params = dict(self.project_params(f'a{number}', f'repo-{number}'),
+                              permission_mode='full-access')
+                added = await self.call('projects.add', params, caller)
+                self.assertEqual(added['permission_mode'], 'full-access')
+        self.assertEqual(len(self.projects.list()), len(before) + 2)
 
     async def test_agents_and_unknown_callers_may_not_change_a_mode(self) -> None:
         params = {'id': 'm1', 'project_id': 'loom', 'permission_mode': 'full-access'}
@@ -279,16 +276,13 @@ class CallerTest(ServiceTest):
         with self.assertRaises(AttributeError):
             PERSON.scheduled = True
 
-    async def test_scheduled_callers_may_not_add_projects(self) -> None:
+    async def test_scheduled_callers_may_add_projects(self) -> None:
         before = self.projects.list()
         for number, caller in enumerate(SCHEDULED):
             with self.subTest(caller=caller):
-                command_id = f's{number}'
-                message = await self.refused('projects.add', self.project_params(
-                    command_id, f'repo-{number}'), 'forbidden', caller)
-                self.assertEqual(message, 'agent threads may not add projects')
-                self.assertEqual(self.projects.list(), before)
-                self.assertEqual(self.receipts(command_id), 0)
+                await self.call('projects.add', self.project_params(
+                    f's{number}', f'repo-{number}'), caller)
+        self.assertEqual(len(self.projects.list()), len(before) + len(SCHEDULED))
 
     async def test_scheduled_callers_may_not_change_a_mode(self) -> None:
         params = {'id': 'm1', 'project_id': 'loom', 'permission_mode': 'full-access'}

@@ -130,19 +130,17 @@ class HostTest(ScheduleCase):
                                                          schedule_id='s9')),
                                 ('projects.list', Caller(thread_id='t8'))])
 
-    async def test_call_refuses_projects_add_for_every_schedule(self) -> None:
+    async def test_call_adds_projects_but_refuses_set_mode_for_every_schedule(self) -> None:
         host = self.host()
+        added = await host.call('projects.add', {'id': 'p0', 'title': 'Repo',
+                                                 'path': str(self.repo)}, FORBIDDEN_MAKERS[0])
+        self.assertEqual(added['id'], 'repo')
         for number, maker in enumerate(FORBIDDEN_MAKERS):
-            with self.subTest(maker=maker), self.assertRaises(ScheduleError) as caught:
-                await host.call('projects.add', {'id': f'p{number}', 'title': 'Repo',
-                                                 'path': str(self.repo)}, maker)
-            self.assertEqual((caught.exception.code, caught.exception.message),
-                             ('forbidden', 'agent threads may not add projects'))
             with self.subTest(maker=maker), self.assertRaises(ScheduleError) as caught:
                 await host.call('projects.set_mode', {'id': f'm{number}', 'project_id': 'repo',
                                                       'permission_mode': 'full-access'}, maker)
             self.assertEqual(caught.exception.code, 'forbidden')
-        self.assertEqual(self.serving.service.projects.list(), [])
+        self.assertIsNone(self.serving.service.projects.get('repo')['permission_mode'])
 
     async def test_call_errors_keep_their_code_and_message(self) -> None:
         host = self.host()

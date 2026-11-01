@@ -171,16 +171,11 @@ another user`, and the connection is closed. When the server cannot read the pee
 at all, it answers `forbidden`, `cannot tell who the peer is`, and closes the connection the same
 way. The client sees either one as the answer to its first request.
 
-### Agents may not add projects or change a project's mode
+### Agents may not change a project's mode
 
-`projects.add` and `projects.set_mode` answer `forbidden` when the request comes from a thread
-Loom started, from a schedule (see [Calls a schedule makes](#calls-a-schedule-makes)), or when
-the server cannot tell who sent it:
-
-```json
-{"v": "v1", "call": "projects.add", "params": {"id": "c13", "title": "Other", "path": "/tmp"}}
-{"ok":false,"error":{"code":"forbidden","message":"agent threads may not add projects"}}
-```
+`projects.set_mode` answers `forbidden` when the request comes from a thread Loom started, from
+a schedule (see [Calls a schedule makes](#calls-a-schedule-makes)), or when the server cannot
+tell who sent it:
 
 ```json
 {"v": "v1", "call": "projects.set_mode", "params": {"id": "c14", "project_id": "demo-repo", "permission_mode": "full-access"}}
@@ -189,8 +184,9 @@ the server cannot tell who sent it:
 
 **Why.** A thread runs with its project's permission mode (§11). If an agent could change that
 mode, it could widen its own project to `full-access` and then launch a thread with it (§9, §11).
-The other calls stay open to agents: a thread an agent launches or delegates gets the project's
-mode, never a wider one.
+The other calls stay open to agents, `projects.add` too: the user asked on 2026-11-01 that their
+voice assistant may add projects itself, with any mode. A thread an agent launches or delegates
+gets the project's mode, never a wider one.
 
 **How the server tells.** Every agent Loom starts has `LOOM_THREAD=<thread id>` in its
 environment, and so does every process the agent starts unless it unsets it. The server takes
@@ -307,7 +303,7 @@ integer of 1 or more, that names an event Loom still stores. Its hops, `hops(E)`
 - else 0.
 
 The caller's thread is the Loom thread a call comes from (told apart as under
-[Agents may not add projects](#agents-may-not-add-projects-or-change-a-projects-mode)), when that
+[Agents may not change a project's mode](#agents-may-not-change-a-projects-mode)), when that
 thread exists. A call a schedule makes has none, whoever made the schedule (see
 [Calls a schedule makes](#calls-a-schedule-makes)). A call records:
 
@@ -2527,7 +2523,7 @@ objects, and `cause`, which is an integer.
 - No tool adds a project, changes a project's mode or removes a project, and no tool takes a
   permission mode, `requests` or a command id. A thread a tool starts gets its project's mode
   (§11), and the server tells an agent's calls apart as under
-  [Callers](#agents-may-not-add-projects-or-change-a-projects-mode).
+  [Callers](#agents-may-not-change-a-projects-mode).
 
 ### Tool errors
 
