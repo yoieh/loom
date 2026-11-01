@@ -1,5 +1,6 @@
 import dataclasses
 import os
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -9,6 +10,10 @@ MODES = ('approval-required', 'auto-accept-edits', 'auto', 'full-access')
 DEFAULT_MODE = 'auto'
 SOCKET_NAME = 'api.sock'
 CONFIG_NAME = 'config.toml'
+TOKEN_ENV = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,127}')
+# Variables Loom sets itself, which the Codex token must not replace.
+NOT_TOKEN_ENV = ('HOME', 'LANG', 'LOGNAME', 'PATH', 'SHELL', 'USER', 'XDG_RUNTIME_DIR',
+                 'LOOM_SOCKET', 'LOOM_THREAD', 'CODEX_HOME')
 
 
 class StartError(Exception):
@@ -26,6 +31,7 @@ class Config:
     request_timeout: int = 600
     codex_bin: str | None = None
     codex_home: str | None = None
+    codex_token_env: str | None = None
     t3_home: str | None = None
     t3_bin: str | None = None
 
@@ -97,5 +103,10 @@ def load_config(path: Path) -> Config:
             raise StartError(f'{path}: {key} must be a string')
     if values.get('permission_mode', DEFAULT_MODE) not in MODES:
         raise StartError(f'{path}: permission_mode must be one of {", ".join(MODES)}')
+    name = values.get('codex_token_env')
+    if name is not None and (not TOKEN_ENV.fullmatch(name) or name in NOT_TOKEN_ENV
+                             or name.startswith(('ANTHROPIC_', 'CLAUDE'))):
+        raise StartError(f'{path}: codex_token_env must be an environment variable name that '
+                         'Loom does not set itself')
     values.update(numbers)
     return Config(**values)

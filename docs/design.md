@@ -193,7 +193,7 @@ class RunnerSession(Protocol):
   `ANTHROPIC_AUTH_TOKEN`, with `ANTHROPIC_API_KEY` set empty). For Codex, the host keys are
   the settings `codex_bin` (default `codex`; the directory holding the `node` its shebang needs
   is appended to `PATH`) and `codex_home` (→ `CODEX_HOME`), and the secret `agent-token` (→
-  `CLIPROXY_API_KEY`, for Codex only). Arguments are lists, never a shell string; a message
+  the variable `codex_token_env` names, default `CLIPROXY_API_KEY`, for Codex only). Arguments are lists, never a shell string; a message
   never goes in argv.
 
 ### §6.1 The T3 runner

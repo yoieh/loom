@@ -1798,6 +1798,7 @@ or more; every other value is a string.
 | `request_timeout` | `600` | Seconds a permission request may stay open before Loom denies it (see [`requests.respond`](#requestsrespond)). Loom checks every second. |
 | `codex_bin` | `codex` | The Codex program to run. When its directory holds `node`, that directory goes on the end of the agent's `PATH`. |
 | `codex_home` | none | Given to Codex as `CODEX_HOME`. |
+| `codex_token_env` | `CLIPROXY_API_KEY` | The variable that gives Codex the [`agent-token`](#agent-token), such as `OPENAI_API_KEY`. It must be a variable name that Loom does not set itself and not an `ANTHROPIC_` or `CLAUDE` one. |
 | `t3_home` | `~/.t3` | T3's home. Loom reads `userdata/server-runtime.json` there for T3's address and version, and `userdata/settings.json` for its default model. |
 | `t3_bin` | `<t3_home>/runtime/versions/<serverVersion>/t3` | The `t3` program that `loom t3 pair` and `loom t3 unpair` run. `<serverVersion>` comes from `server-runtime.json`. |
 
@@ -1812,7 +1813,8 @@ request_timeout = 300
 An unknown key, a string key whose value is not a string, a bad mode or a TOML error stops the
 server with exit 2, naming the file and the problem. So does an `agents_max`, `idle_after` or
 `request_timeout` that is not a whole number of 1 or more (a string, a float, `true`, 0 or
-less): `<path>: request_timeout must be a whole number of 1 or more`, with the key's name.
+less): `<path>: request_timeout must be a whole number of 1 or more`, with the key's name. So
+does a `codex_token_env` that is not such a variable name.
 
 ### `agent-token`
 
@@ -1824,8 +1826,9 @@ agent starts without a token. When it breaks a rule, the server writes one line
 `loom: warning: not using <path>: <why>` to stderr, never the token, and starts the agent without
 it.
 
-Loom gives the same token to Codex only as `CLIPROXY_API_KEY`, and never gives Codex the
-`ANTHROPIC_*` variables.
+Loom gives the same token to Codex only in the variable `codex_token_env` names (default
+`CLIPROXY_API_KEY`), and never gives Codex the `ANTHROPIC_*` variables. A Codex that logs in on
+its own (`codex login`) needs no token file.
 
 ### `t3-client.json`
 
@@ -1850,7 +1853,7 @@ the server's environment, those that are set, plus:
 - `LOOM_THREAD`: the agent's own thread id. A `LOOM_THREAD` in the server's own environment is
   never passed on.
 - The Claude settings above (§6 Environment). A message never goes in the agent's arguments.
-- For a Codex thread: `CODEX_HOME` from `codex_home` and `CLIPROXY_API_KEY` from the token, with
+- For a Codex thread: `CODEX_HOME` from `codex_home` and the token in `codex_token_env`'s variable, with
   `codex_bin`'s directory appended to `PATH` when it holds `node`.
 
 A T3 thread gets no environment from Loom, since T3 runs its agent. Loom never gives T3 the

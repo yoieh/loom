@@ -9,7 +9,7 @@ from .config import Config
 
 ENV_KEYS = ('HOME', 'LANG', 'LOGNAME', 'PATH', 'SHELL', 'USER', 'XDG_RUNTIME_DIR')
 SETTINGS = ('claude_bin', 'claude_config_dir', 'agent_base_url', 'codex_bin', 'codex_home',
-            't3_home', 't3_bin')
+            'codex_token_env', 't3_home', 't3_bin')
 SECRETS = {'agent-token': 'agent-token', 't3-client': 't3-client.json'}
 MAX_SECRET = 65_536
 

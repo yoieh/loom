@@ -146,6 +146,18 @@ class ConfigTest(unittest.TestCase):
             with self.subTest(config=text):
                 self.assert_refused(text, f'{key} must be a string')
 
+    def test_codex_token_env_defaults_to_none_and_loads_a_name(self) -> None:
+        self.assertIsNone(Config().codex_token_env)
+        self.assertEqual(self.load('codex_token_env = "OPENAI_API_KEY"\n').codex_token_env,
+                         'OPENAI_API_KEY')
+
+    def test_codex_token_env_refuses_a_name_loom_sets_or_a_bad_name(self) -> None:
+        for name in ('', 'PATH', 'LOOM_THREAD', 'CODEX_HOME', 'ANTHROPIC_API_KEY',
+                     'CLAUDE_CONFIG_DIR', '1KEY', 'A-B'):
+            with self.subTest(name=name):
+                self.assert_refused(f'codex_token_env = "{name}"', 'codex_token_env must be')
+        self.assert_refused('codex_token_env = 1', 'codex_token_env must be a string')
+
     def test_the_t3_keys_default_to_none_and_load_as_strings(self) -> None:
         self.assertEqual((Config().t3_home, Config().t3_bin), (None, None))
         config = self.load('claude_bin = "/opt/claude"\n')
@@ -207,6 +219,8 @@ class HostTest(unittest.TestCase):
         self.assertEqual(host.setting('codex_home'), '/codex-home')
         self.assertIsNone(self.host.setting('codex_bin'))
         self.assertIsNone(self.host.setting('codex_home'))
+        host = self.make(Config(codex_token_env='OPENAI_API_KEY'))
+        self.assertEqual(host.setting('codex_token_env'), 'OPENAI_API_KEY')
 
     def test_environment_is_the_allowlist_plus_socket_and_thread(self) -> None:
         self.assertEqual(self.host.environment(THREAD), {

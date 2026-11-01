@@ -25,6 +25,11 @@ SANDBOXES: dict[PermissionMode, str] = {
 
 _MODEL = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,199}')
 
+DEFAULT_TOKEN_ENV = 'CLIPROXY_API_KEY'
+_TOKEN_ENV = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,127}')
+# The token must never replace a variable Loom sets, or reach Codex as a Claude variable.
+_NOT_TOKEN_ENV = ENV_ALLOWLIST | {'LOOM_THREAD', 'CODEX_HOME'}
+
 
 def is_canonical_uuid(value: object) -> bool:
     if not isinstance(value, str):
@@ -96,6 +101,16 @@ def _with_node(codex_bin: str, path: str | None) -> str | None:
     return os.pathsep.join([*entries, directory])
 
 
+def is_token_env(name: object) -> bool:
+    return (isinstance(name, str) and _TOKEN_ENV.fullmatch(name) is not None
+            and name not in _NOT_TOKEN_ENV and not name.startswith(('ANTHROPIC_', 'CLAUDE')))
+
+
+def token_env(host: RunnerHost) -> str:
+    name = host.setting('codex_token_env')
+    return name if is_token_env(name) else DEFAULT_TOKEN_ENV
+
+
 def codex_env(thread: ThreadSpec, host: RunnerHost, codex_bin: str) -> dict[str, str]:
     env = {
         key: value
@@ -111,5 +126,5 @@ def codex_env(thread: ThreadSpec, host: RunnerHost, codex_bin: str) -> dict[str,
         env['CODEX_HOME'] = codex_home
     token = host.secret('agent-token')
     if isinstance(token, str) and token.strip():
-        env['CLIPROXY_API_KEY'] = token.strip()
+        env[token_env(host)] = token.strip()
     return env

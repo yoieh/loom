@@ -165,6 +165,22 @@ class EnvTest(unittest.TestCase):
                 self.assertEqual(env.get('CLIPROXY_API_KEY'), expected)
                 self.assertFalse([key for key in env if key.startswith(('ANTHROPIC_', 'CLAUDE'))])
 
+    def test_codex_token_env_names_the_token_variable(self) -> None:
+        secrets = {'agent-token': TOKEN}
+        env = codex_env(make_thread(), host(settings={'codex_token_env': 'OPENAI_API_KEY'},
+                                            secrets=secrets), 'codex')
+        self.assertEqual(env.get('OPENAI_API_KEY'), TOKEN)
+        self.assertNotIn('CLIPROXY_API_KEY', env)
+
+    def test_a_bad_codex_token_env_falls_back_to_the_default(self) -> None:
+        for name in ('', 'PATH', 'HOME', 'LOOM_THREAD', 'LOOM_SOCKET', 'CODEX_HOME',
+                     'ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', '1KEY', 'A-B', 'A=B', 7, None):
+            with self.subTest(name=name):
+                env = codex_env(make_thread(), host(settings={'codex_token_env': name},
+                                                    secrets={'agent-token': TOKEN}), 'codex')
+                self.assertEqual(env.get('CLIPROXY_API_KEY'), TOKEN)
+                self.assertEqual(env['LOOM_THREAD'], THREAD_ID)
+
     def test_host_is_asked_for_this_thread(self) -> None:
         fake = host()
         thread = make_thread()

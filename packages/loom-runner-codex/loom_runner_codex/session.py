@@ -23,7 +23,7 @@ from loom_contracts.runners import (
 )
 from loom_contracts.states import TurnState
 
-from .command import codex_argv, codex_env
+from .command import codex_argv, codex_env, token_env
 from .reasons import safe_reason
 from .record import RecordError, read_record, write_record
 from .stream import ErrorLine, Parsed, ThreadStarted, TurnEnded, parse_line
@@ -165,7 +165,7 @@ class CodexRunner:
             codex_bin = 'codex'
         codex_argv(thread, codex_bin, None)
         env = codex_env(thread, host, codex_bin)
-        token = env.get('CLIPROXY_API_KEY')
+        token = env.get(token_env(host))
         codex_id = None
         if thread.resume is True:
             try:
