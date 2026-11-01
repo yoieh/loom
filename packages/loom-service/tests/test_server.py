@@ -394,16 +394,14 @@ class AgentRefusalTest(ServerCase):
         ]
 
     def assert_refused(self, answers: list[dict]) -> None:
-        self.assertEqual([answer['ok'] for answer in answers], [False, False, True])
-        self.assertEqual(answers[0]['error'], {
-            'code': 'forbidden', 'message': 'agent threads may not add projects'})
+        self.assertEqual([answer['ok'] for answer in answers], [True, False, True])
         self.assertEqual(answers[1]['error'], {
             'code': 'forbidden', 'message': "agent threads may not change a project's mode"})
         self.assertEqual([project['id'] for project in self.serving.service.projects.list()],
-                         ['repo'])
+                         ['repo', 'other'])
         self.assertIsNone(self.serving.service.projects.get('repo')['permission_mode'])
 
-    async def test_a_process_with_loom_thread_may_not_manage_projects(self) -> None:
+    async def test_a_process_with_loom_thread_may_not_change_a_mode(self) -> None:
         answers = await run_client(self.socket, self.requests(),
                                    clean_env(LOOM_THREAD='agent-thread'))
         self.assert_refused(answers)
@@ -418,14 +416,16 @@ class AgentRefusalTest(ServerCase):
         self.assertEqual([answer['ok'] for answer in answers], [True, True, True])
         self.assertEqual(answers[1]['result']['permission_mode'], 'full-access')
 
-    async def test_an_unverified_peer_may_not_manage_projects(self) -> None:
+    async def test_an_unverified_peer_may_not_change_a_mode(self) -> None:
         socket_path = self.base / 'blind.sock'
         await self.serve(socket=socket_path, data_dir=self.base / 'blind',
                          proc=self.base / 'no-proc')
         conn = await self.connect(socket_path)
-        answer = await conn.call('projects.add', id='b1', title='Repo', path=str(self.repo))
+        await conn.ok('projects.add', id='b1', title='Repo', path=str(self.repo))
+        answer = await conn.call('projects.set_mode', id='b2', project_id='repo',
+                                 permission_mode='full-access')
         self.assertEqual(answer['error']['code'], 'forbidden')
-        self.assertEqual(await conn.ok('projects.list'), [])
+        self.assertIsNone((await conn.ok('projects.list'))[0]['permission_mode'])
 
     async def test_a_peer_of_another_user_is_refused(self) -> None:
         own = os.geteuid()

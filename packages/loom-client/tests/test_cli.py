@@ -455,14 +455,15 @@ class ExitTest(CliCase):
         self.assertEqual(self.server.calls[-1][0], 'threads.update')
 
     def test_an_api_error_with_json_also_prints_the_error_object(self) -> None:
-        self.answer(failed('forbidden', 'agent threads may not add projects'))
-        code, out, err = self.run_cli('--json', 'projects', 'add', 'Demo', '/tmp/demo')
+        self.answer(failed('forbidden', "agent threads may not change a project's mode"))
+        code, out, err = self.run_cli('--json', 'projects', 'set-mode', 'demo', 'full-access')
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(out), {
-            'error': {'code': 'forbidden', 'message': 'agent threads may not add projects'},
+            'error': {'code': 'forbidden',
+                      'message': "agent threads may not change a project's mode"},
         })
         self.assertEqual(out.count('\n'), 1)
-        self.assertEqual(err, 'loom: forbidden: agent threads may not add projects\n')
+        self.assertEqual(err, "loom: forbidden: agent threads may not change a project's mode\n")
 
     def test_a_schedule_the_server_finds_invalid_exits_1(self) -> None:
         self.answer(failed('invalid', 'everyMs must be at least 60000'))

@@ -239,8 +239,6 @@ class Service:
         return self.store.events(after, thread_id, audience=audience)
 
     async def _add_project(self, params: object, caller: Caller) -> ProjectInfo:
-        if not _is_person(caller):
-            raise LoomError('forbidden', 'agent threads may not add projects')
         return self.projects.add(params)
 
     async def _set_mode(self, params: object, caller: Caller) -> ProjectInfo:
