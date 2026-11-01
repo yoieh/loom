@@ -31,3 +31,9 @@ With T3 running, `uv run loom t3 pair` once, then `--runner t3` on the launch, s
 in T3.
 
 `uv run loom install` gives Claude Code and Codex agents Loom's tools.
+
+## License
+
+Loom is under the [Functional Source License, Version 1.1, MIT Future License](LICENSE.md)
+(FSL-1.1-MIT): you may use, change and share it for any purpose except offering a competing
+commercial product or service. Each release becomes MIT two years after it is published.
