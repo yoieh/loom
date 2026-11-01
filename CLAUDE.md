@@ -70,7 +70,8 @@ The factory's steps also read this repo's rules in `docs/agent-rules/`:
 `code.md` for building and code review, `security.md` for the security
 review, and `review.md` for every review.
 
-The repo's `origin` is a private backup, github.com/yoieh/loom (the user,
-2026-10-25). The factory has no code host for it, so runs still end `no_pr`
-and are merged into main here; after such a merge, push main
-(`git push origin main`). Never push any other branch.
+The repo's `origin` is public, github.com/yoieh/loom (the user, 2026-11-01;
+a private backup from 2026-10-25), under FSL-1.1-MIT (`LICENSE.md`). The
+factory has no code host for it, so runs still end `no_pr` and are merged
+into main here; after such a merge, push main (`git push origin main`).
+Never push any other branch.

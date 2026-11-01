@@ -74,7 +74,7 @@ Voice. `docs/design.md` wins where the two disagree.
 
 ### §73.13 Spike results
 
-Run by job 233 on 2026-10-22 with Claude Code 2.1.301 (`/home/yoieh/.local/bin/claude`) and
+Run by job 233 on 2026-10-22 with Claude Code 2.1.301 (`~/.local/bin/claude`) and
 codex-cli 0.163.0 (T3's `codex-proxy` binary), against a fake daemon on a scratch socket, in a
 throwaway git repo. Claude used `claude-opus-5-5` and Codex `gpt-6.1-sol`, both through the
 local proxy, so start times include the proxy's latency. Each case ran once, and the `auto`
@@ -211,7 +211,7 @@ the flag is harmless.
 An idle agent costs about 275 MiB (Claude plus `thread-voice-mcp`, 281,180 kB). The highest
 `claude` peak was 339 MiB (347,128 kB), in the permission case. Four agents come to about
 1.1 GiB idle and under 1.5 GiB at peak. A resumed process answers as fast as a new one. **Proposal:** `local_agents_max = 4`
-fits (this machine has 24 GB; an 8 GB home server would still fit 4), and `idle_after = 1200`
+fits (the test machine has 24 GB; an 8 GB one would still fit 4), and `idle_after = 1200`
 fits, since a resume costs about 0.6 s.
 
 **8. Flags.** Next to §73.4's command:
@@ -280,7 +280,7 @@ these changes; this section only proposes them.
 | 14 | `codex exec resume` has no `-C` or `-s`; the top-level form works | §73.4.1: `codex exec resume <session-id> --json …` | Later turns run `codex -C <worktree> -s <sandbox> exec resume <thread_id> --json -`. The session id is `thread.started`'s `thread_id` | I |
 | 15 | Codex `exec` never asks; the sandbox silently blocks | §73.4.1 left this to the spike | No `waiting` state for Codex. Sandbox per mode: `approval-required` → `read-only`, `auto-accept-edits` and `auto` → `workspace-write`, `full-access` → `danger-full-access` | I |
 | 16 | `codex` needs `node` on `PATH`; the daemon's `PATH` has none. Codex needs `CODEX_HOME` and `CLIPROXY_API_KEY` (the same bytes as the Claude token) | unset | A `codex_bin` key (default T3's path when present). The directory of the `node` its shebang needs goes on the end of the child's `PATH`, so the nvm `bin/` with every global npm command can't shadow system tools. It goes first only if a system `node` is too old. A `codex_home` key. The token file from row 11 passed as `CLIPROXY_API_KEY` to Codex only | I |
-| 17 | Codex syncs plugins over the network (`git-remote-https`) at every start | unset | Note it for the home server; no change | I |
+| 17 | Codex syncs plugins over the network (`git-remote-https`) at every start | unset | Note it for machines with slow networks; no change | I |
 | 18 | About 275 MiB per idle agent; resume in about 0.6 s | §73.4 defaults | Keep `local_agents_max = 4` and `idle_after = 1200` | C |
 
 **Already seen by the spec writer**, checked again:
@@ -306,7 +306,7 @@ these changes; this section only proposes them.
 - A hello makes the real daemon upsert `threads` and `sessions` rows. **Holds**
   (`_agent_hello`); the spike's sessions reached only the fake daemon, and the store has no
   row for them.
-- `codex` on `PATH` is 0.160.1, T3's binary 0.163.0, with provider `cliproxyapi` and
+- `codex` on `PATH` is 0.160.1, T3's binary 0.163.0, with a local proxy provider and
   `env_key = "CLIPROXY_API_KEY"`, and the same bytes as the Claude token. **Holds** (`cmp -s`
   exit 0).
 - `codex exec resume` lacks `-C`, `--cd`, `-s` and `--sandbox`. The top level has `-s`, `-C`

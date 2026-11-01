@@ -3,13 +3,10 @@
 Loom runs agent sessions, called **threads**, and schedules work for them. Thread Voice, the
 software factory, a terminal and the agents themselves are its clients.
 
-Status: **proposed** 2026-10-23. The user asked for it by voice, through Bertil, in Thread
-Voice's topic "Egen orkestrator och scheduler för threads i Thread Voice". It began as Thread
-Voice's §78 (`docs/design-orchestrator.md` there) and moved here the same day, when the user
-chose to build it as its own project and connect Thread Voice last: "vi kan både koppla på
-våran fabrik men även att Threadvoice då egentligen bara blir en klient". Sections cited as
-§73.x are Thread Voice's, copied into `docs/thread-voice-73.md`. Other § numbers below 73 are
-Thread Voice's and matter only to that client.
+Status: **proposed** 2026-10-23. It began as Thread Voice's §78 and moved here the same day,
+when Loom became its own project, with the software factory and Thread Voice as its clients.
+Sections cited as §73.x are Thread Voice's, copied into `docs/thread-voice-73.md`. Other §
+numbers below 73 are Thread Voice's and matter only to that client.
 
 ## §1 Why Loom
 
@@ -22,7 +19,7 @@ Thread Voice's and matter only to that client.
 - **Modular.** Small packages around one contracts package; nothing depends on one big package
   (§3).
 - **One environment.** Agents run on the one machine that runs Loom: the user's computer now,
-  the home server later. Running threads on several machines is not covered.
+  a home server later. Running threads on several machines is not covered.
 
 T3 Code (`github.com/pingdotgg/t3code`) does much of this inside its app. Loom copies what it
 does well and avoids what hurts it (§12). T3 stays usable: a T3 runner (§6) drives T3 threads
@@ -85,7 +82,7 @@ Rules, each checked by a packaging test:
 - **No limit on threads.** Any number of threads and tasks can exist, at any depth. The only
   thing rationed is memory: each live local process takes about 275 MiB (§73.13 item 7).
   `agents_max` defaults to the machine's available memory at start, less 2 GiB, divided by
-  350 MiB (about 60 on the user's 24 GB machine, about 15 on an 8 GB home server); the config
+  350 MiB (about 60 on a 24 GB machine, about 15 on an 8 GB one); the config
   key overrides it.
 - **When memory is short**, the longest-idle `idle` thread is put to sleep first (stdin closed,
   §73.13 row 8); a sleeping thread costs nothing and resumes in about 0.6 s. Only when every
@@ -198,7 +195,7 @@ class RunnerSession(Protocol):
 
 ### §6.1 The T3 runner
 
-Written 2026-10-25 with the user, through Bertil, so that LM-10 has a contract to build
+Written 2026-10-25 so that LM-10 has a contract to build
 against. It rests on Thread Voice, which already drives T3 as an outside client: its
 `docs/design-stage5.md` §53 (cited here as TV §53) holds the spike that paired with T3 0.1.0
 and the client built from it. What TV §53 observed is marked *seen*. What LM-10 checked
@@ -581,17 +578,16 @@ Thread Voice becoming a client is Thread Voice's issue, after 4, 6 and 9.
 ## §15 Event-driven agents
 
 Proposed 2026-10-24. The user wants to step in as rarely as possible: every agent thread gets one
-clear goal, does it and is gone, and events start threads, not clocks. Bertil (the factory
-manager) and one project manager per project are how the factory uses this. Those roles are the
-factory's prompts and rules (Factory Manager's `orchestrator/agents.md`), not Loom's; Loom gives
-only the parts below.
+clear goal, does it and is gone, and events start threads, not clocks. A factory manager agent
+and one project manager per project are how the software factory uses this. Those roles are the
+factory's prompts and rules, not Loom's; Loom gives only the parts below.
 
 - **Signals.** `signals.emit {topic, project_id?, key?, payload, cause?}` puts an outside event
   into Loom as a `signal` event, so the factory can say "run done" or "PR opened". A signal is an
   event with no thread; one an agent thread emits records that thread as its `by`. The command id
   rule (§4) holds, so a retry emits once. Agents get it as the `loom-mcp` tool `emit`.
 - **Event triggers.** A schedule trigger `{"type":"event","topic":"factory.run.status",
-  "project_id":"glantfolk","match":{"to":"done"}}` fires its action (§7) for each matching
+  "project_id":"my-app","match":{"to":"done"}}` fires its action (§7) for each matching
   `signal`, `thread.settled`, `thread.failed`, `request.opened` or `schedule.fired`. A prompt
   can use `{{payload.<field>}}` and `{{event.id}}`. Clock triggers stay for what really is about
   time, such as one daily check that no event was missed. `hops_max` and `rate_max` (below) are
@@ -615,7 +611,7 @@ only the parts below.
   - A send stores them on its message, and one with more hops than its thread raises the
     thread's `cause` and `hops` to its own; a coalescing launch that joins a waiting thread does
     the same to it.
-- **Concurrency keys.** A launch with `concurrency_key` (such as `pm:glantfolk`) waits while
+- **Concurrency keys.** A launch with `concurrency_key` (such as `pm:my-app`) waits while
   another thread holds the key (`on_busy: "queue"`), or joins the one waiting launch for it
   (`"coalesce"`), so one project manager works on a project at a time and a burst of events
   becomes one thread. A thread holds its key until it settles, fails or is stopped, so a
