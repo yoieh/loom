@@ -30,9 +30,13 @@ class Host:
     def setting(self, key: str) -> str | None:
         return getattr(self.config, key) if key in SETTINGS else None
 
-    def environment(self, thread: Thread) -> dict[str, str]:
+    def check_environment(self) -> dict[str, str]:
         env = {key: self._environ[key] for key in ENV_KEYS if key in self._environ}
         env['LOOM_SOCKET'] = self.socket
+        return env
+
+    def environment(self, thread: Thread) -> dict[str, str]:
+        env = self.check_environment()
         env['LOOM_THREAD'] = thread.id
         return env
 

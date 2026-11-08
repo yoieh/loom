@@ -154,6 +154,7 @@ class SchedulesAddParams(TypedDict):
     runner: NotRequired[RunnerName]
     model: NotRequired[str]
     workspace: NotRequired[Workspace]
+    check: NotRequired[list[str]]
 
 
 class SchedulesListParams(TypedDict):
@@ -261,6 +262,7 @@ class ScheduleInfo(TypedDict):
     runner: RunnerName | None
     model: str | None
     workspace: Workspace | None
+    check: list[str] | None
     by: str | None
     paused: bool
     next_run: str | None

@@ -11,6 +11,7 @@ RETRY_AFTER = timedelta(seconds=5)
 FIRED = 'fired'
 SKIPPED_LATE = 'skipped_late'
 SKIPPED_BUSY = 'skipped_busy'
+SKIPPED_CHECK = 'skipped_check'
 FAILED = 'failed'
 
 SCHEMA: list[str] = [
@@ -28,6 +29,8 @@ SCHEMA: list[str] = [
         runner TEXT,
         model TEXT,
         workspace TEXT,
+        check_argv TEXT,
+        check_root TEXT,
         by TEXT,
         verified INTEGER NOT NULL,
         paused INTEGER NOT NULL DEFAULT 0,
@@ -56,12 +59,14 @@ ADDED_COLUMNS = (
     ('schedules', 'runner TEXT'),
     ('schedules', 'model TEXT'),
     ('schedules', 'workspace TEXT'),
+    ('schedules', 'check_argv TEXT'),
+    ('schedules', 'check_root TEXT'),
     ('schedule_runs', 'event_id INTEGER'),
 )
 
 COLUMNS = ('id', 'trigger', 'action', 'text', 'thread_id', 'project_id', 'title',
-           'concurrency_key', 'on_busy', 'settle', 'runner', 'model', 'workspace', 'by',
-           'verified', 'paused', 'next_run', 'created_at', 'event_after')
+           'concurrency_key', 'on_busy', 'settle', 'runner', 'model', 'workspace', 'check_argv',
+           'check_root', 'by', 'verified', 'paused', 'next_run', 'created_at', 'event_after')
 SELECT = f'SELECT {", ".join(COLUMNS)} FROM schedules'
 
 
@@ -84,6 +89,10 @@ def to_row(found: tuple | None) -> dict | None:
 
 def workspace(row: dict) -> dict | None:
     return None if row['workspace'] is None else json.loads(row['workspace'])
+
+
+def check(row: dict) -> list[str] | None:
+    return None if row['check_argv'] is None else json.loads(row['check_argv'])
 
 
 def launch_options(row: dict) -> dict:

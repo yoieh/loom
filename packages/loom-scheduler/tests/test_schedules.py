@@ -187,6 +187,10 @@ class AddRefusalTest(SchedulerCase):
             ({'workspace': None}, 'workspace'),
             ({'workspace': {'strategy': 'root'}, 'model': 'sonnet', 'runner': 't3'}, 'runner'),
             ({'workspace': {'strategy': 'root'}, 'settle': 'on_result'}, 'settle'),
+            ({'check': ['true']}, 'check'),
+            ({'check': None}, 'check'),
+            ({'check': ['true'], 'workspace': {'strategy': 'root'}}, 'workspace'),
+            ({'check': ['true'], 'model': 'sonnet'}, 'model'),
         ]
         await self.assert_refused([
             ({**action, **fields}, f'{field} goes only with launch')
@@ -464,12 +468,14 @@ class OldStoreTest(SchedulerCase):
         self.scheduler = self.new_scheduler()
         self.scheduler = self.new_scheduler()
         columns = [row[1] for row in self.host.rows('PRAGMA table_info(schedules)')]
-        self.assertEqual(columns[-7:], ['concurrency_key', 'on_busy', 'settle', 'event_after',
-                                        'runner', 'model', 'workspace'])
+        self.assertEqual(columns[-9:], ['concurrency_key', 'on_busy', 'settle', 'event_after',
+                                        'runner', 'model', 'workspace', 'check_argv',
+                                        'check_root'])
         [info] = await self.call('schedules.list', {})
         self.assertEqual((info['id'], info['concurrency_key'], info['on_busy'], info['settle']),
                          ('s-old', None, None, None))
         self.assertEqual((info['runner'], info['model'], info['workspace']), (None, None, None))
+        self.assertIsNone(info['check'])
         await self.run_pass(minutes=1)
         [launch] = self.host.calls_of(CallName.THREADS_LAUNCH)
         self.assertEqual(launch.params, {

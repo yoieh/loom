@@ -27,6 +27,7 @@ NEEDS_PROJECT = 'project_id is required outside a Loom thread'
 UNKNOWN_PROJECT = "cannot tell this thread's project; give project_id"
 MAY_HAVE_RUN = 'the call may have run, so check with threads or schedules before calling again'
 MAY_HAVE_EMITTED = 'the signal may have been written, and emitting it again writes a second one'
+NO_CHECK = 'an agent may not add a schedule with a check'
 
 CONCURRENCY_KEY = ('A key, such as pm:demo, that at most one thread holds at a time; the launch '
                    'waits while another thread holds it.')
@@ -199,6 +200,8 @@ class Tools:
         }
 
     def call(self, name: str, arguments: dict) -> object:
+        if name == 'schedule' and 'check' in arguments:
+            raise ToolError(NO_CHECK)
         values = check_arguments(BY_NAME[name], arguments)
         try:
             if self._client is None:

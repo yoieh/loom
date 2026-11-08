@@ -9,6 +9,7 @@ from loom_contracts.triggers import (
     HOPS_MAX, RATE_MAX, TRIGGER_EVENT_TYPES, ScheduleAction, TriggerType,
 )
 
+from .checks import Stopped, checked_text
 from .fill import fill
 from .host import Maker, ScheduleError, SchedulerHost
 from .table import (
@@ -208,7 +209,7 @@ class EventSource:
         if not self._active(watch):
             return
         text = fill(watch.row['text'], seen.id, seen.payload())
-        outcome, thread_id, failure = await self._fire(watch, seen, text)
+        outcome, thread_id, failure, text = await self._fire(watch, seen, text)
         self._record(watch, seen, self.clock(), outcome, hops, text=text, thread_id=thread_id,
                      failure=failure)
 
@@ -264,20 +265,22 @@ class EventSource:
         return watch.active
 
     async def _fire(self, watch: Watch, seen: Seen,
-                    text: str) -> tuple[str, str | None, str | None]:
+                    text: str) -> tuple[str, str | None, str | None, str]:
         schedule = watch.row
         maker = Maker(schedule['by'], bool(schedule['verified']), watch.id)
         action = ScheduleAction(schedule['action'])
         command_id = f'schedule:{watch.id}:event:{seen.id}'
         try:
             if action is ScheduleAction.NOTIFY:
-                return FIRED, None, None
+                return FIRED, None, None, text
             if action is ScheduleAction.POST:
                 await self.host.call(CallName.THREADS_SEND, {
                     'id': command_id, 'thread_id': schedule['thread_id'], 'message': text,
                     'mode': 'queue', 'cause': seen.id,
                 }, maker)
-                return FIRED, schedule['thread_id'], None
+                return FIRED, schedule['thread_id'], None, text
+            if schedule['check_argv'] is not None:
+                text = await checked_text(self.host, schedule, maker, text)
             params = {
                 'id': command_id, 'title': title(schedule['title'], text), 'message': text,
                 'project_id': schedule['project_id'], 'origin': f'schedule:{watch.id}',
@@ -285,9 +288,11 @@ class EventSource:
             }
             params.update(launch_options(schedule))
             thread = await self.host.call(CallName.THREADS_LAUNCH, params, maker)
-            return FIRED, thread['id'], None
+            return FIRED, thread['id'], None, text
+        except Stopped as stopped:
+            return stopped.outcome, None, stopped.reason, text
         except ScheduleError as error:
-            return FAILED, None, error.message[:MAX_REASON]
+            return FAILED, None, error.message[:MAX_REASON], text
 
     def _fired_data(self, watch: Watch, seen: Seen, action: str, text: str,
                     hops: int) -> dict[str, object]:

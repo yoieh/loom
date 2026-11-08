@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from datetime import tzinfo
 from enum import StrEnum
@@ -11,7 +12,10 @@ from .host import ScheduleError
 from .timing import check_trigger
 
 MAX_COMMAND_ID = 200
+MAX_CHECK_ARGS = 64
+MAX_CHECK_BYTES = 4_096
 LAUNCH_OPTIONS = ('concurrency_key', 'on_busy', 'settle', 'runner', 'model', 'workspace')
+LAUNCH_ONLY = (*LAUNCH_OPTIONS, 'check')
 SCHEDULE_STRATEGIES = (WorkspaceStrategy.ROOT, WorkspaceStrategy.WORKTREE)
 
 
@@ -30,6 +34,7 @@ class AddRequest:
     runner: RunnerName | None
     model: str | None
     workspace: dict | None
+    check: list[str] | None
 
 
 def _invalid(message: str) -> ScheduleError:
@@ -105,7 +110,7 @@ def _choice[E: StrEnum](params: dict, field: str, kind: type[E]) -> E:
 
 def _launch_options(params: dict,
                     action: ScheduleAction) -> tuple[str | None, OnBusy | None, Settle | None]:
-    given = [field for field in LAUNCH_OPTIONS if field in params]
+    given = [field for field in LAUNCH_ONLY if field in params]
     if given and action is not ScheduleAction.LAUNCH:
         raise _invalid(f'{given[0]} goes only with launch')
     key = None
@@ -151,6 +156,21 @@ def _workspace(params: dict) -> dict:
     return workspace
 
 
+def _check(params: dict) -> list[str] | None:
+    if 'check' not in params:
+        return None
+    value = _not_null(params, 'check')
+    if (not isinstance(value, list) or not 1 <= len(value) <= MAX_CHECK_ARGS
+            or not all(isinstance(item, str) and '\x00' not in item for item in value)
+            or not value[0]):
+        raise _invalid(f'check must be a list of 1 to {MAX_CHECK_ARGS} strings, the first not '
+                       'empty, with no NUL')
+    stored = json.dumps(value, separators=(',', ':'), ensure_ascii=False)
+    if len(stored.encode('utf-8', 'surrogatepass')) > MAX_CHECK_BYTES:
+        raise _invalid(f'check must be at most {MAX_CHECK_BYTES} bytes as JSON')
+    return value
+
+
 def _launch_target(params: dict) -> tuple[RunnerName | None, str | None, dict | None]:
     runner = _choice(params, 'runner', RunnerName) if 'runner' in params else None
     model = _text(_not_null(params, 'model'), 'model') if 'model' in params else None
@@ -171,6 +191,7 @@ def check_add(params: object, caller_thread: str | None, tz: tzinfo | None) -> A
         title = _text(_not_null(params, 'title'), 'title')
     key, on_busy, settle = _launch_options(params, action)
     runner, model, workspace = _launch_target(params)
+    check = _check(params)
     if action is ScheduleAction.LAUNCH:
         if thread_id is not None:
             raise _invalid('thread_id does not go with launch')
@@ -181,7 +202,7 @@ def check_add(params: object, caller_thread: str | None, tz: tzinfo | None) -> A
         if thread_id is None and action is ScheduleAction.POST:
             raise _invalid('thread_id is required to post from outside a thread')
     return AddRequest(command_id, trigger, text, action, thread_id, project_id, title, key,
-                      on_busy, settle, runner, model, workspace)
+                      on_busy, settle, runner, model, workspace, check)
 
 
 def check_list(params: object) -> tuple[str | None, str | None]:

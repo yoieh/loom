@@ -12,7 +12,7 @@ from pathlib import Path
 from loom_contracts.calls import CallName
 from loom_contracts.events import EventType
 
-from loom_scheduler import Maker, ScheduleError, Scheduler
+from loom_scheduler import CheckResult, Maker, ScheduleError, Scheduler
 from loom_scheduler.timing import iso
 
 START = datetime(2026, 10, 23, 7, 0, tzinfo=UTC)
@@ -63,6 +63,8 @@ class FakeHost:
     launched: int = 0
     clock: Callable[[], datetime] | None = None
     listeners: list[Callable[[], None]] = field(default_factory=list)
+    checks: list[CheckResult] = field(default_factory=list)
+    checked: list[tuple[list[str], str]] = field(default_factory=list)
     _receipts: dict[str, object] = field(default_factory=dict)
     _pending: list[Event] | None = None
     _cut: bool = False
@@ -108,8 +110,13 @@ class FakeHost:
         thread = self.threads.get(event.thread_id) if event.thread_id is not None else None
         return 0 if thread is None else thread['hops']
 
-    def add_project(self, project_id: str) -> None:
-        self.projects.append({'id': project_id, 'title': project_id})
+    def add_project(self, project_id: str, workspace_root: str | None = None) -> None:
+        self.projects.append({'id': project_id, 'title': project_id,
+                              'workspace_root': workspace_root or f'/projects/{project_id}'})
+
+    async def run_check(self, argv: list[str], cwd: str) -> CheckResult:
+        self.checked.append((argv, cwd))
+        return self.checks.pop(0) if self.checks else CheckResult(0, '', None)
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:

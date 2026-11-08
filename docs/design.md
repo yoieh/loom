@@ -38,7 +38,7 @@ through T3's own tools.
 - **Task**: a thread another thread started with `delegate`, whose result goes back to its
   parent.
 - **Schedule**: a stored trigger that posts into a thread, launches a new one, or only notifies
-  clients (§7).
+  clients (§7). A launch can first run a check, a command that says whether to launch (§7).
 - **Request**: something an agent waits on a person for, such as a permission prompt (§8).
 - **Client**: anything that calls the API: Thread Voice, the factory, the CLI, `loom-mcp`.
 
@@ -51,7 +51,7 @@ row lists. Python 3.12, stdlib only unless an issue names a dependency.
 |---|---|---|
 | `loom-contracts` | the `v1` calls, events, thread and run states, workspace strategies, schedule triggers (dataclasses and `TypedDict`s), and the `Runner` and `RunnerHost` protocols. No logic, no I/O | stdlib |
 | `loom-core` | the orchestrator: states, slots, queue, sleep, crashes, restart, delegation, projects, workspaces, the store and the API service layer (§4, §5, §8) | contracts |
-| `loom-scheduler` | a generic tick that sources register on, schedule math (next run, missed runs, overlap), the `schedules` table. It acts only through the service layer's calls, never by importing `loom-core` internals | contracts |
+| `loom-scheduler` | a generic tick that sources register on, schedule math (next run, missed runs, overlap), the `schedules` table. It acts only through the service layer's calls and its host's `run_check` (§7), never by importing `loom-core` internals | contracts |
 | `loom-runner-claude`, `loom-runner-codex`, `loom-runner-t3` | one runner each (§6) | contracts |
 | `loom-client` | the socket client, a stdlib-only Python API and the `loom` CLI (§8) | contracts |
 | `loom-mcp` | the stdio MCP server that gives agents Loom's tools (§9) | client |
@@ -405,6 +405,15 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   optional base), which it passes on to `threads.launch`, §15), or `notify` (only a
   `schedule.fired` event with the text and who set it; Thread Voice speaks it as that
   persona). The default is `post` into the thread that made it. A reminder is `notify`.
+- **Checks**: a `launch` can carry `check`, an argument list Loom runs before each run, so a
+  schedule pays for a model turn only when there is work. Only a person adds one (§11). It runs
+  in the project's root as it was when the schedule was added, with the agent environment's
+  allowlist plus `LOOM_SOCKET` and no `LOOM_THREAD`, stdin `/dev/null`, stderr dropped, a 60 s
+  timeout and at most 64 KiB of stdout; the timeout and the cap kill its process group. Exit 0
+  launches, with the `text` of a JSON object it printed as the first message, or else the
+  schedule's text; any exit above 0 is a `skipped_check` run; anything else fails the run. The
+  overlap rule and an event trigger's skips come first. Checks run one at a time. The process
+  runner is `loom-service`'s, behind the scheduler host's `run_check`.
 - **The loop.** A generic tick (T3's `Scheduler.ts`) that sources register on; the schedules
   source keeps a heap by next run and wakes at the first one due, but at least every 30 s, so
   a clock jump (WSL after sleep, a laptop lid) is noticed. The schedules are rows in a
@@ -475,8 +484,8 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
 - No depth or count limits: a task can delegate, and a thread can have any number of tasks.
   Every thread records where it came from, and Stop reaches all the way down (§4).
 - The tools act in registered projects only.
-- No tool adds a project, changes a project's mode or takes a permission mode. A thread a tool
-  starts gets its project's mode (§11).
+- No tool adds a project, changes a project's mode or takes a permission mode, and no tool adds a
+  schedule with a check (§11). A thread a tool starts gets its project's mode (§11).
 
 ## §10 Clients
 
@@ -512,6 +521,12 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
   binary and the OS error only, replaces the token with `[redacted]`, and cuts each such text to
   500 characters.
 - `interval` is at least 60 s, so a mistake can't start a thread every second.
+- A schedule's check (§7) runs only from a schedule a person added: `schedules.add` refuses one
+  from an agent or a caller Loom can't tell. It runs as an argument list, never a shell string,
+  in the project's root fixed when the schedule was added (a changed root fails the run), with
+  the allowlisted environment, a 60 s timeout and stdout capped at 64 KiB, and its stderr never
+  reaches a reason. It runs with no `LOOM_THREAD`, so its calls to Loom count as the person's;
+  so a check should run a program agents can't change.
 - Pairing with T3 (§6.1) makes Loom a full-access T3 client. Its token is the `t3-client`
   secret, sent only to the loopback origin it was paired with; a thread Loom starts in T3 gets
   its project's mode, never the ceiling; and the user can revoke it with `loom t3 unpair` or in

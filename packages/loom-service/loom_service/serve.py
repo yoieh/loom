@@ -78,7 +78,8 @@ async def start(socket: Path, data_dir: Path, config: Config, *,
                                 request_timeout=config.request_timeout)
     await orchestrator.recover()
     service = Service(store, projects, orchestrator)
-    scheduler = Scheduler(ServiceHost(store, service), clock=store.clock)
+    scheduler = Scheduler(ServiceHost(store, service, environment=host.check_environment()),
+                          clock=store.clock)
     try:
         scheduler.open()
     except sqlite3.Error as error:

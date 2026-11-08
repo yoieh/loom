@@ -266,6 +266,20 @@ class EachToolTest(ToolsCase):
                 self.assertTrue(properties[key]['description'].startswith(
                     'Only with action launch. '))
 
+    def test_schedule_refuses_a_check(self) -> None:
+        mcp = self.start_thread()
+        launch = {'trigger': EVENT_TRIGGER, 'text': 'Sweep', 'action': 'launch',
+                  'project_id': 'demo'}
+        self.loom.calls.clear()
+        self.loom.requests.clear()
+        for check in (['python3', 'c.py'], None):
+            with self.subTest(check=check):
+                self.assertEqual(mcp.tool('schedule', {**launch, 'check': check}),
+                                 ('an agent may not add a schedule with a check', True))
+        self.assertEqual(self.loom.calls, [])
+        self.assertEqual(self.loom.requests, [])
+        self.assertNotIn('check', BY_NAME['schedule'].listing()['inputSchema']['properties'])
+
     def test_schedules(self) -> None:
         mcp = self.start_thread()
         self.assertEqual(mcp.tool('schedules', {'thread_id': 't1'}),

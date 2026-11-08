@@ -55,7 +55,7 @@ PARAMS: dict[str, tuple[set[str], set[str]]] = {
     'schedules.add': (
         {'id', 'trigger', 'text'},
         {'action', 'thread_id', 'project_id', 'title', 'concurrency_key', 'on_busy', 'settle',
-         'runner', 'model', 'workspace'},
+         'runner', 'model', 'workspace', 'check'},
     ),
     'schedules.list': (set(), {'thread_id', 'project_id'}),
     'schedules.pause': ({'id', 'schedule_id'}, set()),
@@ -164,6 +164,7 @@ class CallParamsTest(unittest.TestCase):
             ('schedules.add', 'runner'): RunnerName,
             ('schedules.add', 'model'): str,
             ('schedules.add', 'workspace'): Workspace,
+            ('schedules.add', 'check'): list[str],
             ('schedules.list', 'project_id'): str,
             ('projects.add', 'permission_mode'): PermissionMode,
             ('projects.set_mode', 'permission_mode'): PermissionMode,
@@ -228,8 +229,8 @@ class RecordTest(unittest.TestCase):
             ScheduleInfo.__required_keys__,
             frozenset({
                 'id', 'trigger', 'action', 'text', 'thread_id', 'project_id', 'title',
-                'concurrency_key', 'on_busy', 'settle', 'runner', 'model', 'workspace', 'by',
-                'paused', 'next_run', 'created_at',
+                'concurrency_key', 'on_busy', 'settle', 'runner', 'model', 'workspace', 'check',
+                'by', 'paused', 'next_run', 'created_at',
             }),
         )
         self.assertEqual(ScheduleInfo.__optional_keys__, frozenset())
@@ -240,12 +241,13 @@ class RecordTest(unittest.TestCase):
         self.assertEqual(hints['runner'], RunnerName | None)
         self.assertEqual(hints['model'], str | None)
         self.assertEqual(hints['workspace'], Workspace | None)
+        self.assertEqual(hints['check'], list[str] | None)
 
     def test_schedule_info_has_the_launch_options_right_after_title(self) -> None:
         names = list(ScheduleInfo.__annotations__)
         at = names.index('title')
-        self.assertEqual(names[at + 1:at + 8], ['concurrency_key', 'on_busy', 'settle', 'runner',
-                                                'model', 'workspace', 'by'])
+        self.assertEqual(names[at + 1:at + 9], ['concurrency_key', 'on_busy', 'settle', 'runner',
+                                                'model', 'workspace', 'check', 'by'])
 
     def test_api_error_keys(self) -> None:
         self.assertEqual(ApiError.__required_keys__, frozenset({'code', 'message'}))

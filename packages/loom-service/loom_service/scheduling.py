@@ -5,13 +5,17 @@ from contextlib import AbstractContextManager
 from loom_core.errors import LoomError
 from loom_core.service import Caller, Method, Service
 from loom_core.store import Store
-from loom_scheduler import Maker, ScheduleError, Scheduler
+from loom_scheduler import CheckResult, Maker, ScheduleError, Scheduler
+
+from . import checks
 
 
 class ServiceHost:
-    def __init__(self, store: Store, service: Service) -> None:
+    def __init__(self, store: Store, service: Service, *,
+                 environment: Mapping[str, str]) -> None:
         self.store = store
         self.service = service
+        self.environment = dict(environment)
 
     def transaction(self) -> AbstractContextManager[sqlite3.Connection]:
         return self.store.transaction()
@@ -40,6 +44,9 @@ class ServiceHost:
 
     def last_event_id(self) -> int:
         return self.store.last_event_id()
+
+    async def run_check(self, argv: list[str], cwd: str) -> CheckResult:
+        return await checks.run_check(argv, cwd, dict(self.environment))
 
 
 def _served(method: Callable[[object, object], Awaitable[object]]) -> Method:
