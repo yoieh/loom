@@ -151,6 +151,9 @@ class SchedulesAddParams(TypedDict):
     concurrency_key: NotRequired[str]
     on_busy: NotRequired[OnBusy]
     settle: NotRequired[Settle]
+    runner: NotRequired[RunnerName]
+    model: NotRequired[str]
+    workspace: NotRequired[Workspace]
 
 
 class SchedulesListParams(TypedDict):
@@ -255,6 +258,9 @@ class ScheduleInfo(TypedDict):
     concurrency_key: str | None
     on_busy: OnBusy | None
     settle: Settle | None
+    runner: RunnerName | None
+    model: str | None
+    workspace: Workspace | None
     by: str | None
     paused: bool
     next_run: str | None

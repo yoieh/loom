@@ -305,6 +305,7 @@ def _schedule_add_args(command: argparse.ArgumentParser) -> None:
     command.add_argument('--thread', help='thread it posts into')
     command.add_argument('--project', help='project it launches in')
     command.add_argument('--title', help='its title, also of a thread it launches')
+    _add_workspace(command)
     _add_key(command)
     _add_id(command)
 
@@ -313,7 +314,8 @@ def _schedule_add(client: Client, args: argparse.Namespace) -> object:
     return client.schedules_add(
         args.trigger, _stdin_or(args.text), action=args.action, thread_id=args.thread,
         project_id=args.project, title=args.title, concurrency_key=args.concurrency_key,
-        on_busy=args.on_busy, settle=args.settle, id=args.id)
+        on_busy=args.on_busy, settle=args.settle, runner=args.runner, model=args.model,
+        workspace=args.workspace, id=args.id)
 
 
 def _schedule_list_args(command: argparse.ArgumentParser) -> None:

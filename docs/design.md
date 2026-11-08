@@ -400,8 +400,9 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   - `{"type":"event","topic":...}`: once for each matching event, with its loop guards (§15
     Event triggers). The first three are clock triggers.
 - **Actions**: `post` (into a thread, which wakes it), `launch` (a new thread with the prompt,
-  T3's `bindToCurrentThread: false`; it can carry a concurrency key with `on_busy`, and
-  `settle: "on_result"`, which it passes on to `threads.launch`, §15), or `notify` (only a
+  T3's `bindToCurrentThread: false`; it can carry a concurrency key with `on_busy`,
+  `settle: "on_result"`, a runner, a model and a workspace (`root`, or `worktree` with an
+  optional base), which it passes on to `threads.launch`, §15), or `notify` (only a
   `schedule.fired` event with the text and who set it; Thread Voice speaks it as that
   persona). The default is `post` into the thread that made it. A reminder is `notify`.
 - **The loop.** A generic tick (T3's `Scheduler.ts`) that sources register on; the schedules
@@ -469,7 +470,7 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
 | `thread_send {thread_id, message, mode?}` | a message into a thread | `t3_thread_send` |
 | `threads {project_id?}` | threads and their states | `t3_thread_list` |
 | `emit {topic, payload, project_id?, key?, cause?}` | a signal (§15) | none |
-| `schedule {trigger, text, action?, thread_id?, project_id?, title?, concurrency_key?, on_busy?, settle?}`, `schedules {}`, `unschedule {id}` | §7: a clock or an event trigger (§7, §15); `concurrency_key`, `on_busy` and `settle` go with a launch | `schedule_task` and friends |
+| `schedule {trigger, text, action?, thread_id?, project_id?, title?, concurrency_key?, on_busy?, settle?, runner?, model?, workspace?}`, `schedules {}`, `unschedule {id}` | §7: a clock or an event trigger (§7, §15); `concurrency_key`, `on_busy`, `settle`, `runner`, `model` and `workspace` go with a launch | `schedule_task` and friends |
 
 - No depth or count limits: a task can delegate, and a thread can have any number of tasks.
   Every thread records where it came from, and Stop reaches all the way down (§4).

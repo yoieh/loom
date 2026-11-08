@@ -185,6 +185,21 @@ class FireTest(EventCase):
         self.assertEqual(self.event_runs(info['id']),
                          [('fired', event_id, self.at(event_id), 'launched-1', None)])
 
+    async def test_launch_sends_its_runner_model_and_workspace(self) -> None:
+        info = await self.on('demo.done', action='launch', thread_id=..., project_id='p1',
+                             runner='t3', model='sonnet',
+                             workspace={'strategy': 'worktree', 'base': 'main'})
+        event_id = self.host.signal('demo.done')
+        await self.read_events()
+        [launch] = self.host.calls_of(CallName.THREADS_LAUNCH)
+        self.assertEqual(launch.params, {
+            'id': f'schedule:{info["id"]}:event:{event_id}', 'title': 'check the build',
+            'message': 'check the build', 'project_id': 'p1',
+            'origin': f'schedule:{info["id"]}', 'cause': event_id,
+            'runner': 't3', 'model': 'sonnet',
+            'workspace': {'strategy': 'worktree', 'base': 'main'},
+        })
+
     async def test_launch_takes_the_schedules_title(self) -> None:
         await self.on('demo.done', action='launch', thread_id=..., project_id='p1',
                       title='Review', text='{{payload.to}}')

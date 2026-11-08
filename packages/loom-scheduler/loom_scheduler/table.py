@@ -1,5 +1,8 @@
+import json
 import sqlite3
 from datetime import timedelta
+
+from .params import LAUNCH_OPTIONS
 
 MAX_REASON = 500
 MAX_TITLE = 80
@@ -22,6 +25,9 @@ SCHEMA: list[str] = [
         concurrency_key TEXT,
         on_busy TEXT,
         settle TEXT,
+        runner TEXT,
+        model TEXT,
+        workspace TEXT,
         by TEXT,
         verified INTEGER NOT NULL,
         paused INTEGER NOT NULL DEFAULT 0,
@@ -47,12 +53,15 @@ ADDED_COLUMNS = (
     ('schedules', 'on_busy TEXT'),
     ('schedules', 'settle TEXT'),
     ('schedules', 'event_after INTEGER'),
+    ('schedules', 'runner TEXT'),
+    ('schedules', 'model TEXT'),
+    ('schedules', 'workspace TEXT'),
     ('schedule_runs', 'event_id INTEGER'),
 )
 
 COLUMNS = ('id', 'trigger', 'action', 'text', 'thread_id', 'project_id', 'title',
-           'concurrency_key', 'on_busy', 'settle', 'by', 'verified', 'paused', 'next_run',
-           'created_at', 'event_after')
+           'concurrency_key', 'on_busy', 'settle', 'runner', 'model', 'workspace', 'by',
+           'verified', 'paused', 'next_run', 'created_at', 'event_after')
 SELECT = f'SELECT {", ".join(COLUMNS)} FROM schedules'
 
 
@@ -71,6 +80,17 @@ def create(tx: sqlite3.Connection) -> None:
 
 def to_row(found: tuple | None) -> dict | None:
     return None if found is None else dict(zip(COLUMNS, found))
+
+
+def workspace(row: dict) -> dict | None:
+    return None if row['workspace'] is None else json.loads(row['workspace'])
+
+
+def launch_options(row: dict) -> dict:
+    options = {field: row[field] for field in LAUNCH_OPTIONS if row[field] is not None}
+    if 'workspace' in options:
+        options['workspace'] = workspace(row)
+    return options
 
 
 def title(given: str | None, text: str) -> str:

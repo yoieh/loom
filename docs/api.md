@@ -384,6 +384,9 @@ Most calls answer with a thread, a project or a schedule.
 | `concurrency_key` | string or null | The key a `launch` passes to `threads.launch` (see Concurrency keys under [`threads.launch`](#threadslaunch)), or null for none. |
 | `on_busy` | string or null | `queue` or `coalesce` for a schedule with a key (`queue` when none was given); null when it has no key. |
 | `settle` | string or null | `on_result` when each thread it launches settles after its first result, or null. |
+| `runner` | string or null | `claude`, `codex` or `t3`, the runner a `launch` passes to `threads.launch`; null when none was given. |
+| `model` | string or null | The model a `launch` passes to `threads.launch`; null when none was given. |
+| `workspace` | object or null | `{"strategy": "root"}` or `{"strategy": "worktree"}`, with `base` when one was given, the workspace a `launch` passes to `threads.launch`; null when none was given. |
 | `by` | string or null | The agent thread that made it; null when a person did (see [Calls a schedule makes](#calls-a-schedule-makes)). |
 | `paused` | bool | `true` once `schedules.pause` stopped it. |
 | `next_run` | string or null | When it is next due, ISO 8601, UTC. null when it is paused, once an `at` has had its one run, and always for an `event` trigger. |
@@ -1173,13 +1176,16 @@ theirs.
   must give `thread_id`.
 - `launch`: starts a new thread in `project_id` with `threads.launch`. The text is its first
   message. Its title is the schedule's `title`, or else the text's first non-empty line, cut at
-  80 characters. Its `origin` is `schedule:<schedule id>`. It gets the default workspace (a new
-  worktree) and the project's mode. `launch` needs `project_id` and takes no `thread_id`. A
-  schedule with `concurrency_key`, `on_busy` or `settle` passes them to `threads.launch`, so its
-  thread waits for, or joins, the thread working on the key and can settle after its first
-  result (see Concurrency keys and Settle on result under [`threads.launch`](#threadslaunch)).
-  Without them it launches as before. The Overlap rule below still applies: while the thread
-  the last run launched, or joined, waits `queued` on its key, the next run is skipped.
+  80 characters. Its `origin` is `schedule:<schedule id>`. The thread runs with the schedule's
+  `workspace`, `runner` and `model` when they are given; without them it gets a new worktree,
+  `claude` and the agent's own model. It always gets the project's mode, which none of the three
+  changes. `launch` needs `project_id` and takes no `thread_id`. A schedule with
+  `concurrency_key`, `on_busy`, `settle`, `runner`, `model` or `workspace` passes them to
+  `threads.launch`: with a key its thread waits for, or joins, the thread working on the key,
+  and with `settle` it can settle after its first result (see Concurrency keys and Settle on
+  result under [`threads.launch`](#threadslaunch)). Without them it launches as before. The
+  Overlap rule below still applies: while the thread the last run launched, or joined, waits
+  `queued` on its key, the next run is skipped.
 - `notify`: makes no call. The run only sends a [`schedule.fired`](#schedulefired) event, for a
   client such as Thread Voice to speak. Its thread is `thread_id`, or the caller's own, or none.
 
@@ -1301,6 +1307,9 @@ Adds a schedule (§7). See [How schedules run](#how-schedules-run) for the trigg
 | `concurrency_key` | string | Only with `launch`. 1 to 200 characters; each run passes it to `threads.launch`. Default: no key. |
 | `on_busy` | string | Only with `launch` and `concurrency_key`: `"queue"` (default) or `"coalesce"`, passed to `threads.launch`. |
 | `settle` | string | Only with `launch`: `"on_result"`, passed to `threads.launch`. Default: each thread goes `idle` after its result. |
+| `runner` | string | Only with `launch`: `"claude"`, `"codex"` or `"t3"`, passed to `threads.launch`. Default: `claude`. |
+| `model` | string | Only with `launch`. Not empty; passed to `threads.launch`. Default: the agent's own model. |
+| `workspace` | object | Only with `launch`: `{"strategy": "root"}`, the project's main checkout, or `{"strategy": "worktree", "base": "..."}`, a new worktree on a new branch for each run, with an optional `base` (see [Workspaces](#workspaces)); passed to `threads.launch`. `branch` is refused, because a fixed branch exists after the first run and every later run would fail; so are `path` and `existing_worktree`. Default: a new worktree. |
 
 A param given as null is refused. The thread and the project must exist when the schedule is
 added.
@@ -1344,12 +1353,19 @@ fields.
 | A `post` from a person without `thread_id` | `invalid` | `thread_id is required to post from outside a thread` |
 | A `launch` with `thread_id` | `invalid` | `thread_id does not go with launch` |
 | A `launch` without `project_id` | `invalid` | `project_id is required to launch` |
-| `concurrency_key`, `on_busy` or `settle` without `action: "launch"` | `invalid` | `<field> goes only with launch`, naming the first of the three given |
-| `concurrency_key`, `on_busy` or `settle` is null | `invalid` | `<field> must not be null` |
+| `concurrency_key`, `on_busy`, `settle`, `runner`, `model` or `workspace` without `action: "launch"` | `invalid` | `<field> goes only with launch`, naming the first given in that order |
+| `concurrency_key`, `on_busy`, `settle`, `runner`, `model` or `workspace` is null | `invalid` | `<field> must not be null` |
 | A non-string, empty or longer `concurrency_key` | `invalid` | `concurrency_key must be a string of 1 to 200 characters` |
 | A bad `on_busy` | `invalid` | `on_busy must be one of queue, coalesce` |
 | `on_busy` without `concurrency_key` | `invalid` | `on_busy needs concurrency_key` |
 | A bad `settle` | `invalid` | `settle must be one of on_result` |
+| A bad `runner` | `invalid` | `runner must be one of claude, codex, t3` |
+| An empty or non-string `model` | `invalid` | `model must be a non-empty string` |
+| `workspace` is not an object | `invalid` | `workspace must be an object` |
+| No `workspace.strategy`, or one that is not `root` or `worktree`, `existing_worktree` included | `invalid` | `workspace.strategy must be one of root, worktree` |
+| Another key in `workspace`, such as `branch` or `path` | `invalid` | `workspace.<key> does not go with a schedule`, naming the first such key |
+| `workspace.base` with strategy `root` | `invalid` | `workspace.base goes only with strategy worktree` |
+| An empty `workspace.base`, one that is not a string, starts with `-` or holds a NUL character | `invalid` | `workspace.base must be a non-empty string that does not start with - and has no NUL` |
 | `project_id` is not the thread's | `invalid` | `project_id is not the thread's project` |
 | The thread does not exist | `not_found` | `no thread with id '<thread_id>'` |
 | The project, or the trigger's `project_id`, does not exist | `not_found` | `no project with id '<project_id>'` |
@@ -1357,7 +1373,7 @@ fields.
 
 ```json
 {"v": "v1", "call": "schedules.add", "params": {"id": "c3", "trigger": {"type": "interval", "everyMs": 3600000}, "text": "Run the tests and report what fails.", "thread_id": "8a63…"}}
-{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"concurrency_key":null,"on_busy":null,"settle":null,"by":null,"paused":false,"next_run":"2026-10-24T23:31:13.320+00:00","created_at":"2026-10-24T22:31:13.320+00:00"}}
+{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"concurrency_key":null,"on_busy":null,"settle":null,"runner":null,"model":null,"workspace":null,"by":null,"paused":false,"next_run":"2026-10-24T23:31:13.320+00:00","created_at":"2026-10-24T22:31:13.320+00:00"}}
 ```
 
 Added just after midnight on Sunday in Stockholm, a weekday stand-up at 9:00 is next due on
@@ -1365,7 +1381,7 @@ Monday at 08:00 UTC, because the clocks go back an hour that night:
 
 ```json
 {"v": "v1", "call": "schedules.add", "params": {"id": "c4", "trigger": {"type": "fixed_time", "timeOfDay": "9:00", "weekdays": [1, 2, 3, 4, 5]}, "text": "Write the stand-up notes.", "action": "launch", "project_id": "demo-repo", "title": "Stand-up notes"}}
-{"ok":true,"result":{"id":"0a5f…","trigger":{"type":"fixed_time","timeOfDay":"9:00","weekdays":[1,2,3,4,5]},"action":"launch","text":"Write the stand-up notes.","thread_id":null,"project_id":"demo-repo","title":"Stand-up notes","concurrency_key":null,"on_busy":null,"settle":null,"by":null,"paused":false,"next_run":"2026-10-26T08:00:00.000+00:00","created_at":"2026-10-24T22:31:13.342+00:00"}}
+{"ok":true,"result":{"id":"0a5f…","trigger":{"type":"fixed_time","timeOfDay":"9:00","weekdays":[1,2,3,4,5]},"action":"launch","text":"Write the stand-up notes.","thread_id":null,"project_id":"demo-repo","title":"Stand-up notes","concurrency_key":null,"on_busy":null,"settle":null,"runner":null,"model":null,"workspace":null,"by":null,"paused":false,"next_run":"2026-10-26T08:00:00.000+00:00","created_at":"2026-10-24T22:31:13.342+00:00"}}
 ```
 
 ```json
@@ -1378,11 +1394,21 @@ In another run with a project `demo`, a schedule that launches a thread for each
 
 ```json
 {"v": "v1", "call": "schedules.add", "params": {"id": "c5", "trigger": {"type": "event", "topic": "factory.run.status", "project_id": "demo", "match": {"to": "done"}}, "text": "Land run {{payload.run}}: it is {{payload.to}} (event {{event.id}}).", "action": "launch", "project_id": "demo", "settle": "on_result"}}
-{"ok":true,"result":{"id":"4ec6…","trigger":{"type":"event","topic":"factory.run.status","project_id":"demo","match":{"to":"done"}},"action":"launch","text":"Land run {{payload.run}}: it is {{payload.to}} (event {{event.id}}).","thread_id":null,"project_id":"demo","title":null,"concurrency_key":null,"on_busy":null,"settle":"on_result","by":null,"paused":false,"next_run":null,"created_at":"2026-10-25T05:07:40.889+00:00"}}
+{"ok":true,"result":{"id":"4ec6…","trigger":{"type":"event","topic":"factory.run.status","project_id":"demo","match":{"to":"done"}},"action":"launch","text":"Land run {{payload.run}}: it is {{payload.to}} (event {{event.id}}).","thread_id":null,"project_id":"demo","title":null,"concurrency_key":null,"on_busy":null,"settle":"on_result","runner":null,"model":null,"workspace":null,"by":null,"paused":false,"next_run":null,"created_at":"2026-10-25T05:07:40.889+00:00"}}
 {"v": "v1", "call": "schedules.add", "params": {"id": "c6", "trigger": {"type": "event", "topic": "turn.text"}, "text": "x", "action": "notify"}}
 {"ok":false,"error":{"code":"invalid","message":"trigger.topic must be a signal topic or one of thread.settled, thread.failed, request.opened, schedule.fired"}}
 {"v": "v1", "call": "schedules.add", "params": {"id": "c6", "trigger": {"type": "event", "topic": "demo.done", "hops_max": 9}, "text": "x", "action": "notify"}}
 {"ok":false,"error":{"code":"invalid","message":"trigger.hops_max must be an integer from 1 to 8"}}
+```
+
+A launch every hour that runs a `t3` thread on `sonnet` in `demo`'s main checkout, and one
+refused because it names a branch:
+
+```json
+{"v": "v1", "call": "schedules.add", "params": {"id": "c7", "trigger": {"type": "interval", "everyMs": 3600000}, "text": "Sweep the queue.", "action": "launch", "project_id": "demo", "runner": "t3", "model": "sonnet", "workspace": {"strategy": "root"}}}
+{"ok":true,"result":{"id":"23aa…","trigger":{"type":"interval","everyMs":3600000},"action":"launch","text":"Sweep the queue.","thread_id":null,"project_id":"demo","title":null,"concurrency_key":null,"on_busy":null,"settle":null,"runner":"t3","model":"sonnet","workspace":{"strategy":"root"},"by":null,"paused":false,"next_run":"2026-11-08T02:41:45.646+00:00","created_at":"2026-11-08T01:41:45.646+00:00"}}
+{"v": "v1", "call": "schedules.add", "params": {"id": "c8", "trigger": {"type": "interval", "everyMs": 3600000}, "text": "x", "action": "launch", "project_id": "demo", "workspace": {"strategy": "worktree", "branch": "sweep"}}}
+{"ok":false,"error":{"code":"invalid","message":"workspace.branch does not go with a schedule"}}
 ```
 
 ### `schedules.list`
@@ -1402,7 +1428,7 @@ until they are removed.
 
 ```json
 {"v": "v1", "call": "schedules.list", "params": {"project_id": "demo"}}
-{"ok":true,"result":[{"id":"403b…","trigger":{"type":"fixed_time","timeOfDay":"9:00","weekdays":[1,2,3,4,5]},"action":"launch","text":"Write the stand-up notes.","thread_id":null,"project_id":"demo","title":"Stand-up notes","concurrency_key":null,"on_busy":null,"settle":null,"by":null,"paused":false,"next_run":"2026-10-26T08:00:00.000+00:00","created_at":"2026-10-24T22:33:10.399+00:00"}]}
+{"ok":true,"result":[{"id":"403b…","trigger":{"type":"fixed_time","timeOfDay":"9:00","weekdays":[1,2,3,4,5]},"action":"launch","text":"Write the stand-up notes.","thread_id":null,"project_id":"demo","title":"Stand-up notes","concurrency_key":null,"on_busy":null,"settle":null,"runner":null,"model":null,"workspace":null,"by":null,"paused":false,"next_run":"2026-10-26T08:00:00.000+00:00","created_at":"2026-10-24T22:33:10.399+00:00"}]}
 ```
 
 ### `schedules.pause`
@@ -1422,7 +1448,7 @@ missing (`schedule_id is required`) or not a string (`schedule_id must be a stri
 
 ```json
 {"v": "v1", "call": "schedules.pause", "params": {"id": "c8", "schedule_id": "2cbf…"}}
-{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"concurrency_key":null,"on_busy":null,"settle":null,"by":null,"paused":true,"next_run":null,"created_at":"2026-10-24T22:31:13.320+00:00"}}
+{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"concurrency_key":null,"on_busy":null,"settle":null,"runner":null,"model":null,"workspace":null,"by":null,"paused":true,"next_run":null,"created_at":"2026-10-24T22:31:13.320+00:00"}}
 ```
 
 ### `schedules.remove`
@@ -1441,7 +1467,7 @@ missing (`schedule_id is required`) or not a string (`schedule_id must be a stri
 
 ```json
 {"v": "v1", "call": "schedules.remove", "params": {"id": "c9", "schedule_id": "2cbf…"}}
-{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"concurrency_key":null,"on_busy":null,"settle":null,"by":null,"paused":true,"next_run":null,"created_at":"2026-10-24T22:31:13.320+00:00"}}
+{"ok":true,"result":{"id":"2cbf…","trigger":{"type":"interval","everyMs":3600000},"action":"post","text":"Run the tests and report what fails.","thread_id":"8a63…","project_id":"demo-repo","title":null,"concurrency_key":null,"on_busy":null,"settle":null,"runner":null,"model":null,"workspace":null,"by":null,"paused":true,"next_run":null,"created_at":"2026-10-24T22:31:13.320+00:00"}}
 ```
 
 ```json
@@ -1985,7 +2011,7 @@ They go before the command.
 | `loom projects set-mode <project_id> <mode> [--id ID]` | `projects.set_mode` |
 | `loom projects remove <project_id> [--id ID]` | `projects.remove` |
 | `loom projects list` | `projects.list` |
-| `loom schedules add <text> (--at DATETIME \| --every SECONDS \| --time H:MM [--weekdays LIST] \| --event TOPIC [--event-project P] [--match JSON]) [--action post\|launch\|notify] [--thread T] [--project P] [--title T] [--concurrency-key K] [--on-busy queue\|coalesce] [--settle on_result] [--id ID]` | `schedules.add` |
+| `loom schedules add <text> (--at DATETIME \| --every SECONDS \| --time H:MM [--weekdays LIST] \| --event TOPIC [--event-project P] [--match JSON]) [--action post\|launch\|notify] [--thread T] [--project P] [--title T] [--workspace root\|worktree [--base B]] [--runner R] [--model M] [--concurrency-key K] [--on-busy queue\|coalesce] [--settle on_result] [--id ID]` | `schedules.add` |
 | `loom schedules list [--thread T] [--project P]` | `schedules.list` |
 | `loom schedules pause <schedule_id> [--id ID]` | `schedules.pause` |
 | `loom schedules remove <schedule_id> [--id ID]` | `schedules.remove` |
@@ -2036,7 +2062,9 @@ They go before the command.
   usage error. The server checks the rest, such as `--on-busy` without `--concurrency-key` or
   the three on a schedule that does not launch, and answers `invalid`, exit 1 (see Concurrency
   keys and Settle on result under [`threads.launch`](#threadslaunch), and
-  [`schedules.add`](#schedulesadd)).
+  [`schedules.add`](#schedulesadd)). `schedules add` takes `--workspace`, `--base`, `--runner`
+  and `--model` as `threads launch` does, and the server refuses `--branch`, `--path` and
+  `existing_worktree` on a schedule.
 - `--cause EVENT_ID` on `threads launch`, `threads send` and `signals emit` sends `cause` as an
   integer; without it no `cause` is sent. Text that is not an integer is a usage error; the
   server checks the rest (see [Cause chains](#cause-chains)).
@@ -2548,7 +2576,7 @@ objects, and `cause`, which is an integer.
 | `thread_send` | `thread_id`, `message`, `mode?` | [`threads.send`](#threadssend) | the thread |
 | `threads` | `project_id?` | [`threads.list`](#threadslist) | the list of threads |
 | `emit` | `topic`, `payload`, `project_id?`, `key?`, `cause?` | [`signals.emit`](#signalsemit) | the `signal` event |
-| `schedule` | `trigger`, `text`, `action?`, `thread_id?`, `project_id?`, `title?`, `concurrency_key?`, `on_busy?`, `settle?` | [`schedules.add`](#schedulesadd) | the new schedule |
+| `schedule` | `trigger`, `text`, `action?`, `thread_id?`, `project_id?`, `title?`, `concurrency_key?`, `on_busy?`, `settle?`, `workspace?`, `runner?`, `model?` | [`schedules.add`](#schedulesadd) | the new schedule |
 | `schedules` | none | [`schedules.list`](#scheduleslist) | the list of schedules |
 | `unschedule` | `id` | [`schedules.remove`](#schedulesremove) with `schedule_id` the `id` | the removed schedule |
 
@@ -2562,9 +2590,9 @@ objects, and `cause`, which is an integer.
   `LOOM_THREAD` as the signal's `by`, and a signal from an outside thread counts as a person's
   (see [`signals.emit`](#signalsemit) and [Callers](#callers)).
 - `schedule`'s `trigger` is any trigger `schedules.add` takes, an event trigger included (see
-  [How schedules run](#how-schedules-run)). `concurrency_key`, `on_busy` and `settle` go only
-  with a `launch`; the tool passes them on as given, and the server refuses them with another
-  action.
+  [How schedules run](#how-schedules-run)). `concurrency_key`, `on_busy`, `settle`,
+  `workspace`, `runner` and `model` go only with a `launch`; the tool passes them on as given,
+  and the server refuses them with another action.
 - No tool adds a project, changes a project's mode or removes a project, and no tool takes a
   permission mode, `requests` or a command id. A thread a tool starts gets its project's mode
   (§11), and the server tells an agent's calls apart as under
@@ -2683,7 +2711,7 @@ not_found no thread with id 'nope'
   - `projects_add(title, path, *, permission_mode=None, id=None)`
   - `projects_set_mode(project_id, permission_mode, *, id=None)`
   - `projects_remove(project_id, *, id=None)`, `projects_list()`
-  - `schedules_add(trigger, text, *, action=None, thread_id=None, project_id=None, title=None, concurrency_key=None, on_busy=None, settle=None, id=None)`
+  - `schedules_add(trigger, text, *, action=None, thread_id=None, project_id=None, title=None, concurrency_key=None, on_busy=None, settle=None, runner=None, model=None, workspace=None, id=None)`
   - `schedules_list(thread_id=None, project_id=None)`
   - `schedules_pause(schedule_id, *, id=None)`, `schedules_remove(schedule_id, *, id=None)`
   - `requests_respond(request_id, decision, *, message=None, id=None)`

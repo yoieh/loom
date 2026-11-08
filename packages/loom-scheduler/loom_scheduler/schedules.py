@@ -15,10 +15,10 @@ from loom_contracts.triggers import ScheduleAction, TriggerType
 from . import timing
 from .events import EventSource
 from .host import Maker, ScheduleError, SchedulerHost
-from .params import LAUNCH_OPTIONS, AddRequest, check_add, check_list, check_target
+from .params import AddRequest, check_add, check_list, check_target
 from .table import (
     COLUMNS, FAILED, FIRED, MAX_REASON, RETRY_AFTER, SELECT, SKIPPED_BUSY, SKIPPED_LATE, create,
-    title, to_row,
+    launch_options, title, to_row, workspace,
 )
 from .tick import Tick
 from .timing import iso, parse_iso
@@ -46,6 +46,9 @@ def _info(row: dict) -> ScheduleInfo:
         'concurrency_key': row['concurrency_key'],
         'on_busy': row['on_busy'],
         'settle': row['settle'],
+        'runner': row['runner'],
+        'model': row['model'],
+        'workspace': workspace(row),
         'by': row['by'],
         'paused': bool(row['paused']),
         'next_run': row['next_run'],
@@ -148,6 +151,8 @@ class Scheduler:
         now = self.clock()
         first = timing.first_run(request.trigger, now, self.tz)
         on_events = request.trigger['type'] == TriggerType.EVENT
+        stored = (None if request.workspace is None
+                  else json.dumps(request.workspace, separators=(',', ':')))
 
         def change(tx: sqlite3.Connection) -> ScheduleInfo:
             schedule_id = str(uuid.uuid4())
@@ -157,7 +162,8 @@ class Scheduler:
                 f'VALUES ({", ".join("?" for _ in COLUMNS)})',
                 (schedule_id, json.dumps(request.trigger), request.action.value, request.text,
                  request.thread_id, project_id, request.title, request.concurrency_key,
-                 request.on_busy, request.settle, by, int(verified), 0,
+                 request.on_busy, request.settle, request.runner, request.model, stored, by,
+                 int(verified), 0,
                  None if first is None else iso(first), iso(now), event_after),
             )
             return _info(_fetch(tx, schedule_id))
@@ -269,8 +275,7 @@ class Scheduler:
                 'id': command_id, 'title': title(row['title'], row['text']), 'message': message,
                 'project_id': row['project_id'], 'origin': f'schedule:{row["id"]}',
             }
-            params.update((field, row[field]) for field in LAUNCH_OPTIONS
-                          if row[field] is not None)
+            params.update(launch_options(row))
             thread = await self.host.call(CallName.THREADS_LAUNCH, params, maker)
             return FIRED, thread['id'], None
         except ScheduleError as error:

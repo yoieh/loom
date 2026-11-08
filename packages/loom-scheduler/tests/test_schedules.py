@@ -10,6 +10,10 @@ ID_MESSAGE = 'id must be a string of 1 to 200 characters'
 BAD_IDS = ({}, {'id': None}, {'id': 7}, {'id': 'x' * 201})
 KEY_MESSAGE = 'concurrency_key must be a string of 1 to 200 characters'
 LAUNCH = {'action': 'launch', 'thread_id': ..., 'project_id': 'p1'}
+TARGET = {'runner': 't3', 'model': 'sonnet', 'workspace': {'strategy': 'root'}}
+BASE_MESSAGE = ('workspace.base must be a non-empty string that does not start with - and has '
+                'no NUL')
+STRATEGY_MESSAGE = 'workspace.strategy must be one of root, worktree'
 OLD_SCHEDULES = '''CREATE TABLE schedules (
     id TEXT PRIMARY KEY,
     trigger TEXT NOT NULL,
@@ -142,6 +146,30 @@ class AddRefusalTest(SchedulerCase):
             ({'settle': 1}, 'settle must be one of on_result'),
         ]])
 
+    async def test_runner_model_and_workspace_are_checked(self) -> None:
+        await self.assert_refused([({**LAUNCH, **fields}, message) for fields, message in [
+            ({'runner': None}, 'runner must not be null'),
+            ({'model': None}, 'model must not be null'),
+            ({'workspace': None}, 'workspace must not be null'),
+            ({'runner': 'gpt'}, 'runner must be one of claude, codex, t3'),
+            ({'model': ''}, 'model must be a non-empty string'),
+            ({'workspace': 'root'}, 'workspace must be an object'),
+            ({'workspace': {'strategy': 'branch'}}, STRATEGY_MESSAGE),
+            ({'workspace': {}}, STRATEGY_MESSAGE),
+            ({'workspace': {'strategy': 1}}, STRATEGY_MESSAGE),
+            ({'workspace': {'strategy': 'existing_worktree', 'path': '/w', 'branch': 'b'}},
+             STRATEGY_MESSAGE),
+            ({'workspace': {'strategy': 'worktree', 'branch': 'b'}},
+             'workspace.branch does not go with a schedule'),
+            ({'workspace': {'strategy': 'root', 'path': '/w', 'branch': 'b'}},
+             'workspace.path does not go with a schedule'),
+            ({'workspace': {'strategy': 'root', 'base': 'main'}},
+             'workspace.base goes only with strategy worktree'),
+            ({'workspace': {'strategy': 'worktree', 'base': ''}}, BASE_MESSAGE),
+            ({'workspace': {'strategy': 'worktree', 'base': '-main'}}, BASE_MESSAGE),
+            ({'workspace': {'strategy': 'worktree', 'base': 'ma\x00in'}}, BASE_MESSAGE),
+        ]])
+
     async def test_launch_options_go_only_with_launch(self) -> None:
         actions = [{'action': ...}, {'action': 'post'},
                    {'action': 'notify', 'thread_id': ...}]
@@ -153,6 +181,12 @@ class AddRefusalTest(SchedulerCase):
             ({'concurrency_key': 'k', 'on_busy': 'coalesce', 'settle': 'on_result'},
              'concurrency_key'),
             ({'settle': 'on_result', 'on_busy': 'queue'}, 'on_busy'),
+            ({'runner': 't3'}, 'runner'),
+            ({'model': 'sonnet'}, 'model'),
+            ({'workspace': {'strategy': 'root'}}, 'workspace'),
+            ({'workspace': None}, 'workspace'),
+            ({'workspace': {'strategy': 'root'}, 'model': 'sonnet', 'runner': 't3'}, 'runner'),
+            ({'workspace': {'strategy': 'root'}, 'settle': 'on_result'}, 'settle'),
         ]
         await self.assert_refused([
             ({**action, **fields}, f'{field} goes only with launch')
@@ -220,6 +254,37 @@ class AddTest(SchedulerCase):
                 info = await self.add(f'b{number}', **fields)
                 self.assertEqual((info['concurrency_key'], info['on_busy'], info['settle']),
                                  (None, None, None))
+
+    async def test_launch_shows_its_runner_model_and_workspace(self) -> None:
+        info = await self.add(**LAUNCH, **TARGET)
+        self.assertEqual((info['runner'], info['model'], info['workspace']),
+                         ('t3', 'sonnet', {'strategy': 'root'}))
+        self.assertEqual(await self.call('schedules.list', {}), [info])
+        self.assertEqual(self.host.rows('SELECT workspace FROM schedules'),
+                         [('{"strategy":"root"}',)])
+
+    async def test_a_worktree_keeps_only_its_strategy_and_base(self) -> None:
+        based = await self.add('a1', **LAUNCH,
+                               workspace={'strategy': 'worktree', 'base': 'main'})
+        self.assertEqual(based['workspace'], {'strategy': 'worktree', 'base': 'main'})
+        plain = await self.add('a2', **LAUNCH, workspace={'strategy': 'worktree'})
+        self.assertEqual(plain['workspace'], {'strategy': 'worktree'})
+
+    async def test_without_them_runner_model_and_workspace_are_null(self) -> None:
+        for number, fields in enumerate([LAUNCH, {}, {'action': 'notify'}]):
+            with self.subTest(fields=fields):
+                info = await self.add(f'b{number}', **fields)
+                self.assertEqual((info['runner'], info['model'], info['workspace']),
+                                 (None, None, None))
+
+    async def test_a_reopened_scheduler_keeps_and_sends_them(self) -> None:
+        info = await self.add(**LAUNCH, **TARGET)
+        self.scheduler = self.new_scheduler()
+        self.assertEqual(await self.call('schedules.list', {}), [info])
+        await self.run_pass(minutes=1)
+        [launch] = self.host.calls_of(CallName.THREADS_LAUNCH)
+        self.assertEqual((launch.params['runner'], launch.params['model'],
+                          launch.params['workspace']), ('t3', 'sonnet', {'strategy': 'root'}))
 
     async def test_a_key_of_two_hundred_characters_is_taken(self) -> None:
         info = await self.add(**LAUNCH, concurrency_key='k' * 200)
@@ -399,10 +464,12 @@ class OldStoreTest(SchedulerCase):
         self.scheduler = self.new_scheduler()
         self.scheduler = self.new_scheduler()
         columns = [row[1] for row in self.host.rows('PRAGMA table_info(schedules)')]
-        self.assertEqual(columns[-4:], ['concurrency_key', 'on_busy', 'settle', 'event_after'])
+        self.assertEqual(columns[-7:], ['concurrency_key', 'on_busy', 'settle', 'event_after',
+                                        'runner', 'model', 'workspace'])
         [info] = await self.call('schedules.list', {})
         self.assertEqual((info['id'], info['concurrency_key'], info['on_busy'], info['settle']),
                          ('s-old', None, None, None))
+        self.assertEqual((info['runner'], info['model'], info['workspace']), (None, None, None))
         await self.run_pass(minutes=1)
         [launch] = self.host.calls_of(CallName.THREADS_LAUNCH)
         self.assertEqual(launch.params, {

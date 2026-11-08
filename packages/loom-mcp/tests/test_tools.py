@@ -46,7 +46,8 @@ OPTIONAL = [('launch_thread', 'project_id', 'string'), ('launch_thread', 'worksp
             ('schedule', 'action', 'string'), ('schedule', 'thread_id', 'string'),
             ('schedule', 'project_id', 'string'), ('schedule', 'title', 'string'),
             ('schedule', 'concurrency_key', 'string'), ('schedule', 'on_busy', 'string'),
-            ('schedule', 'settle', 'string')]
+            ('schedule', 'settle', 'string'), ('schedule', 'workspace', 'object'),
+            ('schedule', 'runner', 'string'), ('schedule', 'model', 'string')]
 
 GIVEN = {'string': 'value', 'object': {'strategy': 'root'}, 'integer': 5}
 WRONG = {'string': [5, True, ['x'], {'a': 1}], 'object': ['root', 5, ['root'], False],
@@ -244,6 +245,26 @@ class EachToolTest(ToolsCase):
                 self.assertEqual(mcp.tool('schedule', {**launch, key: 5}),
                                  (f'{key} must be a string', True))
         self.assertEqual(self.loom.requests, [])
+
+    def test_schedule_launch_runner_model_and_workspace(self) -> None:
+        mcp = self.start_thread()
+        launch = {'trigger': EVENT_TRIGGER, 'text': 'Land {{payload.run}}', 'action': 'launch',
+                  'project_id': 'demo'}
+        fields = {'runner': 't3', 'model': 'sonnet', 'workspace': {'strategy': 'root'}}
+        mcp.ok('schedule', {**launch, **fields})
+        mcp.ok('schedule', launch)
+        mcp.ok('schedule', {**launch, **{key: None for key in fields}})
+        given, missing, null = (params for _, params in self.loom.calls)
+        self.assertEqual({key: value for key, value in given.items()
+                          if key not in ('id', 'trigger', 'text')},
+                         {'action': 'launch', 'project_id': 'demo', **fields})
+        for params in (missing, null):
+            self.assertEqual(set(params) & set(fields), set())
+        properties = BY_NAME['schedule'].listing()['inputSchema']['properties']
+        for key in fields:
+            with self.subTest(key=key):
+                self.assertTrue(properties[key]['description'].startswith(
+                    'Only with action launch. '))
 
     def test_schedules(self) -> None:
         mcp = self.start_thread()

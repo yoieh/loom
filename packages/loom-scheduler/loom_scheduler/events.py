@@ -11,8 +11,9 @@ from loom_contracts.triggers import (
 
 from .fill import fill
 from .host import Maker, ScheduleError, SchedulerHost
-from .params import LAUNCH_OPTIONS
-from .table import FAILED, FIRED, MAX_REASON, RETRY_AFTER, SELECT, title, to_row
+from .table import (
+    FAILED, FIRED, MAX_REASON, RETRY_AFTER, SELECT, launch_options, title, to_row,
+)
 from .timing import iso
 
 PAGE = 1_000
@@ -282,8 +283,7 @@ class EventSource:
                 'project_id': schedule['project_id'], 'origin': f'schedule:{watch.id}',
                 'cause': seen.id,
             }
-            params.update((field, schedule[field]) for field in LAUNCH_OPTIONS
-                          if schedule[field] is not None)
+            params.update(launch_options(schedule))
             thread = await self.host.call(CallName.THREADS_LAUNCH, params, maker)
             return FIRED, thread['id'], None
         except ScheduleError as error:

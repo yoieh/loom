@@ -3,13 +3,16 @@ from datetime import tzinfo
 from enum import StrEnum
 
 from loom_contracts.calls import MAX_CONCURRENCY_KEY, OnBusy, Settle
+from loom_contracts.runners import RunnerName
 from loom_contracts.triggers import ScheduleAction
+from loom_contracts.workspaces import WorkspaceStrategy
 
 from .host import ScheduleError
 from .timing import check_trigger
 
 MAX_COMMAND_ID = 200
-LAUNCH_OPTIONS = ('concurrency_key', 'on_busy', 'settle')
+LAUNCH_OPTIONS = ('concurrency_key', 'on_busy', 'settle', 'runner', 'model', 'workspace')
+SCHEDULE_STRATEGIES = (WorkspaceStrategy.ROOT, WorkspaceStrategy.WORKTREE)
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,9 @@ class AddRequest:
     concurrency_key: str | None
     on_busy: OnBusy | None
     settle: Settle | None
+    runner: RunnerName | None
+    model: str | None
+    workspace: dict | None
 
 
 def _invalid(message: str) -> ScheduleError:
@@ -119,6 +125,39 @@ def _launch_options(params: dict,
     return key, on_busy, settle
 
 
+def _base(value: object) -> str:
+    if not isinstance(value, str) or not value or value.startswith('-') or '\x00' in value:
+        raise _invalid('workspace.base must be a non-empty string that does not start with - '
+                       'and has no NUL')
+    return value
+
+
+def _workspace(params: dict) -> dict:
+    value = _not_null(params, 'workspace')
+    if not isinstance(value, dict):
+        raise _invalid('workspace must be an object')
+    strategy = value.get('strategy')
+    if strategy not in SCHEDULE_STRATEGIES:
+        raise _invalid('workspace.strategy must be one of '
+                       f'{", ".join(SCHEDULE_STRATEGIES)}')
+    for field in value:
+        if field not in ('strategy', 'base'):
+            raise _invalid(f'workspace.{field} does not go with a schedule')
+    workspace = {'strategy': strategy}
+    if 'base' in value:
+        if strategy != WorkspaceStrategy.WORKTREE:
+            raise _invalid('workspace.base goes only with strategy worktree')
+        workspace['base'] = _base(value['base'])
+    return workspace
+
+
+def _launch_target(params: dict) -> tuple[RunnerName | None, str | None, dict | None]:
+    runner = _choice(params, 'runner', RunnerName) if 'runner' in params else None
+    model = _text(_not_null(params, 'model'), 'model') if 'model' in params else None
+    workspace = _workspace(params) if 'workspace' in params else None
+    return runner, model, workspace
+
+
 def check_add(params: object, caller_thread: str | None, tz: tzinfo | None) -> AddRequest:
     params = _object(params)
     command_id = _command_id(params)
@@ -131,6 +170,7 @@ def check_add(params: object, caller_thread: str | None, tz: tzinfo | None) -> A
     if 'title' in params:
         title = _text(_not_null(params, 'title'), 'title')
     key, on_busy, settle = _launch_options(params, action)
+    runner, model, workspace = _launch_target(params)
     if action is ScheduleAction.LAUNCH:
         if thread_id is not None:
             raise _invalid('thread_id does not go with launch')
@@ -141,7 +181,7 @@ def check_add(params: object, caller_thread: str | None, tz: tzinfo | None) -> A
         if thread_id is None and action is ScheduleAction.POST:
             raise _invalid('thread_id is required to post from outside a thread')
     return AddRequest(command_id, trigger, text, action, thread_id, project_id, title, key,
-                      on_busy, settle)
+                      on_busy, settle, runner, model, workspace)
 
 
 def check_list(params: object) -> tuple[str | None, str | None]:
