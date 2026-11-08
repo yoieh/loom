@@ -19,7 +19,8 @@ from .fake_claude import ENDLESS
 from .support import TIMEOUT, Connection, ServerCase, clean_env, run_client
 
 INFO_KEYS = {'id', 'trigger', 'action', 'text', 'thread_id', 'project_id', 'title',
-             'concurrency_key', 'on_busy', 'settle', 'by', 'paused', 'next_run', 'created_at'}
+             'concurrency_key', 'on_busy', 'settle', 'runner', 'model', 'workspace', 'check',
+             'by', 'paused', 'next_run', 'created_at'}
 FORBIDDEN_MAKERS = (Maker(None, True, 's1'), Maker('t1', True, 's1'), Maker(None, False, 's1'))
 
 
@@ -30,7 +31,7 @@ def at(seconds: float) -> str:
 class ScheduleCase(ServerCase):
     def host(self) -> ServiceHost:
         service = self.serving.service
-        return ServiceHost(service.store, service)
+        return ServiceHost(service.store, service, environment=clean_env())
 
     def record_callers(self) -> list[tuple[str, Caller]]:
         service = self.serving.service

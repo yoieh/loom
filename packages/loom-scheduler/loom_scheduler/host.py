@@ -20,6 +20,13 @@ class ScheduleError(Exception):
 
 
 @dataclass(frozen=True)
+class CheckResult:
+    code: int | None
+    output: str
+    failure: str | None
+
+
+@dataclass(frozen=True)
 class Maker:
     by: str | None
     verified: bool
@@ -40,3 +47,5 @@ class SchedulerHost(Protocol):
     def listen(self, listener: Callable[[], None]) -> Callable[[], None]: ...
 
     def last_event_id(self) -> int: ...
+
+    async def run_check(self, argv: list[str], cwd: str) -> CheckResult: ...

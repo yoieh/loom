@@ -19,7 +19,7 @@ PROPERTIES = {
     'threads': ['project_id'],
     'emit': ['topic', 'payload', 'project_id', 'key', 'cause'],
     'schedule': ['trigger', 'text', 'action', 'thread_id', 'project_id', 'title',
-                 'concurrency_key', 'on_busy', 'settle'],
+                 'concurrency_key', 'on_busy', 'settle', 'workspace', 'runner', 'model'],
     'schedules': [],
     'unschedule': ['id'],
 }

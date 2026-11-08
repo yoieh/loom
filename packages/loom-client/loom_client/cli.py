@@ -125,6 +125,16 @@ def _match(text: str, parser: argparse.ArgumentParser) -> dict:
     return match
 
 
+def _check(text: str, parser: argparse.ArgumentParser) -> list[str]:
+    try:
+        check = json.loads(text)
+    except (ValueError, RecursionError):
+        parser.error('--check is not JSON')
+    if not isinstance(check, list) or not all(isinstance(item, str) for item in check):
+        parser.error('--check must be a JSON list of strings')
+    return check
+
+
 def _trigger(args: argparse.Namespace, parser: argparse.ArgumentParser) -> dict:
     if args.weekdays is not None and args.time is None:
         parser.error('--weekdays needs --time')
@@ -305,6 +315,10 @@ def _schedule_add_args(command: argparse.ArgumentParser) -> None:
     command.add_argument('--thread', help='thread it posts into')
     command.add_argument('--project', help='project it launches in')
     command.add_argument('--title', help='its title, also of a thread it launches')
+    command.add_argument('--check', metavar='JSON',
+                         help="a JSON list: the program and its arguments, run in the project's "
+                              'root before each launch')
+    _add_workspace(command)
     _add_key(command)
     _add_id(command)
 
@@ -313,7 +327,8 @@ def _schedule_add(client: Client, args: argparse.Namespace) -> object:
     return client.schedules_add(
         args.trigger, _stdin_or(args.text), action=args.action, thread_id=args.thread,
         project_id=args.project, title=args.title, concurrency_key=args.concurrency_key,
-        on_busy=args.on_busy, settle=args.settle, id=args.id)
+        on_busy=args.on_busy, settle=args.settle, runner=args.runner, model=args.model,
+        workspace=args.workspace, check=args.check, id=args.id)
 
 
 def _schedule_list_args(command: argparse.ArgumentParser) -> None:
@@ -520,6 +535,8 @@ def _run(args: argparse.Namespace) -> int:
         args.workspace = _workspace(args, args.parser)
     if args.call is CallName.SCHEDULES_ADD:
         args.trigger = _trigger(args, args.parser)
+        if args.check is not None:
+            args.check = _check(args.check, args.parser)
     if args.call is CallName.SIGNALS_EMIT:
         args.payload = _payload(args, args.parser)
     try:

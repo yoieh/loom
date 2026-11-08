@@ -27,6 +27,7 @@ NEEDS_PROJECT = 'project_id is required outside a Loom thread'
 UNKNOWN_PROJECT = "cannot tell this thread's project; give project_id"
 MAY_HAVE_RUN = 'the call may have run, so check with threads or schedules before calling again'
 MAY_HAVE_EMITTED = 'the signal may have been written, and emitting it again writes a second one'
+NO_CHECK = 'an agent may not add a schedule with a check'
 
 CONCURRENCY_KEY = ('A key, such as pm:demo, that at most one thread holds at a time; the launch '
                    'waits while another thread holds it.')
@@ -35,6 +36,8 @@ ON_BUSY = ('With concurrency_key: queue (default) waits, coalesce joins the wait
 SETTLE = ('on_result: the thread settles after its first completed or failed result instead of '
           'going idle.')
 LAUNCH_ONLY = 'Only with action launch. '
+SCHEDULE_WORKSPACE = ('Where each thread works: {"strategy": "root"} or {"strategy": "worktree", '
+                      '"base"?}. Default: a new worktree.')
 
 
 class ToolError(Exception):
@@ -137,6 +140,10 @@ TOOLS = (
              Arg('concurrency_key', STRING, LAUNCH_ONLY + CONCURRENCY_KEY),
              Arg('on_busy', STRING, LAUNCH_ONLY + ON_BUSY),
              Arg('settle', STRING, LAUNCH_ONLY + SETTLE),
+             Arg('workspace', OBJECT, LAUNCH_ONLY + SCHEDULE_WORKSPACE),
+             Arg('runner', STRING,
+                 LAUNCH_ONLY + 'The agent that runs each thread: claude (default), codex or t3.'),
+             Arg('model', STRING, LAUNCH_ONLY + "The agent's model. Default: the agent's own."),
          )),
     Tool('schedules', 'List schedules.'),
     Tool('unschedule', 'Remove a schedule.', (
@@ -193,6 +200,8 @@ class Tools:
         }
 
     def call(self, name: str, arguments: dict) -> object:
+        if name == 'schedule' and 'check' in arguments:
+            raise ToolError(NO_CHECK)
         values = check_arguments(BY_NAME[name], arguments)
         try:
             if self._client is None:
@@ -272,7 +281,9 @@ class Tools:
             values['trigger'], values['text'], action=values.get('action'),
             thread_id=values.get('thread_id'), project_id=values.get('project_id'),
             title=values.get('title'), concurrency_key=values.get('concurrency_key'),
-            on_busy=values.get('on_busy'), settle=values.get('settle'), id=command_id))
+            on_busy=values.get('on_busy'), settle=values.get('settle'),
+            runner=values.get('runner'), model=values.get('model'),
+            workspace=values.get('workspace'), id=command_id))
 
     def _schedules(self, client: Client, values: dict) -> object:
         return client.schedules_list()

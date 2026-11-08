@@ -240,11 +240,14 @@ class Client:
                       thread_id: str | None = None, project_id: str | None = None,
                       title: str | None = None, concurrency_key: str | None = None,
                       on_busy: str | None = None, settle: str | None = None,
+                      runner: str | None = None, model: str | None = None,
+                      workspace: dict | None = None, check: list[str] | None = None,
                       id: str | None = None) -> ScheduleInfo:
         return self.call(CallName.SCHEDULES_ADD, _params(
             id=_command_id(id), trigger=trigger, text=text, action=action, thread_id=thread_id,
             project_id=project_id, title=title, concurrency_key=concurrency_key,
-            on_busy=on_busy, settle=settle))
+            on_busy=on_busy, settle=settle, runner=runner, model=model, workspace=workspace,
+            check=check))
 
     def schedules_list(self, thread_id: str | None = None,
                        project_id: str | None = None) -> list[ScheduleInfo]:

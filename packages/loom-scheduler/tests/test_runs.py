@@ -81,6 +81,30 @@ class FireTest(SchedulerCase):
         for info in (keyed, coalescing, plain):
             self.assertEqual(self.runs(info['id'])[0][2], 'fired')
 
+    async def test_launch_sends_its_runner_model_and_workspace(self) -> None:
+        rooted = await self.add('a1', action='launch', thread_id=..., project_id='p1',
+                                runner='t3', model='sonnet', workspace={'strategy': 'root'})
+        based = await self.add('a2', action='launch', thread_id=..., project_id='p1',
+                               workspace={'strategy': 'worktree', 'base': 'main'})
+        plain = await self.add('a3', action='launch', thread_id=..., project_id='p1',
+                               runner='codex', workspace={'strategy': 'worktree'})
+        await self.run_pass(minutes=1)
+        sent = {call.params['origin']: call.params
+                for call in self.host.calls_of(CallName.THREADS_LAUNCH)}
+        self.assertEqual(sent[f'schedule:{rooted["id"]}'], {
+            'id': f'schedule:{rooted["id"]}:{DUE}', 'title': 'check the build',
+            'message': 'check the build', 'project_id': 'p1',
+            'origin': f'schedule:{rooted["id"]}', 'runner': 't3', 'model': 'sonnet',
+            'workspace': {'strategy': 'root'},
+        })
+        self.assertEqual(sent[f'schedule:{based["id"]}']['workspace'],
+                         {'strategy': 'worktree', 'base': 'main'})
+        self.assertNotIn('runner', sent[f'schedule:{based["id"]}'])
+        self.assertEqual((sent[f'schedule:{plain["id"]}']['runner'],
+                          sent[f'schedule:{plain["id"]}']['workspace']),
+                         ('codex', {'strategy': 'worktree'}))
+        self.assertNotIn('model', sent[f'schedule:{plain["id"]}'])
+
     async def test_notify_only_appends_the_event(self) -> None:
         info = await self.add(caller=AGENT, action='notify', thread_id=...)
         alone = await self.add('a2', action='notify', thread_id=...)

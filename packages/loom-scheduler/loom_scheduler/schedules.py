@@ -13,12 +13,13 @@ from loom_contracts.states import ThreadState
 from loom_contracts.triggers import ScheduleAction, TriggerType
 
 from . import timing
+from .checks import Stopped, checked_text
 from .events import EventSource
 from .host import Maker, ScheduleError, SchedulerHost
-from .params import LAUNCH_OPTIONS, AddRequest, check_add, check_list, check_target
+from .params import AddRequest, check_add, check_list, check_target
 from .table import (
-    COLUMNS, FAILED, FIRED, MAX_REASON, RETRY_AFTER, SELECT, SKIPPED_BUSY, SKIPPED_LATE, create,
-    title, to_row,
+    COLUMNS, FAILED, FIRED, MAX_REASON, RETRY_AFTER, SELECT, SKIPPED_BUSY, SKIPPED_LATE, check,
+    create, launch_options, title, to_row, workspace,
 )
 from .tick import Tick
 from .timing import iso, parse_iso
@@ -46,6 +47,10 @@ def _info(row: dict) -> ScheduleInfo:
         'concurrency_key': row['concurrency_key'],
         'on_busy': row['on_busy'],
         'settle': row['settle'],
+        'runner': row['runner'],
+        'model': row['model'],
+        'workspace': workspace(row),
+        'check': check(row),
         'by': row['by'],
         'paused': bool(row['paused']),
         'next_run': row['next_run'],
@@ -144,10 +149,16 @@ class Scheduler:
         by = caller.thread_id
         verified = caller.verified is True
         request = check_add(params, by, self.tz)
-        project_id = await self._check_targets(request, Maker(by, verified, None))
+        if request.check is not None and (by is not None or not verified):
+            raise ScheduleError('forbidden', 'agent threads may not add a schedule with a check')
+        project_id, root = await self._check_targets(request, Maker(by, verified, None))
         now = self.clock()
         first = timing.first_run(request.trigger, now, self.tz)
         on_events = request.trigger['type'] == TriggerType.EVENT
+        stored = (None if request.workspace is None
+                  else json.dumps(request.workspace, separators=(',', ':')))
+        argv = None if request.check is None else json.dumps(request.check, separators=(',', ':'))
+        check_root = None if request.check is None else root
 
         def change(tx: sqlite3.Connection) -> ScheduleInfo:
             schedule_id = str(uuid.uuid4())
@@ -157,7 +168,8 @@ class Scheduler:
                 f'VALUES ({", ".join("?" for _ in COLUMNS)})',
                 (schedule_id, json.dumps(request.trigger), request.action.value, request.text,
                  request.thread_id, project_id, request.title, request.concurrency_key,
-                 request.on_busy, request.settle, by, int(verified), 0,
+                 request.on_busy, request.settle, request.runner, request.model, stored, argv,
+                 check_root, by, int(verified), 0,
                  None if first is None else iso(first), iso(now), event_after),
             )
             return _info(_fetch(tx, schedule_id))
@@ -170,7 +182,8 @@ class Scheduler:
             self.events.watch()
         return answer
 
-    async def _check_targets(self, request: AddRequest, maker: Maker) -> str | None:
+    async def _check_targets(self, request: AddRequest,
+                             maker: Maker) -> tuple[str | None, str | None]:
         project_id = request.project_id
         if request.thread_id is not None:
             thread = await self.host.call(
@@ -182,13 +195,15 @@ class Scheduler:
                 raise ScheduleError('invalid', "project_id is not the thread's project")
         named = [name for name in (project_id, request.trigger.get('project_id'))
                  if name is not None]
+        root = None
         if named:
             projects = await self.host.call(CallName.PROJECTS_LIST, {}, maker)
-            known = {project['id'] for project in projects}
+            known = {project['id']: project['workspace_root'] for project in projects}
             for name in named:
                 if name not in known:
                     raise ScheduleError('not_found', f"no project with id '{name}'")
-        return project_id
+            root = known.get(project_id)
+        return project_id, root
 
     async def _list(self, params: object, caller: Caller) -> list[ScheduleInfo]:
         thread_id, project_id = check_list(params)
@@ -242,41 +257,46 @@ class Scheduler:
         trigger = json.loads(row['trigger'])
         late = timing.is_late(due, now)
         after = timing.run_after(trigger, now, self.tz)
+        text = row['text']
         if timing.is_missed(trigger, due, now):
             outcome, thread_id, reason = SKIPPED_LATE, None, None
         else:
-            outcome, thread_id, reason = await self._fire(row, iso(due), late)
-        self._record(row, due, now, after, outcome, late, thread_id, reason)
+            outcome, thread_id, reason, text = await self._fire(row, iso(due), late)
+        self._record(row, due, now, after, outcome, late, thread_id, reason, text)
 
     async def _fire(self, row: dict, due: str,
-                    late: bool) -> tuple[str, str | None, str | None]:
+                    late: bool) -> tuple[str, str | None, str | None, str]:
         maker = Maker(row['by'], bool(row['verified']), row['id'])
         action = ScheduleAction(row['action'])
         command_id = f'schedule:{row["id"]}:{due}'
-        message = _message(row['text'], due, late)
+        text = row['text']
         try:
             if action is ScheduleAction.NOTIFY:
-                return FIRED, None, None
+                return FIRED, None, None, text
             if await self._busy(row['id'], maker):
-                return SKIPPED_BUSY, None, None
+                return SKIPPED_BUSY, None, None, text
             if action is ScheduleAction.POST:
                 await self.host.call(CallName.THREADS_SEND, {
-                    'id': command_id, 'thread_id': row['thread_id'], 'message': message,
-                    'mode': 'queue',
+                    'id': command_id, 'thread_id': row['thread_id'],
+                    'message': _message(text, due, late), 'mode': 'queue',
                 }, maker)
-                return FIRED, row['thread_id'], None
+                return FIRED, row['thread_id'], None, text
+            if row['check_argv'] is not None:
+                text = await checked_text(self.host, row, maker, text)
             params = {
-                'id': command_id, 'title': title(row['title'], row['text']), 'message': message,
-                'project_id': row['project_id'], 'origin': f'schedule:{row["id"]}',
+                'id': command_id, 'title': title(row['title'], text),
+                'message': _message(text, due, late), 'project_id': row['project_id'],
+                'origin': f'schedule:{row["id"]}',
             }
-            params.update((field, row[field]) for field in LAUNCH_OPTIONS
-                          if row[field] is not None)
+            params.update(launch_options(row))
             thread = await self.host.call(CallName.THREADS_LAUNCH, params, maker)
-            return FIRED, thread['id'], None
+            return FIRED, thread['id'], None, text
+        except Stopped as stopped:
+            return stopped.outcome, None, stopped.reason, text
         except ScheduleError as error:
-            return FAILED, None, error.message[:MAX_REASON]
+            return FAILED, None, error.message[:MAX_REASON], text
         except Exception as error:
-            return FAILED, None, type(error).__name__
+            return FAILED, None, type(error).__name__, text
 
     async def _busy(self, schedule_id: str, maker: Maker) -> bool:
         with self.host.transaction() as tx:
@@ -295,7 +315,8 @@ class Scheduler:
         return thread['state'] in BUSY
 
     def _record(self, row: dict, due: datetime, now: datetime, after: datetime | None,
-                outcome: str, late: bool, thread_id: str | None, reason: str | None) -> None:
+                outcome: str, late: bool, thread_id: str | None, reason: str | None,
+                text: str) -> None:
         schedule_id = row['id']
         next_run = None if after is None else iso(after)
         with self.host.transaction() as tx:
@@ -312,7 +333,7 @@ class Scheduler:
                            (next_run, schedule_id))
             if outcome == FIRED:
                 data: dict[str, object] = {
-                    'schedule_id': schedule_id, 'action': row['action'], 'text': row['text'],
+                    'schedule_id': schedule_id, 'action': row['action'], 'text': text,
                     'late': late,
                 }
                 if row['by'] is not None:
