@@ -2742,8 +2742,11 @@ is the event object, so any language can follow Loom by reading the CLI's stdout
   `project_id`, `key`, `hops` and `payload`, and a `trigger.skipped` line `schedule_id`, `event_id`
   and `reason`. `signals emit` prints its event as one such line.
 - Agent-written text is shown as text: each control character (newline and tab too, DEL and the
-  C1 range) prints as an escape such as `\n`, `\t` or `\x1b`, so each event is one line. Each text
-  is cut at 2,000 characters and then marked `…`; `--json` prints it whole.
+  C1 range) prints as an escape such as `\n`, `\t` or `\x1b`, so each event is one line. Each
+  invisible format character (Unicode category Cf, such as the right-to-left override U+202E or
+  the zero-width space U+200B) and the line and paragraph separators U+2028 and U+2029 print as
+  escapes too, as `\u202e` (`\U` and eight hex digits above U+FFFF). Each text is cut at 2,000
+  characters and then marked `…`; `--json` prints it whole.
 
 ### Exit codes
 
