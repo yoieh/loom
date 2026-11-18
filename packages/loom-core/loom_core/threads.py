@@ -93,6 +93,23 @@ def request_stop(store: Store, tx: sqlite3.Connection, thread_id: str) -> None:
     transition(store, tx, thread_id, ThreadState(row['state']), STOPPING)
 
 
+def reopen(store: Store, tx: sqlite3.Connection, thread_id: str) -> None:
+    """Wakes a settled or failed thread for a person's message (§4 Woken by a person): it
+    goes back to sleeping, so the message resumes its session, with a fresh count of
+    continuations. It does not take its concurrency key back."""
+    row = fetch(tx, thread_id)
+    if row['state'] not in ENDED:
+        raise LoomError('conflict', f'thread {thread_id} is {row["state"]}')
+    tx.execute('DELETE FROM continuations WHERE thread_id = ?', (thread_id,))
+    tx.execute(
+        'UPDATE threads SET state = ?, waiting = 0, reason = NULL, stop_requested = 0, '
+        'updated_at = ? WHERE id = ?',
+        (str(ThreadState.SLEEPING), iso(store.clock()), thread_id),
+    )
+    store.append_event(tx, EventType.THREAD_STATE, thread_id,
+                       _state_data(ThreadState.SLEEPING, False, None))
+
+
 def clear_stop(store: Store, tx: sqlite3.Connection, thread_id: str) -> None:
     row = fetch(tx, thread_id)
     tx.execute('UPDATE threads SET stop_requested = 0 WHERE id = ?', (thread_id,))

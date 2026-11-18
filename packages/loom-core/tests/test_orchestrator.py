@@ -19,6 +19,7 @@ from loom_core.clock import iso
 from loom_core.errors import LoomError
 from loom_core.orchestrator import Orchestrator
 from loom_core.projects import Projects
+from loom_core.slots import StartSource
 from loom_core.store import DB_NAME, Store
 
 from .fakes import FakeHost, FakeRunner, FakeSession, wait_for
@@ -566,19 +567,37 @@ class SendTest(OrchestratorTest):
         self.assertEqual(again, first)
         self.assertEqual(session.sent, [('Hello', QUEUE), ('Once', STEER)])
 
-    async def test_send_to_a_settled_or_failed_thread_is_conflict(self) -> None:
+    async def test_an_agent_or_schedule_send_to_a_settled_or_failed_thread_is_conflict(
+            self) -> None:
         settled, _ = await self.running()
         await self.orchestrator.settle({'id': 'x1', 'thread_id': settled})
         await wait_for(lambda: self.events(settled, EventType.TURN_RESULT))
         await self.orchestrator.drain()
-        await self.assert_error('conflict', self.orchestrator.send,
-                                {'id': 'x2', 'thread_id': settled, 'message': 'Hi'})
         await self.use(FakeRunner(fail_start=RuntimeError('no binary')))
         failed = (await self.launch())['id']
         await self.orchestrator.drain()
         self.assertEqual(self.state(failed), 'failed')
-        await self.assert_error('conflict', self.orchestrator.send,
-                                {'id': 'x3', 'thread_id': failed, 'message': 'Hi'})
+        for source in (StartSource.AGENT, StartSource.SCHEDULE):
+            for thread_id in (settled, failed):
+                with self.subTest(source=source, thread_id=thread_id):
+                    await self.assert_error(
+                        'conflict', lambda params: self.orchestrator.send(params, source=source),
+                        {'id': self.next_id(), 'thread_id': thread_id, 'message': 'Hi'})
+
+    async def test_a_person_wakes_a_settled_thread_and_it_resumes(self) -> None:
+        thread_id, session = await self.idle()
+        await self.orchestrator.settle({'id': 'x1', 'thread_id': thread_id})
+        await self.orchestrator.drain()
+        self.assertTrue(session.closed)
+        info = await self.send(thread_id, 'Wake up')
+        self.assertEqual(info['state'], 'sleeping')
+        await self.orchestrator.drain()
+        self.assertEqual(self.state(thread_id), 'running')
+        self.assertEqual(len(self.runner.starts), 2)
+        self.assertTrue(self.runner.starts[-1].resume)
+        self.assertEqual(self.runner.sessions[thread_id].sent[-1][0], 'Wake up')
+        self.assertEqual(self.states(thread_id)[-4:],
+                         ['settled', 'sleeping', 'starting', 'running'])
 
 
 class SendParamsTest(OrchestratorTest):
@@ -751,8 +770,9 @@ class SettleTest(OrchestratorTest):
         await self.orchestrator.drain()
         self.assertEqual(self.states(thread_id).count('settled'), 1)
         self.assertEqual(len(self.runner.starts), starts)
-        await self.assert_error('conflict', self.orchestrator.send,
-                                {'id': 'z3', 'thread_id': thread_id, 'message': 'Hi'})
+        await self.assert_error(
+            'conflict', lambda params: self.orchestrator.send(params, source=StartSource.AGENT),
+            {'id': 'z3', 'thread_id': thread_id, 'message': 'Hi'})
 
     async def test_bad_params(self) -> None:
         thread_id, _ = await self.running()

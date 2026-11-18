@@ -641,6 +641,11 @@ ahead of its other messages, which follow in their usual order. That happens at 
 failed result. An exit after the turn's result is not a crash: the thread only goes to
 `sleeping`.
 
+A person's message, one sent from outside Loom and not by a schedule, wakes a `settled` or
+`failed` thread: it goes back to `sleeping` with no reason and a fresh count of continuations,
+and the message resumes it as above (§4 Woken by a person). It does not take back the thread's
+concurrency key. The result shows the thread `sleeping`.
+
 | Param | Type | |
 |---|---|---|
 | `id` | string, required | Command id. |
@@ -654,8 +659,8 @@ when they raised the thread's. The delivery happens after the answer. The thread
 [`message.entered`](#messageentered) event with this call's `id` as `command_id` says when the
 message entered the agent's conversation.
 
-**Errors:** `not_found`; `conflict` when the thread is settled or failed; `invalid` for a bad
-`cause`, as under [`threads.launch`](#threadslaunch).
+**Errors:** `not_found`; `conflict` when an agent's thread or a schedule sends to a thread that
+is settled or failed; `invalid` for a bad `cause`, as under [`threads.launch`](#threadslaunch).
 
 ```json
 {"v": "v1", "call": "threads.send", "params": {"id": "c4", "thread_id": "3f2a…", "message": "Also run the linter.", "mode": "queue"}}
