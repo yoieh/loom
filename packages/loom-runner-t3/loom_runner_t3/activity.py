@@ -125,6 +125,7 @@ class Tracker:
         self.text: str | None = None
         self.error: str | None = None
         self.known: set[str] = set()
+        self.reported: set[str] = set()
         self.status: str | None = None
         self.active: str | None = None
         self.expect = 0
@@ -141,6 +142,17 @@ class Tracker:
 
     def expect_turn(self) -> None:
         self.expect = EXPECT_POLLS
+
+    def repeat(self, answer: object, message: str) -> list[RunnerEvent]:
+        if not isinstance(answer, dict):
+            return []
+        run = _text(answer.get('runId'))
+        state = ENDED.get(_text(answer.get('status')) or '')
+        if run is None or state is None or run in self.reported:
+            return []
+        self.known.add(run)
+        self.reported.add(run)
+        return [TurnStarted(), MessageEntered(message), self._outcome(state, None, None)]
 
     def in_turn(self) -> bool:
         return self.turn is not None or self.expect > 0
@@ -206,6 +218,7 @@ class Tracker:
             events.append(self._result(state))
         self.turn = run
         self.known.add(run)
+        self.reported.add(run)
         self.text = None
         self.error = None
         events.append(TurnStarted())
@@ -225,9 +238,12 @@ class Tracker:
 
     def _result(self, state: TurnState) -> TurnResult:
         self.turn = None
+        return self._outcome(state, self.text, self.error)
+
+    def _outcome(self, state: TurnState, text: str | None, error: str | None) -> TurnResult:
         if state is TurnState.COMPLETED:
-            return TurnResult(state, self.text, None)
+            return TurnResult(state, text, None)
         if state is TurnState.STOPPED:
-            return TurnResult(state, self.text, INTERRUPTED)
-        why = self.error or 'the run failed'
-        return TurnResult(state, self.text, reason('failed', why, self.secrets))
+            return TurnResult(state, text, INTERRUPTED)
+        why = error or 'the run failed'
+        return TurnResult(state, text, reason('failed', why, self.secrets))

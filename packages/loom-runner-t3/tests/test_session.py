@@ -45,6 +45,7 @@ from .replay import (
     FakeHost,
     FakeHttp,
     FakeSleep,
+    Reply,
     bad_token,
     credential,
     credential_text,
@@ -77,6 +78,7 @@ WRITE_PROBE = ('Create the file loom-permission-probe.txt in the current directo
                'Write tool. It holds the single word ok.')
 FIRST_LINE = 'The first line of `README.md` is:\n\n```\n# Loom\n```'
 PROVIDER_ERROR = 'API Error: 400 unknown provider for model loom-t3-record-no-such-model'
+MISSING = object()
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -114,6 +116,20 @@ def running_read(position: int | None = None, items: list | None = None,
     }
 
 
+def send_answer(**changes: object) -> Reply:
+    value = json.loads(json.dumps(recorded('send-repeat')['body']['result']['structuredContent']))
+    for key, change in changes.items():
+        if change is MISSING:
+            del value[key]
+        else:
+            value[key] = change
+    return tool(value)
+
+
+def request_key(call: str, command_id: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f'loom:{call}:{T3_THREAD}:{command_id}'))
+
+
 def user_item(position: int, text: str = OK) -> dict:
     return {'position': position, 'itemId': f'i{position}', 'runId': RUN_1,
             'type': 'user_message', 'status': 'completed', 'title': None, 'text': text}
@@ -136,17 +152,12 @@ class Base(unittest.IsolatedAsyncioTestCase):
         self.sleep = FakeSleep()
         self.clock = FakeClock()
         self.git = FakeGit()
-        self.ids = []
         self.host = FakeHost(str(self.data_dir), str(self.home), credential_text())
         self.runner = self.make_runner()
 
     def make_runner(self, **changes: object) -> T3Runner:
-        def new_id() -> str:
-            self.ids.append(str(uuid.uuid4()))
-            return self.ids[-1]
-
         options = {'http': self.http, 'clock': self.clock, 'sleep': self.sleep,
-                   'git': self.git, 'new_id': new_id}
+                   'git': self.git}
         options.update(changes)
         return T3Runner(**options)
 
@@ -532,55 +543,70 @@ class ResumeTest(Base):
 
 
 class SendTest(Base):
-    async def test_send_maps_the_modes_with_a_new_request_id_each(self) -> None:
+    async def test_send_maps_the_modes_with_the_derived_request_id(self) -> None:
         session = await self.start()
-        for mode, sent in ((DispatchMode.STEER, 'steer'), (DispatchMode.QUEUE, 'queue'),
-                           (DispatchMode.INTERRUPT, 'restart'), ('queue', 'queue')):
+        for mode, sent, command_id in ((DispatchMode.STEER, 'steer', 'c-steer'),
+                                       (DispatchMode.QUEUE, 'queue', 'c-queue'),
+                                       (DispatchMode.INTERRUPT, 'restart', 'c-interrupt'),
+                                       ('queue', 'queue', 'c-text')):
             with self.subTest(mode=mode):
-                await session.send('hello', mode)
+                await session.send('hello', mode, command_id)
                 self.assertEqual(self.http.sent('t3_thread_send')[-1].arguments, {
                     'threadId': T3_THREAD, 'message': 'hello', 'mode': sent,
-                    'clientRequestId': self.ids[-1]})
+                    'clientRequestId': request_key('runner.send', command_id)})
         request_ids = [call.arguments['clientRequestId']
                        for call in self.http.sent('t3_thread_send')]
         self.assertEqual(len(set(request_ids)), 4)
-        for request_id in request_ids:
-            self.assertEqual(str(uuid.UUID(request_id)), request_id)
 
-    async def test_the_default_request_id_is_a_uuid4(self) -> None:
-        self.runner = self.make_runner(new_id=T3Runner().__dict__['_new_id'])
+    async def test_the_request_id_is_a_uuid5_of_the_thread_and_command_id(self) -> None:
         session = await self.start()
-        await session.send('a', DispatchMode.QUEUE)
-        await session.send('b', DispatchMode.QUEUE)
-        first, second = [uuid.UUID(call.arguments['clientRequestId'])
-                         for call in self.http.sent('t3_thread_send')]
-        self.assertNotEqual(first, second)
-        self.assertEqual(first.version, 4)
+        await session.send(OK, 'queue', 'c1')
+        await session.interrupt('c1')
+        sent = self.http.sent('t3_thread_send')[0].arguments['clientRequestId']
+        interrupted = self.http.sent('t3_thread_interrupt')[0].arguments['clientRequestId']
+        self.assertEqual(sent, str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                              f'loom:runner.send:{T3_THREAD}:c1')))
+        self.assertEqual(interrupted, str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                                     f'loom:runner.interrupt:{T3_THREAD}:c1')))
+        self.assertNotEqual(sent, interrupted)
+
+    async def test_a_resumed_session_sends_the_same_request_id(self) -> None:
+        first = await self.start()
+        await first.send(OK, DispatchMode.QUEUE, 'c1')
+        await first.close()
+        second = await self.start(resume=True)
+        await second.send(OK, DispatchMode.QUEUE, 'c1')
+        await second.send(OK, DispatchMode.QUEUE, 'c2')
+        self.assertEqual(self.http.count('t3_thread_launch'), 1)
+        keys = [call.arguments['clientRequestId'] for call in self.http.sent('t3_thread_send')]
+        self.assertEqual(keys[0], keys[1])
+        self.assertNotEqual(keys[1], keys[2])
 
     async def test_a_send_retried_after_a_lost_session_keeps_its_request_id(self) -> None:
         session = await self.start()
         self.http.on('t3_thread_send', lost_session(), from_recording('send'))
-        await session.send('hello', DispatchMode.QUEUE)
+        await session.send('hello', DispatchMode.QUEUE, 'c1')
         first, retry = self.http.sent('t3_thread_send')
         self.assertEqual(first.body, retry.body)
+        self.assertEqual(retry.arguments['clientRequestId'], request_key('runner.send', 'c1'))
         self.assertEqual(self.http.count('initialize'), 2)
 
     async def test_a_failed_send_raises_and_is_not_retried(self) -> None:
         session = await self.start()
         self.http.on('t3_thread_send', TimeoutError(), from_recording('send'))
         with self.assertRaisesRegex(T3Error, '^t3: timeout: '):
-            await session.send('hello', DispatchMode.QUEUE)
+            await session.send('hello', DispatchMode.QUEUE, 'c1')
         self.assertEqual(self.http.count('t3_thread_send'), 1)
 
     async def test_interrupt_has_its_own_request_id(self) -> None:
         session = await self.start()
-        await session.send('hello', DispatchMode.QUEUE)
-        await session.interrupt()
+        await session.send('hello', DispatchMode.QUEUE, 'c1')
+        await session.interrupt('c2')
         sent = self.http.sent('t3_thread_interrupt')
         self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0].arguments, {'threadId': T3_THREAD,
-                                             'clientRequestId': self.ids[-1]})
-        self.assertNotEqual(self.ids[-1],
+        self.assertEqual(sent[0].arguments, {
+            'threadId': T3_THREAD, 'clientRequestId': request_key('runner.interrupt', 'c2')})
+        self.assertNotEqual(sent[0].arguments['clientRequestId'],
                             self.http.sent('t3_thread_send')[0].arguments['clientRequestId'])
 
     async def test_respond_raises_and_calls_nothing(self) -> None:
@@ -593,14 +619,14 @@ class SendTest(Base):
 
 
 class ReplayTest(Base):
-    async def play(self, case: str, sends: list[tuple[str, str]], resume: bool = False,
+    async def play(self, case: str, sends: list[tuple[str, str, str]], resume: bool = False,
                    interrupt: bool = False, settle: int = 0, **changes: object) -> list:
         self.http.on('t3_thread_read', *reads(case))
         session = await self.start(resume=resume, **changes)
-        for message, mode in sends:
-            await session.send(message, mode)
+        for message, mode, command_id in sends:
+            await session.send(message, mode, command_id)
         if interrupt:
-            await session.interrupt()
+            await session.interrupt('stop-1')
         self.sleep.open()
         events = await self.turn(session)
         await until(lambda: self.http.count('t3_thread_read') >= settle)
@@ -615,14 +641,22 @@ class ReplayTest(Base):
         self.assertEqual(await self.rest(session), [Exited(None)])
 
     async def test_turn(self) -> None:
-        events = await self.play('turn', [(OK, 'queue')])
+        events = await self.play('turn', [(OK, 'queue', 'c1')])
         self.assertEqual(events, [TurnStarted(), MessageEntered(OK), TextOut('ok'),
                                   TurnResult(TurnState.COMPLETED, 'ok', None)])
+
+    async def test_a_repeated_send_enters_once(self) -> None:
+        self.http.on('t3_thread_send', from_recording('send'), from_recording('send-repeat'))
+        events = await self.play('turn', [(OK, 'queue', 'c1'), (OK, 'queue', 'c1')])
+        self.assertEqual(events, [TurnStarted(), MessageEntered(OK), TextOut('ok'),
+                                  TurnResult(TurnState.COMPLETED, 'ok', None)])
+        keys = [call.arguments['clientRequestId'] for call in self.http.sent('t3_thread_send')]
+        self.assertEqual(keys, [request_key('runner.send', 'c1')] * 2)
 
     async def test_tool(self) -> None:
         self.runner = self.make_runner(git=FakeGit(top=WORKTREE, branch='loom/t3-record-1'))
         self.http.on('t3_thread_launch', launch('launch-worktree'))
-        events = await self.play('tool', [(README, 'queue')], workspace_path=WORKTREE)
+        events = await self.play('tool', [(README, 'queue', 'c1')], workspace_path=WORKTREE)
         self.assertEqual(events, [
             TurnStarted(),
             MessageEntered(README),
@@ -635,14 +669,15 @@ class ReplayTest(Base):
     async def test_interrupt(self) -> None:
         write_record(str(self.data_dir), THREAD_ID, T3_THREAD)
         counted = '\n'.join(str(number) for number in range(1, 168))
-        events = await self.play('interrupt', [(COUNT_200, 'queue')], resume=True,
+        events = await self.play('interrupt', [(COUNT_200, 'queue', 'c1')], resume=True,
                                  interrupt=True)
         self.assertEqual(events, [TurnStarted(), MessageEntered(COUNT_200), TextOut(counted),
                                   TurnResult(TurnState.STOPPED, counted, 'interrupted')])
 
     async def test_steer(self) -> None:
         write_record(str(self.data_dir), THREAD_ID, T3_THREAD_2)
-        events = await self.play('steer', [(COUNT_200, 'queue'), (OK, 'steer')], resume=True)
+        events = await self.play('steer', [(COUNT_200, 'queue', 'c1'), (OK, 'steer', 'c2')],
+                                 resume=True)
         self.assertEqual(events, [TurnStarted(), MessageEntered(COUNT_200), MessageEntered(OK),
                                   TextOut('ok'), TurnResult(TurnState.COMPLETED, 'ok', None)])
         modes = [call.arguments['mode'] for call in self.http.sent('t3_thread_send')]
@@ -650,7 +685,7 @@ class ReplayTest(Base):
 
     async def test_failed(self) -> None:
         self.http.on('t3_thread_launch', launch('launch-unknown-model'))
-        events = await self.play('failed', [(OK, 'queue')],
+        events = await self.play('failed', [(OK, 'queue', 'c1')],
                                  model='claude-proxy/loom-t3-record-no-such-model')
         self.assertEqual(events, [
             TurnStarted(), MessageEntered(OK), TextOut(PROVIDER_ERROR),
@@ -660,13 +695,13 @@ class ReplayTest(Base):
     async def test_permission_request(self) -> None:
         write_record(str(self.data_dir), THREAD_ID, T3_THREAD_5)
         self.http.on('t3_thread_interrupt', from_recording('interrupt-permission'))
-        events = await self.play('permission-request', [(WRITE_PROBE, 'queue')], resume=True,
+        events = await self.play('permission-request', [(WRITE_PROBE, 'queue', 'c1')], resume=True,
                                  interrupt=True, settle=10)
         self.assertEqual(events, [TurnStarted(), MessageEntered(WRITE_PROBE),
                                   TurnResult(TurnState.STOPPED, None, 'interrupted')])
 
     async def test_reads_follow_the_position(self) -> None:
-        await self.play('turn', [(OK, 'queue')], settle=8)
+        await self.play('turn', [(OK, 'queue', 'c1')], settle=8)
         positions = [call.arguments['afterPosition']
                      for call in self.http.sent('t3_thread_read')][:7]
         self.assertEqual(positions, [None, None, 0, 0, 0, 0, 2])
@@ -681,6 +716,102 @@ class ReplayTest(Base):
                                  'steer', 'tool', 'turn'])
 
 
+class RepeatTest(Base):
+    async def start_idle(self):
+        self.sleep = FakeSleep()
+        self.runner = self.make_runner()
+        session = await self.start()
+        await until(lambda: self.sleep.calls == [15.0])
+        return session
+
+    async def test_a_repeat_of_an_ended_run_reports_that_turn_at_once(self) -> None:
+        cases = (('completed', TurnResult(TurnState.COMPLETED, None, None)),
+                 ('failed', TurnResult(TurnState.FAILED, None, 't3: failed: the run failed')),
+                 ('interrupted', TurnResult(TurnState.STOPPED, None, 'interrupted')))
+        for status, result in cases:
+            with self.subTest(status=status):
+                self.http.on('t3_thread_send', send_answer(status=status))
+                session = await self.start_idle()
+                reads_before = self.http.count('t3_thread_read')
+                await session.send(OK, DispatchMode.QUEUE, 'c1')
+                events = [await self.next_event(session) for _ in range(3)]
+                self.assertEqual(events, [TurnStarted(), MessageEntered(OK), result])
+                self.assertEqual(self.http.count('t3_thread_read'), reads_before)
+                self.assertEqual(self.sleep.calls, [15.0])
+                self.assertEqual(await self.rest(session), [Exited(None)])
+
+    async def test_the_repeated_run_is_not_reported_again(self) -> None:
+        self.http.on('t3_thread_send', send_answer(status='completed'))
+        self.http.on('t3_thread_read', *reads('turn'))
+        session = await self.start_idle()
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
+        self.assertEqual([await self.next_event(session) for _ in range(3)],
+                         [TurnStarted(), MessageEntered(OK),
+                          TurnResult(TurnState.COMPLETED, None, None)])
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
+        self.sleep.open()
+        await until(lambda: self.http.count('t3_thread_read') >= len(reads('turn')) + 1)
+        self.assertEqual(await self.rest(session), [Exited(None)])
+
+    async def test_other_answers_wait_for_the_run(self) -> None:
+        cases = {
+            'send': from_recording('send'),
+            'send-repeat': from_recording('send-repeat'),
+            'status missing': send_answer(status=MISSING),
+            'status null': send_answer(status=None),
+            'status 1': send_answer(status=1),
+            'runId missing': send_answer(runId=MISSING, status='completed'),
+            'runId null': send_answer(runId=None, status='completed'),
+            'runId 1': send_answer(runId=1, status='completed'),
+        }
+        for name, answer in cases.items():
+            with self.subTest(answer=name):
+                self.http.on('t3_thread_send', answer)
+                session = await self.start_idle()
+                await session.send(OK, DispatchMode.QUEUE, 'c1')
+                await until(lambda: self.sleep.calls[-1:] == [1.0])
+                self.assertEqual(await self.rest(session), [Exited(None)])
+
+    async def test_an_ended_answer_for_the_current_turn_starts_no_turn(self) -> None:
+        self.http.on('t3_thread_read', tool(running_read(0, [user_item(0)])))
+        session = await self.start()
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
+        self.sleep.step()
+        self.assertEqual([await self.next_event(session) for _ in range(2)],
+                         [TurnStarted(), MessageEntered(OK)])
+        self.http.on('t3_thread_send', send_answer(status='completed'))
+        await session.send('more', DispatchMode.STEER, 'c2')
+        self.assertEqual(await self.rest(session), [Exited(None)])
+
+    async def test_a_repeat_of_a_run_ended_before_the_resume_is_reported(self) -> None:
+        write_record(str(self.data_dir), THREAD_ID, T3_THREAD)
+        self.http.on('t3_thread_read', tool(running_read(status='completed', active=None)))
+        self.http.on('t3_thread_send', send_answer(status='completed'))
+        session = await self.start(resume=True)
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
+        self.assertEqual([await self.next_event(session) for _ in range(3)],
+                         [TurnStarted(), MessageEntered(OK),
+                          TurnResult(TurnState.COMPLETED, None, None)])
+        self.assertEqual(self.http.count('t3_thread_read'), 1)
+        self.assertEqual(await self.rest(session), [Exited(None)])
+
+    async def test_an_ended_answer_for_a_run_the_session_reported_starts_no_turn(self) -> None:
+        write_record(str(self.data_dir), THREAD_ID, T3_THREAD)
+        self.http.on('t3_thread_read', tool(running_read()),
+                     tool(running_read(0, [user_item(0)])),
+                     tool(running_read(status='completed', active=None)))
+        session = await self.start(resume=True)
+        self.sleep.open()
+        self.assertEqual(await self.turn(session),
+                         [TurnStarted(), MessageEntered(OK),
+                          TurnResult(TurnState.COMPLETED, None, None)])
+        naps = len(self.sleep.calls)
+        self.http.on('t3_thread_send', send_answer(status='completed'))
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
+        await until(lambda: 1.0 in self.sleep.calls[naps:])
+        self.assertEqual(await self.rest(session), [Exited(None)])
+
+
 class PollTest(Base):
     async def test_the_poll_intervals(self) -> None:
         self.http.on('t3_thread_read', tool(idle_read()), tool(idle_read()),
@@ -691,7 +822,7 @@ class PollTest(Base):
         await until(lambda: self.http.count('t3_thread_read') == 1)
         await until(lambda: len(self.sleep.calls) == 2)
         self.assertEqual(self.sleep.calls, [15.0, 15.0])
-        await session.send(OK, DispatchMode.QUEUE)
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
         await until(lambda: len(self.sleep.calls) == 3)
         self.assertEqual(self.sleep.calls[2], 1.0)
         self.sleep.step()
@@ -707,7 +838,7 @@ class PollTest(Base):
         self.runner = self.make_runner(running_interval=0.25, idle_interval=4.0)
         session = await self.start()
         await until(lambda: self.sleep.calls == [4.0])
-        await session.send(OK, DispatchMode.QUEUE)
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
         await until(lambda: self.sleep.calls[-1:] == [0.25])
 
     async def test_a_running_thread_polls_at_the_running_interval(self) -> None:
@@ -725,7 +856,7 @@ class PollTest(Base):
                      tool(running_read(status='completed', active=None, pending=1)),
                      tool(running_read(status='completed', active=None, pending=0)))
         session = await self.start()
-        await session.send(OK, DispatchMode.QUEUE)
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
         self.sleep.open()
         events = await self.turn(session)
         self.assertEqual(events, [TurnStarted(), MessageEntered(OK),
@@ -744,7 +875,7 @@ class PollTest(Base):
         self.http.on('t3_thread_read', tool(running_read(0, [user_item(0)])), tool(broken),
                      tool(running_read(status='completed', active=None)))
         session = await self.start()
-        await session.send(OK, DispatchMode.QUEUE)
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
         self.sleep.open()
         events = await self.turn(session)
         self.assertEqual(events[:2], [TurnStarted(), MessageEntered(OK)])
@@ -782,7 +913,7 @@ class PollTest(Base):
         self.http.on('t3_thread_read', tool(running_read(0, [user_item(0)])), TimeoutError(),
                      OSError(), tool(running_read(status='completed', active=None)))
         session = await self.start()
-        await session.send(OK, DispatchMode.QUEUE)
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
         self.sleep.open()
         events = await self.turn(session)
         self.assertEqual(events, [TurnStarted(), MessageEntered(OK), TurnResult(
@@ -793,7 +924,7 @@ class PollTest(Base):
     async def test_a_failed_poll_right_after_a_send_ends_the_turn(self) -> None:
         self.http.on('t3_thread_read', tool_error('boom', 'gone'), tool(idle_read()))
         session = await self.start()
-        await session.send(OK, DispatchMode.QUEUE)
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
         self.sleep.open()
         self.assertEqual(await self.turn(session),
                          [TurnResult(TurnState.FAILED, None, 't3: boom: gone')])
@@ -801,7 +932,7 @@ class PollTest(Base):
     async def test_a_401_during_a_turn_fails_it_and_exits(self) -> None:
         self.http.on('t3_thread_read', tool(running_read(0, [user_item(0)])), bad_token())
         session = await self.start()
-        await session.send(OK, DispatchMode.QUEUE)
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
         self.sleep.open()
         events = [event async for event in session.events]
         self.assertEqual(events, [TurnStarted(), MessageEntered(OK),
@@ -819,7 +950,7 @@ class PollTest(Base):
 
         self.http.on('t3_thread_read', moved)
         session = await self.start()
-        await session.send(OK, DispatchMode.QUEUE)
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
         self.sleep.open()
         events = [event async for event in session.events]
         self.assertEqual(events, [TurnStarted(), MessageEntered(OK),
@@ -847,7 +978,7 @@ class CloseTest(Base):
     async def test_close_during_a_turn_stops_polling(self) -> None:
         self.http.on('t3_thread_read', tool(running_read(0, [user_item(0)])))
         session = await self.start()
-        await session.send(OK, DispatchMode.QUEUE)
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
         self.sleep.open()
         self.assertEqual(await self.next_event(session), TurnStarted())
         await session.close()
@@ -863,8 +994,8 @@ class CloseTest(Base):
         await session.close()
         before = len(self.http.calls)
         with self.assertRaises(T3Error):
-            await session.send('x', DispatchMode.QUEUE)
-        await session.interrupt()
+            await session.send('x', DispatchMode.QUEUE, 'c1')
+        await session.interrupt('c1')
         self.assertEqual(len(self.http.calls), before)
 
 
@@ -892,10 +1023,10 @@ class SecretTest(Base):
         self.runner = self.make_runner()
         session = await self.start()
         with self.assertRaises(T3Error) as caught:
-            await session.send(OK, DispatchMode.QUEUE)
+            await session.send(OK, DispatchMode.QUEUE, 'c1')
         texts.append(str(caught.exception))
         self.http.on('t3_thread_send', from_recording('send'))
-        await session.send(OK, DispatchMode.QUEUE)
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
         self.sleep.open()
         events = [event async for event in session.events]
         self.assertIn(TurnResult(TurnState.FAILED, None, 't3: leak: echo [redacted]'), events)
@@ -906,7 +1037,7 @@ class SecretTest(Base):
 
     async def test_the_token_goes_only_to_the_paired_origin(self) -> None:
         session = await self.start()
-        await session.send(OK, DispatchMode.QUEUE)
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
         for call in self.http.calls:
             self.assertTrue(call.url.startswith(ORIGIN + '/'))
             self.assertNotIn(TOKEN, call.body.decode())

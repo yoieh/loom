@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest import mock
 
@@ -5,6 +6,7 @@ from loom_contracts.events import EventType
 from loom_contracts.runners import DispatchMode
 
 from loom_core import threads
+from loom_core.orchestrator import Orchestrator
 
 from .fakes import FakeRunner, ManualClock, wait_for
 from .test_delegate import DelegateTest
@@ -230,6 +232,90 @@ class RecoverTest(RestartTest):
         self.assertEqual(self.table_rows(), before)
         self.assertEqual([s for s in statements if not s.startswith('SELECT')], [])
         self.assertEqual(runner.starts, [])
+
+
+class DispatchIdTest(RestartTest):
+    def last_seq(self) -> int:
+        return self.store.connection.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'messages'").fetchone()[0]
+
+    async def post(self, thread_id: str, command_id: str, mode: str) -> int:
+        await self.orchestrator.send({'id': command_id, 'thread_id': thread_id,
+                                      'message': 'more', 'mode': mode})
+        return self.last_seq()
+
+    async def test_a_queued_message_carries_its_command_id_and_seq(self) -> None:
+        thread_id, session = await self.running()
+        seq = await self.post(thread_id, 'queued-1', 'queue')
+        await self.orchestrator.drain()
+        self.assertEqual(len(session.command_ids), 1)
+        await self.finish(thread_id, session)
+        self.assertEqual(session.sent[-1], ('more', QUEUE))
+        self.assertEqual(session.command_ids[-1], f'queued-1:{seq}')
+
+    async def test_a_steer_carries_its_command_id_and_seq(self) -> None:
+        thread_id, session = await self.running()
+        seq = await self.post(thread_id, 'steer-1', 'steer')
+        await self.orchestrator.drain()
+        self.assertEqual(session.sent[-1], ('more', DispatchMode.STEER))
+        self.assertEqual(session.command_ids[-1], f'steer-1:{seq}')
+
+    async def test_an_interrupt_and_its_later_send_carry_one_id(self) -> None:
+        thread_id, session = await self.running()
+        seq = await self.post(thread_id, 'interrupt-1', 'interrupt')
+        await wait_for(lambda: len(session.command_ids) == 2)
+        await self.orchestrator.drain()
+        self.assertEqual(session.interrupt_ids, [f'interrupt-1:{seq}'])
+        self.assertEqual(session.sent[-1], ('more', QUEUE))
+        self.assertEqual(session.command_ids[-1], f'interrupt-1:{seq}')
+
+    async def test_a_stop_gives_its_id_to_every_target(self) -> None:
+        parent_id, parent = await self.running()
+        _, child = await self.child(parent_id)
+        await self.orchestrator.stop({'id': 'stop-1', 'thread_id': parent_id})
+        await self.orchestrator.drain()
+        self.assertEqual(parent.interrupt_ids, ['stop-1'])
+        self.assertEqual(child.interrupt_ids, ['stop-1'])
+
+    async def test_a_settle_gives_its_id_to_the_interrupt(self) -> None:
+        thread_id, session = await self.running()
+        await self.orchestrator.settle({'id': 'settle-1', 'thread_id': thread_id})
+        await self.orchestrator.drain()
+        self.assertEqual(session.interrupt_ids, ['settle-1'])
+
+    async def test_two_rows_with_one_command_id_get_two_ids(self) -> None:
+        thread_id, _ = await self.running()
+        await self.crash(thread_id)
+        first = self.runner.sessions[thread_id]
+        self.clock.advance(301)
+        await self.crash(thread_id)
+        second = self.runner.sessions[thread_id]
+        self.assertEqual(self.continuations(thread_id), 1)
+        ids = first.command_ids + second.command_ids
+        self.assertEqual(len(ids), 2)
+        self.assertEqual({sent.rsplit(':', 1)[0] for sent in ids},
+                         {f'{thread_id}:continuation:1'})
+        self.assertNotEqual(ids[0], ids[1])
+
+    async def test_a_message_sent_again_after_a_crash_keeps_its_id(self) -> None:
+        with mock.patch.object(Orchestrator, '_sent', side_effect=asyncio.CancelledError):
+            info = await self.launch()
+            await self.orchestrator.drain()
+        thread_id = info['id']
+        rows = self.store.connection.execute(
+            'SELECT seq, command_id FROM messages WHERE thread_id = ?', (thread_id,)).fetchall()
+        self.assertEqual(len(rows), 1)
+        sent = f'{rows[0][1]}:{rows[0][0]}'
+        alive = self.orchestrator.lanes.submit(thread_id, lambda: asyncio.sleep(0, 'alive'))
+        self.assertEqual(await alive, 'alive')
+        before = self.runner.sessions[thread_id]
+        runner = await self.stop_server()
+        await self.orchestrator.recover()
+        await self.orchestrator.drain()
+        self.assertEqual(before.command_ids, [sent])
+        self.assertEqual(runner.sessions[thread_id].command_ids, [sent])
+        self.assertEqual(self.state(thread_id), 'running')
+        self.assertEqual(self.pending(thread_id), [])
 
 
 if __name__ == '__main__':

@@ -216,7 +216,7 @@ class ClaudeSession:
         self.events: AsyncIterator[RunnerEvent] = self._iterate()
         self._reader = self._loop.create_task(self._run())
 
-    async def send(self, message: str, mode: DispatchMode) -> None:
+    async def send(self, message: str, mode: DispatchMode, command_id: str | None = None) -> None:
         mode = DispatchMode(mode)
         self._check_open()
         if not self._turn_open or mode is DispatchMode.STEER:
@@ -248,7 +248,7 @@ class ClaudeSession:
             line = deny_line(request_id, answer.message or 'Denied.')
         await self._write(line)
 
-    async def interrupt(self) -> None:
+    async def interrupt(self, command_id: str | None = None) -> None:
         if not self._turn_open or self._is_closed():
             return
         self._holding += 1

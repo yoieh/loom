@@ -103,6 +103,10 @@ def _held(tx: sqlite3.Connection, thread_id: str) -> tuple[int, StartSource] | N
     return None if found is None else (found[0], StartSource(found[1]))
 
 
+def _dispatch_id(command_id: str, seq: int) -> str:
+    return f'{command_id}:{seq}'
+
+
 def _reason(error: BaseException) -> str:
     if isinstance(error, LoomError):
         return error.message
@@ -374,9 +378,11 @@ class Orchestrator:
                 tx.execute('DELETE FROM continuations WHERE thread_id = ?', (thread_id,))
             return thread_info(fetch(tx, thread_id))
 
-        receipt = self.store.command(params.get('id'), CallName.THREADS_SETTLE, change)
+        command_id = params.get('id')
+        receipt = self.store.command(command_id, CallName.THREADS_SETTLE, change)
         if not receipt.replayed and before is not None:
-            self.lanes.submit(thread_id, lambda: self._end_session(thread_id, before))
+            self.lanes.submit(thread_id,
+                              lambda: self._end_session(thread_id, before, command_id))
         return receipt.answer
 
     async def update(self, params: object) -> ThreadInfo:
@@ -410,10 +416,12 @@ class Orchestrator:
                         stopped.append(row['id'])
             return thread_info(fetch(tx, thread_id))
 
-        receipt = self.store.command(params.get('id'), CallName.THREADS_STOP, change)
+        command_id = params.get('id')
+        receipt = self.store.command(command_id, CallName.THREADS_STOP, change)
         if not receipt.replayed:
             for target in stopped:
-                self.lanes.submit(target, lambda target=target: self._stop_turn(target))
+                self.lanes.submit(target,
+                                  lambda target=target: self._stop_turn(target, command_id))
         return receipt.answer
 
     async def respond(self, params: object, *, answerer: str | None,
@@ -801,7 +809,7 @@ class Orchestrator:
                 self._give_back(thread_id)
             return
         try:
-            await session.send(found[1], DispatchMode.QUEUE)
+            await session.send(found[1], DispatchMode.QUEUE, _dispatch_id(found[2], found[0]))
         except Exception as error:
             await self._fail(thread_id, error)
             return
@@ -841,12 +849,12 @@ class Orchestrator:
         mode = DispatchMode(found[1])
         try:
             if mode is DispatchMode.STEER and self._capable(row, Capability.STEER):
-                await session.send(found[0], DispatchMode.STEER)
+                await session.send(found[0], DispatchMode.STEER, _dispatch_id(found[2], seq))
                 self._sent(session, found[2], found[0])
                 with self.store.transaction() as tx:
                     tx.execute('DELETE FROM messages WHERE seq = ?', (seq,))
             elif mode is DispatchMode.INTERRUPT and self._capable(row, Capability.INTERRUPT):
-                await session.interrupt()
+                await session.interrupt(_dispatch_id(found[2], seq))
         except Exception as error:
             await self._fail(thread_id, error)
 
@@ -857,20 +865,20 @@ class Orchestrator:
         if row['state'] == ThreadState.RUNNING and not row['stop_requested']:
             await self._while_running(row, seq)
 
-    async def _end_session(self, thread_id: str, before: ThreadState) -> None:
+    async def _end_session(self, thread_id: str, before: ThreadState, command_id: str) -> None:
         session = self._sessions.pop(thread_id, None)
         if session is None:
             return
         if before is ThreadState.RUNNING and self._capable(self._row(thread_id),
                                                            Capability.INTERRUPT):
             try:
-                await session.interrupt()
+                await session.interrupt(command_id)
             except Exception:
                 pass
         await self._close_session(session)
         self._give_back(thread_id)
 
-    async def _stop_turn(self, thread_id: str) -> None:
+    async def _stop_turn(self, thread_id: str, command_id: str) -> None:
         row = self._row(thread_id)
         state = ThreadState(row['state'])
         session = self._sessions.get(thread_id)
@@ -879,7 +887,7 @@ class Orchestrator:
                 ended = asyncio.get_running_loop().create_future()
                 self._turn_ends[thread_id] = ended
                 try:
-                    await session.interrupt()
+                    await session.interrupt(command_id)
                 except Exception:
                     self._turn_ends.pop(thread_id, None)
                 else:

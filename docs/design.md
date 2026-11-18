@@ -168,12 +168,19 @@ class Runner(Protocol):
 
 class RunnerSession(Protocol):
     events: AsyncIterator[RunnerEvent]                # turn.started, entered, text, tool, request, result, exited
-    async def send(self, message: str, mode: DispatchMode) -> None: ...
+    async def send(self, message: str, mode: DispatchMode, command_id: str) -> None: ...
     async def respond(self, request_id: str, answer: RequestAnswer) -> None: ...
-    async def interrupt(self) -> None: ...
+    async def interrupt(self, command_id: str) -> None: ...
     async def close(self) -> None: ...                # stdin closed, SIGTERM after 5 s
 ```
 
+- **The command id.** The orchestrator passes `send` and `interrupt` the id of the Loom
+  command they carry out (§4). For a message, it is `<command id>:<seq>`: the message's
+  command id and its row's `seq` in `messages`. A task's result (`<child id>:result`) and a
+  continuation (`<thread id>:continuation:<n>`) can repeat their command id, but a seq is
+  never reused. For a stop or a settle, it is that call's `id`. A message sent again after
+  Loom's own crash keeps its id. `loom-runner-claude` and `loom-runner-codex` accept it and
+  ignore it; `loom-runner-t3` makes T3's retry key from it (§6.1).
 - **`loom-runner-claude`**: one `claude -p --input-format stream-json --output-format
   stream-json --verbose --replay-user-messages --permission-prompt-tool stdio` process per
   live thread, `--session-id <uuid>` on the first start and `--resume <uuid>` (in its place)
@@ -322,26 +329,34 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   available."). An archived thread reads as before, with `thread.archived` `true`, so the
   runner checks that field (*seen*, T3 0.1.2).
 - **Send and interrupt.** `t3_thread_send {threadId, message, mode, clientRequestId}`, with
-  `steer` → `steer`, `queue` → `queue` and `interrupt` → `restart`. `RunnerSession.send`
-  carries no Loom command id (§4), so the runner makes a new `clientRequestId` (a uuid4) per
-  `send` or `interrupt` call, and reuses it only for the MCP client's one retry after T3
-  dropped the MCP session (400 `-32600`, or 404). It never retries after a timeout or a
-  connection error, since T3 may already have acted. So a message Loom sends again after its
-  own crash, between the send and deleting the message row, may enter twice, as it may for
-  Claude and Codex threads; passing the command id to `send` needs a new issue. A second
-  send with the same `clientRequestId` answers the same `messageId` and `runId` and enters
-  no second message (*seen*, T3 0.1.2; TV §53 found no retry key on 0.1.0). A send answers
-  `{threadId, messageId, runId, status, delivery}`, and its user message's `messageId` ends
-  in `thread-send:<clientRequestId>`. A `steer` during a run answers `delivery` `steered` with
-  that run's `runId`, and its message joins the run (*seen*, T3 0.1.2). `interrupt` is
-  `t3_thread_interrupt {threadId, clientRequestId}`, which answers `{threadId, runId, status:
-  "interrupt_requested"}`. A second call with the same `clientRequestId` gave the same answer
-  and no second interrupt item (*seen*, T3 0.1.2).
+  `steer` → `steer`, `queue` → `queue` and `interrupt` → `restart`. The `clientRequestId`
+  comes from the command id that `send` or `interrupt` takes (§6):
+  `uuid5(NAMESPACE_URL, 'loom:runner.send:<T3 thread id>:<command id>')`, with
+  `runner.interrupt` for an interrupt, so a send and an interrupt never share one. The MCP
+  client's one retry after T3 dropped the MCP session (400 `-32600`, or 404) sends the same
+  one. It never retries after a timeout or a connection error, since T3 may already have
+  acted. So a message Loom sends again after its own crash, between the send and deleting
+  the message row, enters once; in Claude and Codex threads it may still enter twice. The
+  answer to a send may name a run that has ended (`status` `completed`, `failed` or
+  `interrupted`) and that the session has not reported. Then the send was a repeat whose run
+  is already behind the session's position, so the runner reports that turn at once:
+  `turn.started`, `entered` and a `result` with no text (T3's answer to a repeat after its
+  run ended is not *seen*). A second send with the same `clientRequestId` answers the same
+  `messageId` and `runId` and enters no second message (*seen*, T3 0.1.2; TV §53 found no
+  retry key on 0.1.0). A send answers `{threadId, messageId, runId, status, delivery}`, and
+  its user message's `messageId` ends in `thread-send:<clientRequestId>`. A `steer` during a
+  run answers `delivery` `steered` with that run's `runId`, and its message joins the run
+  (*seen*, T3 0.1.2). `interrupt` is `t3_thread_interrupt {threadId, clientRequestId}`,
+  which answers `{threadId, runId, status: "interrupt_requested"}`. A second call with the
+  same `clientRequestId` gave the same answer and no second interrupt item (*seen*, T3
+  0.1.2).
 - **Events.** T3's MCP sends no stream, so a session polls `t3_thread_read {view: "activity",
   afterPosition}`: every second while the thread is `running` or `waiting` or has a queued
-  run, and for up to 30 reads after a `send` until its run shows, and every 15 s otherwise,
-  so a turn the user starts in T3's own app is seen too. The answer is `{thread,
-  recentRuns, items, nextPosition, hasMore}` (*seen*, T3 0.1.2):
+  run, and for up to 30 reads after a `send` until its run shows (none when the send's
+  answer names an ended run the session has not reported: that run is reported at once, see
+  Send and interrupt), and every 15 s otherwise, so a turn the user starts in T3's own app
+  is seen too. The answer is `{thread, recentRuns, items, nextPosition, hasMore}` (*seen*,
+  T3 0.1.2):
   - **Position.** `afterPosition` is exclusive. `nextPosition` is the last item's
     `position`, and `null` when no item is new, so the session keeps its last position.
   - **The thread.** `thread` holds `status`, `activeRunId`, `latestRunId`, `runCount`,

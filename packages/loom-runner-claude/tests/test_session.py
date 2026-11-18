@@ -54,6 +54,7 @@ A_TXT_INPUT = {'command': 'echo spike-233 > a.txt', 'description': 'Write spike-
 B_TXT_ID = 'ac794f47-7556-4f5f-a8a6-2cec64a05505'
 
 TOKEN = 'loom-test-token-3f9c2a7e'
+COMMAND_ID = 'command-c1'
 
 
 def path_without_agents(path: str) -> str:
@@ -303,6 +304,20 @@ class SendTest(SessionTest):
                 self.assertEqual(self.written, [user_line(message)])
                 argv = self.spawn.calls[0][0]
                 self.assertFalse([item for item in argv if 'heron' in item or '\n' in item])
+
+    async def test_the_command_id_is_accepted_and_ignored(self) -> None:
+        message = 'Reply with OK'
+        for mode in DispatchMode:
+            with self.subTest(mode=mode):
+                session = await self.start()
+                await session.send(message, mode)
+                without = list(self.written)
+                session = await self.start()
+                await session.send(message, mode, COMMAND_ID)
+                self.assertEqual(self.written, without)
+                self.assertFalse([line for line in self.written if COMMAND_ID.encode() in line])
+                argv = self.spawn.calls[0][0]
+                self.assertFalse([item for item in argv if COMMAND_ID in item])
 
     async def test_replay_turns(self) -> None:
         session = await self.start()
@@ -576,6 +591,24 @@ class InterruptTest(SessionTest):
         self.assertEqual(self.process.signals, [])
         await session.send('next', DispatchMode.STEER)
         self.assertEqual(self.written[-1], user_line('next'))
+
+    async def test_interrupt_with_a_command_id_acts_as_without(self) -> None:
+        lines = stream_lines('interrupt')
+        session = await self.start()
+        await session.interrupt(COMMAND_ID)
+        self.assertEqual(self.written, [])
+        await session.send('Run `sleep 60` with Bash', DispatchMode.STEER, COMMAND_ID)
+        self.process.feed(*lines[:2])
+        await events_until(session, ToolUse)
+        stopping = asyncio.create_task(session.interrupt(COMMAND_ID))
+        await eventually(lambda: len(self.written) == 2)
+        self.assertTrue(is_interrupt(self.written[1]))
+        self.process.feed(*lines[2:])
+        await asyncio.wait_for(stopping, 1)
+        self.assertEqual(await events_until(session, TurnResult), [STOPPED])
+        self.assertFalse(self.process.stdin.closed)
+        self.assertEqual(self.process.signals, [])
+        self.assertFalse([line for line in self.written if COMMAND_ID.encode() in line])
 
     async def test_replay_interrupt_background(self) -> None:
         lines = stream_lines('interrupt-background')
