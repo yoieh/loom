@@ -56,6 +56,13 @@ B_TXT_ID = 'ac794f47-7556-4f5f-a8a6-2cec64a05505'
 TOKEN = 'loom-test-token-3f9c2a7e'
 
 
+def path_without_agents(path: str) -> str:
+    entries = [entry for entry in path.split(os.pathsep)
+               if entry and not any(os.path.lexists(os.path.join(entry, name))
+                                    for name in ('claude', 'codex'))]
+    return os.pathsep.join(entries)
+
+
 def completed(text: str) -> TurnResult:
     return TurnResult(TurnState.COMPLETED, text, None)
 
@@ -865,7 +872,7 @@ class RealProcessTest(unittest.IsolatedAsyncioTestCase):
         self.thread = make_thread(id=str(uuid.uuid4()), workspace_path=str(self.workspace))
         self.host = FakeHost(
             environment={
-                'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+                'PATH': path_without_agents(os.environ.get('PATH', '/usr/bin:/bin')),
                 'HOME': str(root),
                 'LANG': 'C.UTF-8',
                 'CLAUDECODE': '1',
@@ -882,6 +889,12 @@ class RealProcessTest(unittest.IsolatedAsyncioTestCase):
 
     def grandchild_pid(self) -> int:
         return int((self.workspace / 'grandchild.pid').read_text())
+
+    def test_host_path_holds_no_claude_or_codex(self) -> None:
+        for entry in self.host.environment(self.thread)['PATH'].split(os.pathsep):
+            with self.subTest(entry=entry):
+                self.assertFalse(os.path.lexists(os.path.join(entry, 'claude')))
+                self.assertFalse(os.path.lexists(os.path.join(entry, 'codex')))
 
     async def test_child_sees_argv_cwd_env_and_replays(self) -> None:
         session = await ClaudeRunner(close_timeout=5.0).start(self.thread, self.host)
@@ -982,7 +995,7 @@ class RealProcessSecretTest(unittest.IsolatedAsyncioTestCase):
         self.host = TokenHost(
             token_file,
             environment={
-                'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+                'PATH': path_without_agents(os.environ.get('PATH', '/usr/bin:/bin')),
                 'HOME': str(root),
                 'LANG': 'C.UTF-8',
                 'ANTHROPIC_AUTH_TOKEN': TOKEN,
@@ -1000,6 +1013,12 @@ class RealProcessSecretTest(unittest.IsolatedAsyncioTestCase):
     def assert_child_had_the_token(self) -> None:
         spawned = json.loads((self.workspace / 'spawned.json').read_text())
         self.assertEqual(spawned['env']['ANTHROPIC_AUTH_TOKEN'], TOKEN)
+
+    def test_host_path_holds_no_claude_or_codex(self) -> None:
+        for entry in self.host.environment(self.thread)['PATH'].split(os.pathsep):
+            with self.subTest(entry=entry):
+                self.assertFalse(os.path.lexists(os.path.join(entry, 'claude')))
+                self.assertFalse(os.path.lexists(os.path.join(entry, 'codex')))
 
     async def test_missing_binary(self) -> None:
         missing = str(self.workspace.parent / 'bin' / f'missing-{TOKEN}')
