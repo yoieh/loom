@@ -1085,7 +1085,7 @@ it (§15 Signals). A signal belongs to no thread.
 |---|---|---|
 | `id` | string, required | Command id. |
 | `topic` | string, required | What happened, such as `factory.run.status`. 1 to 200 characters, a letter or digit and then letters, digits, `.`, `_`, `:` and `-`. Not one of Loom's own [event types](#events), such as `thread.settled`. |
-| `payload` | object, required | Any JSON object, at most 16,384 bytes as compact UTF-8 JSON. `{}` for none. |
+| `payload` | object, required | Any JSON object, at most 16,384 bytes as compact UTF-8 JSON. Its text, every key and string in it, must be valid UTF-8, so an unpaired surrogate such as `"\ud800"` is refused. `{}` for none. |
 | `project_id` | string | The project the signal is about. Default: none. |
 | `key` | string | 1 to 200 characters: what the signal is about within its topic, such as a run id. Default: none. |
 | `cause` | int | The id of the event behind this signal (see [Cause chains](#cause-chains)). Default: none. |
@@ -1111,6 +1111,7 @@ thread's. A person's signal has no `by`, and `hops` 0 unless it names a `cause`.
 | `topic` is a Loom event type | `invalid` | `topic must not be a Loom event type` |
 | `payload` is missing or null | `invalid` | `payload is required` |
 | `payload` is not an object | `invalid` | `payload must be a JSON object` |
+| `payload` holds a key or string that is not valid UTF-8, such as an unpaired surrogate | `invalid` | `payload text must be valid UTF-8` |
 | `payload` is over 16,384 bytes | `invalid` | `payload must be at most 16384 bytes as JSON` |
 | `project_id` is null | `invalid` | `project_id must not be null` |
 | `project_id` is not a string | `invalid` | `project_id must be a string` |
@@ -1150,6 +1151,8 @@ Refused signals:
 {"ok":false,"error":{"code":"invalid","message":"topic must not be a Loom event type"}}
 {"v": "v1", "call": "signals.emit", "params": {"id": "c3", "topic": "pr.opened", "payload": [14]}}
 {"ok":false,"error":{"code":"invalid","message":"payload must be a JSON object"}}
+{"v": "v1", "call": "signals.emit", "params": {"id": "c3", "topic": "pr.opened", "payload": {"title": "\ud800"}}}
+{"ok":false,"error":{"code":"invalid","message":"payload text must be valid UTF-8"}}
 {"v": "v1", "call": "signals.emit", "params": {"id": "c3", "topic": "pr.opened", "payload": {"pr": 14}, "cause": 999}}
 {"ok":false,"error":{"code":"invalid","message":"cause names no stored event"}}
 ```

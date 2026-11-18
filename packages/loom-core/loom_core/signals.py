@@ -49,7 +49,11 @@ def _payload(value: object) -> dict:
     if not isinstance(value, dict):
         raise LoomError('invalid', 'payload must be a JSON object')
     text = json.dumps(value, separators=(',', ':'), ensure_ascii=False)
-    if len(text.encode('utf-8', 'surrogatepass')) > MAX_PAYLOAD:
+    try:
+        encoded = text.encode('utf-8')
+    except UnicodeEncodeError:
+        raise LoomError('invalid', 'payload text must be valid UTF-8') from None
+    if len(encoded) > MAX_PAYLOAD:
         raise LoomError('invalid', f'payload must be at most {MAX_PAYLOAD} bytes as JSON')
     return value
 
