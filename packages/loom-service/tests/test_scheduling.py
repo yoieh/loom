@@ -16,7 +16,7 @@ from loom_service.scheduling import ServiceHost
 from loom_service.serve import start
 
 from .fake_claude import ENDLESS
-from .support import TIMEOUT, Connection, ServerCase, clean_env, run_client
+from .support import TIMEOUT, Connection, ServerCase, clean_env, run_client, wait_until
 
 INFO_KEYS = {'id', 'trigger', 'action', 'text', 'thread_id', 'project_id', 'title',
              'concurrency_key', 'on_busy', 'settle', 'runner', 'model', 'workspace', 'check',
@@ -429,6 +429,16 @@ class LifecycleTest(ScheduleCase):
         self.assertEqual(len(self.ticking()), 1)
         await self.serving.close()
         self.assertEqual(self.ticking(), [])
+
+    async def test_an_error_in_the_schedulers_own_work_goes_to_the_servers_log(self) -> None:
+        conn = await self.connect()
+        with mock.patch.object(self.serving.scheduler, '_run',
+                               side_effect=RuntimeError('cannot record the run')):
+            await self.add_schedule(conn, -5, action='notify')
+            await wait_until(lambda: 'RuntimeError: cannot record the run' in self.log.getvalue())
+        self.assertIn('loom: internal error in the scheduler\nTraceback ', self.log.getvalue())
+        self.assertEqual(await conn.ok('projects.list'), [])
+        self.assertEqual(len(self.ticking()), 1)
 
     async def test_a_store_error_in_the_schedules_stops_the_start(self) -> None:
         data_dir = self.base / 'broken'

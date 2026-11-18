@@ -184,6 +184,11 @@ class Service:
             remove()
 
     async def _launch(self, params: object, caller: Caller) -> ThreadInfo:
+        own = _own_thread(caller)
+        if own is not None and isinstance(params, dict) and 'origin' in params:
+            origin = params['origin']
+            if isinstance(origin, str) and origin != f'thread:{own}':
+                raise LoomError('invalid', f'origin must be thread:{own}, the calling thread')
         thread_id = caller.thread_id
         if thread_id is not None and not caller.scheduled:
             if self._stopping(_params(params).get('id'), thread_id):
@@ -202,6 +207,11 @@ class Service:
         return row is not None and bool(row[0])
 
     async def _delegate(self, params: object, caller: Caller) -> ThreadInfo:
+        own = _own_thread(caller)
+        if own is not None and isinstance(params, dict):
+            parent_id = params.get(keys.PARENT_KEY)
+            if isinstance(parent_id, str) and parent_id != own:
+                raise LoomError('invalid', f'parent_id must be the calling thread {own}')
         return await self.orchestrator.delegate(params, source=StartSource.AGENT,
                                                 caller_thread=_own_thread(caller))
 

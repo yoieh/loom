@@ -2,15 +2,27 @@ import asyncio
 import os
 import socket
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from loom_service import server
-from loom_service.server import MAX_LINE
+from loom_service.config import StartError
+from loom_service.serve import Serving
+from loom_service.server import MAX_CONNECTIONS, MAX_LINE
 
 from .support import (
     TIMEOUT, ServerCase, clean_env, make_repo, pad_line, run_client, wait_until,
 )
 
+TOO_MANY = b'{"ok":false,"error":{"code":"failed","message":"too many connections"}}\n'
+RESERVED = {'code': 'invalid',
+            'message': "ids that begin with schedule: are reserved for Loom's scheduler"}
+ID_CALLS = (
+    'threads.launch', 'threads.delegate', 'threads.send', 'threads.steer', 'threads.stop',
+    'threads.settle', 'threads.update', 'projects.add', 'projects.set_mode', 'projects.remove',
+    'requests.respond', 'signals.emit', 'schedules.add', 'schedules.pause', 'schedules.remove',
+    't3_threads.send', 't3_threads.interrupt',
+)
 AGENT_ENV_KEYS = {'HOME', 'LANG', 'PATH', 'LOOM_SOCKET', 'LOOM_THREAD', 'ANTHROPIC_API_KEY'}
 SHELL_KEYS = {'PWD', 'OLDPWD', 'SHLVL', '_', 'LC_CTYPE'}
 TOOL_INPUT = {'command': 'true', 'description': 'Fake tool call 1'}
@@ -434,6 +446,137 @@ class AgentRefusalTest(ServerCase):
             self.assertEqual(await conn.read(), {'ok': False, 'error': {
                 'code': 'forbidden', 'message': 'the peer runs as another user'}})
             self.assertTrue(await conn.at_eof())
+
+
+class ConnectionCapTest(ServerCase):
+    async def capped(self, max_connections: int) -> tuple[Path, Serving]:
+        socket_path = self.base / 'capped.sock'
+        serving = await self.serve(socket=socket_path, data_dir=self.base / 'capped',
+                                   max_connections=max_connections)
+        return socket_path, serving
+
+    async def assert_refused(self, socket_path: Path) -> None:
+        refused = await self.connect(socket_path)
+        line = await asyncio.wait_for(refused.reader.readline(), TIMEOUT)
+        self.assertEqual(line, TOO_MANY)
+        self.assertTrue(await refused.at_eof())
+
+    def test_the_cap_is_256(self) -> None:
+        self.assertEqual(MAX_CONNECTIONS, 256)
+        self.assertEqual(self.serving.server.max_connections, MAX_CONNECTIONS)
+
+    async def test_connections_up_to_the_cap_are_served_and_the_next_is_refused(self) -> None:
+        socket_path, _ = await self.capped(2)
+        first = await self.connect(socket_path)
+        second = await self.connect(socket_path)
+        self.assertEqual(await first.ok('projects.list'), [])
+        self.assertEqual(await second.ok('projects.list'), [])
+        await self.assert_refused(socket_path)
+        self.assertEqual(await first.ok('projects.list'), [])
+        self.assertEqual(await second.ok('projects.list'), [])
+
+    async def test_a_follow_stream_counts(self) -> None:
+        socket_path, _ = await self.capped(1)
+        follower = await self.connect(socket_path)
+        self.assertEqual(await follower.call('threads.events', follow=True),
+                         {'ok': True, 'result': {'follow': True}})
+        await self.assert_refused(socket_path)
+
+    async def test_a_closed_connection_frees_its_place(self) -> None:
+        socket_path, serving = await self.capped(2)
+        first = await self.connect(socket_path)
+        second = await self.connect(socket_path)
+        self.assertEqual(await first.ok('projects.list'), [])
+        self.assertEqual(await second.ok('projects.list'), [])
+        await self.assert_refused(socket_path)
+        await first.close()
+        await wait_until(lambda: len(serving.server._connections) < 2)
+        later = await self.connect(socket_path)
+        self.assertEqual(await later.call('projects.list'), {'ok': True, 'result': []})
+
+
+class SocketDirectoryTest(ServerCase):
+    def make_dir(self, name: str, mode: int) -> Path:
+        path = self.base / name
+        path.mkdir(mode=mode)
+        path.chmod(mode)
+        return path
+
+    async def assert_refused(self, directory: Path, message: str) -> None:
+        with self.assertRaises(StartError) as caught:
+            await self.serve(socket=directory / 'api.sock', data_dir=self.base / 'refused')
+        self.assertEqual(str(caught.exception), message)
+
+    async def test_a_directory_group_or_others_can_write_is_refused(self) -> None:
+        directory = self.make_dir('shared', 0o770)
+        message = f'the socket directory {directory} can be written by group or others'
+        await self.assert_refused(directory, message)
+        self.assertFalse(os.path.lexists(directory / 'api.sock'))
+
+        stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stale.bind(str(directory / 'api.sock'))
+        stale.close()
+        before = os.lstat(directory / 'api.sock')
+        await self.assert_refused(directory, message)
+        after = os.lstat(directory / 'api.sock')
+        self.assertEqual((after.st_dev, after.st_ino), (before.st_dev, before.st_ino))
+
+    async def test_a_directory_of_another_user_is_refused(self) -> None:
+        directory = self.make_dir('theirs', 0o700)
+        with mock.patch.object(server.os, 'geteuid', return_value=os.geteuid() + 1):
+            await self.assert_refused(directory,
+                                      f'the socket directory {directory} is not owned by you')
+        self.assertFalse(os.path.lexists(directory / 'api.sock'))
+
+    async def test_a_parent_that_is_a_file_is_refused(self) -> None:
+        plain = self.base / 'plain'
+        plain.write_text('')
+        await self.assert_refused(plain, f'{plain} is not a directory')
+
+    async def test_a_parent_that_cannot_be_read_is_refused(self) -> None:
+        dangling = self.base / 'dangling'
+        dangling.symlink_to(self.base / 'nowhere')
+        await self.assert_refused(dangling, f'cannot check {dangling}: No such file or directory')
+
+    async def test_private_group_readable_and_missing_directories_are_accepted(self) -> None:
+        missing = self.base / 'new' / 'deeper'
+        for directory in (self.make_dir('private', 0o700), self.make_dir('readable', 0o750),
+                          missing):
+            with self.subTest(directory=directory.name):
+                await self.serve(socket=directory / 'api.sock',
+                                 data_dir=self.base / f'data-{directory.name}')
+                conn = await self.connect(directory / 'api.sock')
+                self.assertEqual(await conn.ok('projects.list'), [])
+        for directory in (missing.parent, missing):
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+
+
+class ReservedIdTest(ServerCase):
+    def stored(self, command_id: str) -> int:
+        return self.serving.service.store.connection.execute(
+            'SELECT COUNT(*) FROM commands WHERE id = ?', (command_id,)).fetchone()[0]
+
+    async def test_each_call_with_an_id_refuses_a_scheduler_id(self) -> None:
+        conn = await self.connect()
+        await self.add_project(conn)
+        for call in ID_CALLS:
+            with self.subTest(call=call):
+                answer = await conn.call(call, id='schedule:x:1', thread_id='nope',
+                                         project_id='repo', title='T', message='m',
+                                         path=str(self.repo), topic='t', payload={})
+                self.assertEqual(answer, {'ok': False, 'error': RESERVED})
+                self.assertEqual(self.stored('schedule:x:1'), 0)
+        self.assertEqual(set(server.COMMAND_CALLS), set(ID_CALLS))
+        self.assertEqual(len(server.COMMAND_CALLS), 17)
+
+    async def test_other_ids_and_other_calls_are_not_refused(self) -> None:
+        conn = await self.connect()
+        for command_id in ('Schedule:x', 'schedule'):
+            with self.subTest(command_id=command_id):
+                answer = await conn.call('threads.stop', id=command_id, thread_id='nope')
+                self.assertEqual(answer['error']['code'], 'not_found')
+        self.assertEqual(await conn.call('threads.list', id='schedule:x'),
+                         {'ok': True, 'result': []})
 
 
 if __name__ == '__main__':

@@ -1,4 +1,5 @@
 import json
+import unicodedata
 
 from loom_contracts.calls import CallName
 from loom_contracts.events import EventType
@@ -12,6 +13,7 @@ _ESCAPES = {
     code: _NAMED.get(chr(code), f'\\x{code:02x}')
     for code in (*range(0x20), 0x7f, *range(0x80, 0xa0))
 } | {code: f'\\u{code:04x}' for code in range(0xd800, 0xe000)}
+_INVISIBLE = frozenset({'Cf', 'Zl', 'Zp'})
 
 EVENT_FIELDS: dict[str, tuple[str, ...]] = {
     EventType.THREAD_STATE: ('state', 'waiting', 'reason'),
@@ -29,8 +31,18 @@ EVENT_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _escape_invisible(char: str) -> str:
+    if unicodedata.category(char) not in _INVISIBLE:
+        return char
+    code = ord(char)
+    return f'\\u{code:04x}' if code <= 0xffff else f'\\U{code:08x}'
+
+
 def escape(text: str) -> str:
-    return text.translate(_ESCAPES)
+    text = text.translate(_ESCAPES)
+    if text.isascii():
+        return text
+    return ''.join(map(_escape_invisible, text))
 
 
 def entry(value: object) -> str:

@@ -1,3 +1,4 @@
+import io
 import json
 import sqlite3
 import tempfile
@@ -210,6 +211,12 @@ class FakeHost:
         return self.connection.execute(sql, args).fetchall()
 
 
+def assert_scheduler_error(case: unittest.TestCase, log: str, message: str) -> None:
+    case.assertEqual(log.count('loom: internal error in the scheduler\n'), 1, log)
+    case.assertTrue(log.startswith('loom: internal error in the scheduler\nTraceback '), log)
+    case.assertIn(f'\nRuntimeError: {message}\n', log)
+
+
 PERSON = types.SimpleNamespace(thread_id=None, verified=True)
 AGENT = types.SimpleNamespace(thread_id='t1', verified=True)
 UNKNOWN = types.SimpleNamespace(thread_id=None, verified=False)
@@ -225,6 +232,7 @@ class SchedulerCase(unittest.IsolatedAsyncioTestCase):
         self.host.add_project('p2')
         self.host.add_thread('t1', 'p1')
         self.host.add_thread('t2', 'p2')
+        self.log = io.StringIO()
         self.scheduler = self.new_scheduler()
 
     async def asyncTearDown(self) -> None:
@@ -233,7 +241,7 @@ class SchedulerCase(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     def new_scheduler(self) -> Scheduler:
-        scheduler = Scheduler(self.host, clock=self.clock, tz=PLUS_TWO)
+        scheduler = Scheduler(self.host, clock=self.clock, tz=PLUS_TWO, log=self.log)
         scheduler.open()
         return scheduler
 

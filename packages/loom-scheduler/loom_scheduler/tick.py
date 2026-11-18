@@ -1,7 +1,14 @@
 import asyncio
+import sys
+import traceback
 from collections.abc import Callable
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, TextIO
+
+
+def log_error(log: TextIO) -> None:
+    log.write(f'loom: internal error in the scheduler\n{traceback.format_exc()}')
+    log.flush()
 
 
 class Source(Protocol):
@@ -11,9 +18,11 @@ class Source(Protocol):
 
 
 class Tick:
-    def __init__(self, clock: Callable[[], datetime], *, max_sleep: float = 30.0) -> None:
+    def __init__(self, clock: Callable[[], datetime], *, max_sleep: float = 30.0,
+                 log: TextIO | None = None) -> None:
         self.clock = clock
         self.max_sleep = max_sleep
+        self.log = sys.stderr if log is None else log
         self._sources: list[Source] = []
         self._woken = asyncio.Event()
 
@@ -40,7 +49,7 @@ class Tick:
             try:
                 await source.run_due(now)
             except Exception:
-                pass
+                log_error(self.log)
 
     async def wait(self, timeout: float) -> None:
         try:

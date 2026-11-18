@@ -2,10 +2,11 @@ import asyncio
 import heapq
 import json
 import sqlite3
+import sys
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, tzinfo
-from typing import Protocol
+from typing import Protocol, TextIO
 
 from loom_contracts.calls import CallName, ScheduleInfo
 from loom_contracts.events import EventType
@@ -21,7 +22,7 @@ from .table import (
     COLUMNS, FAILED, FIRED, MAX_REASON, RETRY_AFTER, SELECT, SKIPPED_BUSY, SKIPPED_LATE, check,
     create, launch_options, title, to_row, workspace,
 )
-from .tick import Tick
+from .tick import Tick, log_error
 from .timing import iso, parse_iso
 
 RUN_DAYS = 30
@@ -73,13 +74,14 @@ def _message(text: str, due: str, late: bool) -> str:
 
 class Scheduler:
     def __init__(self, host: SchedulerHost, *, clock: Callable[[], datetime],
-                 tz: tzinfo | None = None) -> None:
+                 tz: tzinfo | None = None, log: TextIO | None = None) -> None:
         self.host = host
         self.clock = clock
         self.tz = tz
-        self.tick = Tick(clock)
+        self.log = sys.stderr if log is None else log
+        self.tick = Tick(clock, log=self.log)
         self.tick.register(self)
-        self.events = EventSource(host, clock, self.tick.wake)
+        self.events = EventSource(host, clock, self.tick.wake, log=self.log)
         self.tick.register(self.events)
         self._heap: list[tuple[datetime, str]] = []
         self._next: dict[str, datetime] = {}
@@ -136,6 +138,7 @@ class Scheduler:
             try:
                 await self._run(schedule_id, now)
             except Exception:
+                log_error(self.log)
                 self._plan(schedule_id, now + RETRY_AFTER)
 
     def _plan(self, schedule_id: str, at: datetime | None) -> None:

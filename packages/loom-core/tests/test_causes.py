@@ -197,9 +197,13 @@ class DelegateTest(CauseTest):
         parent = await self.thread()
         cause = self.fired(6)
         own = await self.thread(cause, 7)
-        child = await self.call('threads.delegate', {
-            'id': self.next_id(), 'parent_id': parent, 'task': 'Review'}, Caller(thread_id=own))
-        self.assertEqual(self.chain(child['id']), (cause, 7))
+        before = self.counts()
+        message = await self.refused('threads.delegate', {
+            'id': self.next_id(), 'parent_id': parent, 'task': 'Review'},
+            caller=Caller(thread_id=own))
+        self.assertEqual(message, f'parent_id must be the calling thread {own}')
+        self.assertEqual(self.counts(), before)
+        self.assertEqual({info['id'] for info in self.orchestrator.list()}, {parent, own})
 
 
 class SendTest(CauseTest):

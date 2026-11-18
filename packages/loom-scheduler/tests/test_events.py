@@ -1,5 +1,6 @@
 import unittest
 from datetime import timedelta
+from unittest import mock
 
 from loom_contracts.calls import CallName
 from loom_contracts.events import EventType
@@ -7,7 +8,7 @@ from loom_contracts.events import EventType
 from loom_scheduler import Maker, ScheduleError
 from loom_scheduler.events import NOW
 
-from .fakes import AGENT, PERSON, Event, SchedulerCase
+from .fakes import AGENT, PERSON, Event, SchedulerCase, assert_scheduler_error
 
 
 class EventCase(SchedulerCase):
@@ -455,6 +456,31 @@ class CursorTest(EventCase):
                          [f'schedule:{broken["id"]}:event:{event_id}'] * 2
                          + [f'schedule:{broken["id"]}:event:{later}'])
         self.assertEqual(self.causes(healthy['id']), [event_id, later])
+
+    async def test_an_error_in_a_pass_is_logged_and_retried_after_five_seconds(self) -> None:
+        info = await self.on('demo.done')
+        event_id = self.host.signal('demo.done')
+        with mock.patch.object(self.scheduler.events, '_pass',
+                               side_effect=RuntimeError('EventSource.run_due')):
+            await self.read_events()
+        assert_scheduler_error(self, self.log.getvalue(), 'EventSource.run_due')
+        self.assertEqual(self.scheduler.events._retry, self.clock() + timedelta(seconds=5))
+        self.assertEqual(self.fired(), [])
+        await self.run_pass(seconds=5)
+        self.assertEqual(self.causes(info['id']), [event_id])
+
+    async def test_an_error_in_handling_an_event_is_logged_and_halts_the_watch(self) -> None:
+        info = await self.on('demo.done')
+        event_id = self.host.signal('demo.done')
+        with mock.patch.object(self.scheduler.events, '_handle',
+                               side_effect=RuntimeError('EventSource._event')):
+            await self.read_events()
+        assert_scheduler_error(self, self.log.getvalue(), 'EventSource._event')
+        self.assertEqual(self.scheduler.events._held,
+                         {info['id']: self.clock() + timedelta(seconds=5)})
+        self.assertEqual((self.fired(), self.cursor(info['id'])), ([], 0))
+        await self.run_pass(seconds=5)
+        self.assertEqual(self.causes(info['id']), [event_id])
 
     async def test_a_lookup_that_fails_is_retried(self) -> None:
         info = await self.on('thread.settled')

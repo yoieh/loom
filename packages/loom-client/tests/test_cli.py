@@ -768,6 +768,33 @@ class HumanOutputTest(CliCase):
         self.assertIn('\\x1f\\x7f\\x80', out)
         self.assertIn('\\x9f', out)
 
+    def test_format_and_separator_characters_print_as_escapes(self) -> None:
+        text = 'a\u202eb\u2028c\u200bd'
+        escaped = 'a\\u202eb\\u2028c\\u200bd'
+        for follow in (False, True):
+            with self.subTest(follow=follow):
+                out = self.events(event(1, text=text), event(2, text=text), follow=follow)
+                self.assertTrue(out.isascii())
+                self.assertEqual(out.splitlines(), [f'1 {AT} t1 turn.text {escaped}',
+                                                    f'2 {AT} t1 turn.text {escaped}'])
+                out = self.events(event(1, text=text), follow=follow, as_json=True)
+                self.assertEqual(len(out.splitlines()), 1)
+                self.assertEqual(json.loads(out)['data']['text'], text)
+        self.answer(ok(thread_info(title=text)))
+        code, out, _ = self.run_cli('threads', 'get', 't1')
+        self.assertEqual(code, 0)
+        self.assertTrue(out.isascii())
+        self.assertEqual(len(out.splitlines()), len(thread_info()))
+        self.assertIn(f'title: {escaped}', out.splitlines())
+
+    def test_a_format_character_counts_as_one_character_at_the_cut(self) -> None:
+        out = self.events(event(1, text='x' * 1999 + '\u202e'))
+        self.assertTrue(out.endswith(' ' + 'x' * 1999 + '\\u202e\n'))
+        self.assertNotIn('…', out)
+        out = self.events(event(1, text='x' * 2000 + '\u202e'))
+        self.assertTrue(out.endswith(' ' + 'x' * 2000 + '…\n'))
+        self.assertNotIn('\\u202e', out)
+
     def test_a_text_of_exactly_2000_characters_prints_whole(self) -> None:
         out = self.events(event(1, text='x' * 1999 + 'y'))
         self.assertTrue(out.endswith(' ' + 'x' * 1999 + 'y\n'))

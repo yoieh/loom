@@ -1,13 +1,14 @@
 import asyncio
 import unittest
 from datetime import timedelta
+from unittest import mock
 
 from loom_contracts.calls import CallName
 from loom_contracts.events import EventType
 
 from loom_scheduler import Maker, ScheduleError
 
-from .fakes import AGENT, PERSON, Event, SchedulerCase
+from .fakes import AGENT, PERSON, Event, SchedulerCase, assert_scheduler_error
 
 INTERVAL = {'type': 'interval', 'everyMs': 60_000}
 DUE = '2026-10-23T07:01:00.000+00:00'
@@ -314,6 +315,18 @@ class FailureTest(SchedulerCase):
         self.assertEqual([send.params['id'] for send in sends],
                          [f'schedule:{info["id"]}:{DUE}'] * 2)
         self.assertEqual(len(self.runs(info['id'])), 1)
+
+    async def test_an_error_in_the_schedulers_own_work_is_logged_and_retried(self) -> None:
+        info = await self.add()
+        with mock.patch.object(self.scheduler, '_run',
+                               side_effect=RuntimeError('Scheduler.run_due')):
+            await self.run_pass(minutes=1)
+        assert_scheduler_error(self, self.log.getvalue(), 'Scheduler.run_due')
+        self.assertEqual(self.runs(info['id']), [])
+        self.assertEqual(self.scheduler.next_wake(), self.clock() + timedelta(seconds=5))
+        await self.run_pass(seconds=5)
+        self.assertEqual(self.runs(info['id'])[0][:3],
+                         (DUE, '2026-10-23T07:01:05.000+00:00', 'fired'))
 
 
 class OpenAndCloseTest(SchedulerCase):

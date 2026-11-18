@@ -42,6 +42,7 @@ class Activity:
     items: list[dict]
     next_position: int | None
     has_more: bool
+    runtime_mode: str | None
 
 
 def _runs(value: object) -> dict[str, str]:
@@ -75,6 +76,7 @@ def parse_activity(answer: object) -> Activity:
     elif not _int(position) or position < 0:
         raise failure('protocol', 'the activity answer has a bad position')
     pending = thread.get('pendingRequestCount')
+    mode = thread.get('runtimeMode')
     return Activity(
         status=status,
         active_run=_text(thread.get('activeRunId')),
@@ -85,6 +87,7 @@ def parse_activity(answer: object) -> Activity:
         items=[item for item in items if isinstance(item, dict)],
         next_position=position,
         has_more=answer.get('hasMore') is True,
+        runtime_mode=mode if isinstance(mode, str) else None,
     )
 
 

@@ -51,6 +51,10 @@ their tests, whose T3 answers were recorded from T3 0.1.2.
 - A client finds the socket in `LOOM_SOCKET` when it is set and not empty, else at
   `$XDG_RUNTIME_DIR/loom/api.sock`. Every agent Loom starts has `LOOM_SOCKET` set.
 - The socket file has mode 0600. Loom makes a missing socket directory with mode 0700.
+  `loom serve` refuses to start (exit 2) when the socket's directory is not a directory, is not
+  the user's own, or group or others can write it, so a socket directly in `/tmp` is refused. The
+  messages are `cannot check <dir>: <reason>`, `<dir> is not a directory`, `the socket directory
+  <dir> is not owned by you` and `the socket directory <dir> can be written by group or others`.
 - A local client needs no token. Nothing listens on a network port.
 - Only processes of the user who runs Loom may talk to it (see [Callers](#callers)).
 
@@ -99,7 +103,7 @@ breaking change will be `v2`, served next to `v1`.
 | `not_found` | The thread, project, schedule or request the request names does not exist, or, for a `t3_threads.*` call, the T3 thread or the T3 project. |
 | `conflict` | The request clashes with the current state: the thread has ended or is being stopped, the request is closed, the project still has a live thread, the path is already a project's root, or the command id was used for another call. |
 | `forbidden` | The caller may not make this call (see [Callers](#callers)), or the T3 send guard refuses it (see [Agents may not send to a wider T3 thread](#agents-may-not-send-to-a-wider-t3-thread)). |
-| `failed` | Something broke inside Loom. The message is `internal error`; the traceback goes only to the server's stderr. For a `t3_threads.*` call it also means T3 could not be reached or refused the call, and the message is the one-line `t3: ...` reason instead (see [T3 threads](#t3-threads)). |
+| `failed` | Something broke inside Loom. The message is `internal error`; the traceback goes only to the server's stderr. For a `t3_threads.*` call it also means T3 could not be reached or refused the call, and the message is the one-line `t3: ...` reason instead (see [T3 threads](#t3-threads)). Before any request is read, a connection over the cap gets `failed` with the message `too many connections` (see [Connection cap](#connection-cap)). |
 
 ### Bad requests
 
@@ -140,6 +144,18 @@ this line and closes the connection without reading further:
 {"ok":false,"error":{"code":"invalid","message":"request line is over 1048576 bytes"}}
 ```
 
+### Connection cap
+
+The server holds at most 256 connections at once, follow streams included. A connection over
+that gets one line and is closed without its request being read, so the client sees this line as
+the answer to its first request:
+
+```json
+{"ok":false,"error":{"code":"failed","message":"too many connections"}}
+```
+
+A refused client can try again once another connection closes.
+
 ### Command ids and safe retries
 
 Every call that changes something takes an `id`: a string of 1 to 200 characters that you make
@@ -154,7 +170,7 @@ string of 1 to 200 characters`. The CLI and the Python API make one for you.
 - Using an `id` again for a different call is a `conflict`, `id was already used for <call>`.
 - The calls that take an `id` are `threads.launch`, `threads.delegate`, `threads.send`,
   `threads.steer`, `threads.stop`, `threads.settle`, `threads.update`, `projects.add`,
-  `projects.set_mode`, `projects.remove`, `requests.respond`, `schedules.add`,
+  `projects.set_mode`, `projects.remove`, `requests.respond`, `signals.emit`, `schedules.add`,
   `schedules.pause`, `schedules.remove`, `t3_threads.send` and `t3_threads.interrupt`.
 - `t3_threads.send` and `t3_threads.interrupt` are retried by T3, not by Loom. Loom stores no
   receipt for them. It makes T3's `clientRequestId` from the call, the `thread_id` and the `id`,
@@ -163,8 +179,11 @@ string of 1 to 200 characters`. The CLI and the Python API make one for you.
   the same `messageId`). The answer is T3's answer to the retry, not a stored first answer. An
   `id` used before for another call is not refused, and these two calls make no other call refuse
   theirs.
-- Loom's scheduler uses ids of the form `schedule:<schedule id>:<due>` for the calls its runs make
-  (see [How schedules run](#how-schedules-run)), so don't choose ids that begin with `schedule:`.
+- Loom's scheduler uses ids of the form `schedule:<schedule id>:<due>` for the calls its clock
+  runs make, and `schedule:<schedule id>:event:<event id>` for an event trigger's (see [How
+  schedules run](#how-schedules-run)). Ids that begin with `schedule:` are reserved: a client's
+  call with one answers `invalid`,
+  `ids that begin with schedule: are reserved for Loom's scheduler`, and changes nothing.
 
 ```json
 {"v": "v1", "call": "threads.stop", "params": {"id": "c3", "thread_id": "3f2a…"}}
@@ -176,10 +195,11 @@ string of 1 to 200 characters`. The CLI and the Python API make one for you.
 ### Only the same user
 
 When a client connects, the server reads the peer's process id and user id from the socket
-(`SO_PEERCRED`). A peer that runs as another user gets one `forbidden` line, `the peer runs as
-another user`, and the connection is closed. When the server cannot read the peer's credentials
-at all, it answers `forbidden`, `cannot tell who the peer is`, and closes the connection the same
-way. The client sees either one as the answer to its first request.
+(`SO_PEERCRED`), and where the kernel has `SO_PEERPIDFD` it takes a pidfd of the peer as well.
+A peer that runs as another user gets one `forbidden` line, `the peer runs as another user`, and
+the connection is closed. When the server cannot read the peer's credentials at all, it answers
+`forbidden`, `cannot tell who the peer is`, and closes the connection the same way. The client
+sees either one as the answer to its first request.
 
 ### Agents may not change a project's mode
 
@@ -210,6 +230,11 @@ the peer's process id and walks up its parent chain in `/proc`, at most 64 proce
   non-empty `LOOM_THREAD`. A `loom` CLI run with `LOOM_THREAD` set counts too.
 - When the peer's `/proc` entries can't be read, the server can't tell, and refuses these two
   calls.
+- Where the kernel has `SO_PEERPIDFD` (Linux 6.5 and later), the server takes a pidfd of the
+  peer when it connects, and once it has read `/proc` it checks through the pidfd that the peer
+  still runs. When the peer has exited, its process id may already name another process, so the
+  server can't tell, as above. The processes above the peer on the chain are not checked this
+  way. Without `SO_PEERPIDFD` the server reads `/proc` by the process id alone.
 
 **Limits.** This guards against an agent's own requests. It is not a sandbox.
 
@@ -269,6 +294,29 @@ sandbox.
 - The agent of a T3 thread runs under T3, not Loom, so it counts as the user here too.
 - The T3 thread's mode is read just before the send, in a second call to T3. A mode changed in
   T3 between the two is not seen.
+
+### Agents act as their own thread
+
+An agent's [`threads.delegate`](#threadsdelegate) and [`threads.launch`](#threadslaunch) are
+checked against the caller's own thread, told apart as under
+[Agents may not change a project's mode](#agents-may-not-change-a-projects-mode):
+
+- An agent's `threads.delegate` must name the caller's thread as `parent_id`. Any other thread
+  answers `invalid`, `parent_id must be the calling thread <id>`, and starts nothing.
+- An agent's `threads.launch` that gives `origin` must give `thread:<the caller's thread id>`.
+  Any other `origin` answers `invalid`, `origin must be thread:<id>, the calling thread`, and
+  starts nothing. A launch without `origin` is not refused, and its `origin` stays null.
+- A person's calls, a schedule's and those of a caller the server can't check are not checked.
+
+A refused call stores no answer for its command id, so a retry is refused the same way. So an
+agent that talks to the socket directly keeps the boundary that `loom-mcp` gives it (see
+[Who it serves](#who-it-serves)): its tasks are its own thread's children, and the threads it
+launches name it as their origin.
+
+**Limits.** As for projects and T3 threads, this guards against an agent's own calls. It is
+not a sandbox: `LOOM_THREAD` is what the process says, so an agent that names another thread's
+id acts as that thread, and a process that leaves Loom's process tree and unsets `LOOM_THREAD`
+counts as the user and is not checked.
 
 ### Calls a schedule makes
 
@@ -528,7 +576,7 @@ Starts a new top-level thread in a project with a first message.
 | `runner` | string | Default `"claude"`. `claude`, `codex` and `t3` are served. A `t3` thread needs `loom t3 pair` first (see [T3 threads](#t3-threads)). |
 | `model` | string | Not empty. Default: the agent's own. |
 | `requests` | string | Who may answer the thread's permission prompts (§8 Requests): `"any"` (default), any caller but the thread itself, or `"caller"`, only the caller that launched it. A delegated child keeps both. See [Who may answer a request](#who-may-answer-a-request). A null answers `invalid`, `requests must not be null`; any other value `requests must be one of caller, any`. |
-| `origin` | string | Who started the thread, for clients to show. |
+| `origin` | string | Who started the thread, for clients to show. From an agent's thread, only `thread:<its id>` (see [Agents act as their own thread](#agents-act-as-their-own-thread)). |
 | `audience` | string | `"agent"` (default) or `"person"`: who talks with the thread (§15 Audience). |
 | `concurrency_key` | string | 1 to 200 characters, such as `pm:demo-repo`. At most one thread holds a key (see Concurrency keys below). Default: no key. A null answers `invalid`, `concurrency_key must not be null`; another type, an empty string or a longer one answers `invalid`, `concurrency_key must be a string of 1 to 200 characters`. |
 | `on_busy` | string | What a launch does while another thread holds its key: `"queue"` (default) or `"coalesce"`. Only with `concurrency_key`, else `invalid`, `on_busy needs concurrency_key`. A null answers `invalid`, `on_busy must not be null`; any other value `on_busy must be one of queue, coalesce`. |
@@ -599,8 +647,10 @@ fails, which lets the key go.
 **Errors:** `not_found` when the project does not exist; `invalid` for a missing or wrong
 parameter, such as an `audience` that is null (`audience must not be null`) or not `person` or
 `agent` (`audience must be one of person, agent`), or a bad `cause` (`cause must not be null`,
-`cause must be an event id`, `cause names no stored event`); `conflict` when the call comes from an agent
-thread that is being stopped (`thread <id> is stopping`), as
+`cause must be an event id`, `cause names no stored event`), or an agent's `origin` that is not
+its own thread (`origin must be thread:<id>, the calling thread`, see
+[Agents act as their own thread](#agents-act-as-their-own-thread)); `conflict` when the call
+comes from an agent thread that is being stopped (`thread <id> is stopping`), as
 [`threads.delegate`](#threadsdelegate) refuses a stopping parent. A schedule's launch is not
 refused this way, and a retry of a launch that already succeeded still returns its first answer.
 
@@ -650,7 +700,7 @@ Nothing is posted while the child or the parent is being stopped, or once the pa
 | Param | Type | |
 |---|---|---|
 | `id` | string, required | Command id. |
-| `parent_id` | string, required | |
+| `parent_id` | string, required | From an agent's thread, its own id (see [Agents act as their own thread](#agents-act-as-their-own-thread)). |
 | `task` | string, required | The child's first message. Not empty. |
 | `workspace` | object | Default: the parent's workspace (its root, or its worktree as `existing_worktree`). |
 | `runner` | string | Default: the parent's runner. |
@@ -679,7 +729,9 @@ the longest-idle thread or wait `queued`, and is never refused.
 failed or being stopped, or when the newest thread waiting for a coalescing delegate's key is
 under another parent (`concurrency key <key> is waiting in another project or under another
 parent`); `invalid` for a bad `concurrency_key`, `on_busy` or `settle`, with the messages under
-[`threads.launch`](#threadslaunch).
+[`threads.launch`](#threadslaunch), and when an agent's thread names another thread as
+`parent_id` (`parent_id must be the calling thread <id>`, see
+[Agents act as their own thread](#agents-act-as-their-own-thread)).
 
 ```json
 {"v": "v1", "call": "threads.delegate", "params": {"id": "c5", "parent_id": "3f2a…", "task": "Review the login test fix."}}
@@ -2287,7 +2339,9 @@ CLI). It drives a thread in the T3 app that runs on this machine, through T3's M
   the thread's workspace itself (see [Workspaces](#workspaces)); a worktree must be on a branch.
 - **Thread id.** T3 picks its own id. Loom keeps it in `<data_dir>/t3/<loom thread id>` (the folder
   mode 0700, each file 0600) and reads it to resume the thread after it sleeps or the server
-  restarts. A T3 thread that is gone or archived in T3 fails the resume.
+  restarts. A T3 thread that is gone or archived in T3 fails the resume, and so does one whose
+  `runtimeMode` is wider than the thread's `permission_mode` (ranked as under
+  [Permission modes](#permission-modes)), or is none of the four modes.
 - **Model.** With no `model`, the thread uses T3's default model. A `model` of the form
   `<instance>/<model>` sets both; a bare model keeps the default's instance.
 - **Permission prompts** are answered in T3's app, not through Loom: a T3 thread opens no
@@ -2318,6 +2372,7 @@ A failed start or turn gives one reason line, cut to 200 characters, with the to
 | `t3: no T3 project at <path>` | No T3 project has the project's path as its root. |
 | `t3: no model: <why>` | No `model` and no usable default in `<t3_home>/userdata/settings.json`. |
 | `t3: git: <why>` | Git can't tell the workspace's checkout or branch, such as a detached worktree. |
+| `t3: mode: <why>` | On a resume, the T3 thread's `runtimeMode` is wider than the thread's `permission_mode`, or is missing or none of the four modes. |
 | `t3: timeout: ...`, `t3: unreachable: ...` | T3 did not answer within 10 s, or the connection failed. The call is not sent again, since T3 may have acted on it. |
 | `t3: <code>: <message>` | T3's own error, such as `t3: thread_not_found: ...`. |
 
@@ -2335,12 +2390,18 @@ A failed start or turn gives one reason line, cut to 200 characters, with the to
   there.
 - A failure to start exits 2 with one line `loom: <reason>` on stderr: no socket path, a bad
   config, another server already answering on the socket, a path that exists and is not a
-  socket, or a store whose schedules can't be opened (`cannot open the schedules in <data dir>:
-  <error>`). A socket file nobody answers on is left over from an earlier run, and is replaced.
-  With no `agents_max` in the config and no way to read the available memory (`MemAvailable`
-  in `/proc/meminfo`, else `sysconf`), it exits 2 with
+  socket, a store whose threads can't be recovered (`cannot recover the threads in <data dir>:
+  <error>`), or a store whose schedules can't be opened (`cannot open the schedules in <data
+  dir>: <error>`). A store whose threads can't be recovered leaves no socket file. A socket
+  file nobody answers on is left over from an earlier run, and is replaced. With no
+  `agents_max` in the config and no way to read the available memory (`MemAvailable` in
+  `/proc/meminfo`, else `sysconf`), it exits 2 with
   `loom: cannot read the available memory; set agents_max in the config` and leaves no socket
   file.
+- An error inside the scheduler's own work, such as a store failure while it records a run,
+  goes to stderr as the line `loom: internal error in the scheduler` and its traceback, as a
+  call's internal error does (see [Error codes](#error-codes)). The scheduler goes on with its
+  next pass.
 
 ```text
 $ loom serve
@@ -2730,8 +2791,11 @@ is the event object, so any language can follow Loom by reading the CLI's stdout
   `project_id`, `key`, `hops` and `payload`, and a `trigger.skipped` line `schedule_id`, `event_id`
   and `reason`. `signals emit` prints its event as one such line.
 - Agent-written text is shown as text: each control character (newline and tab too, DEL and the
-  C1 range) prints as an escape such as `\n`, `\t` or `\x1b`, so each event is one line. Each text
-  is cut at 2,000 characters and then marked `…`; `--json` prints it whole.
+  C1 range) prints as an escape such as `\n`, `\t` or `\x1b`, so each event is one line. Each
+  invisible format character (Unicode category Cf, such as the right-to-left override U+202E or
+  the zero-width space U+200B) and the line and paragraph separators U+2028 and U+2029 print as
+  escapes too, as `\u202e` (`\U` and eight hex digits above U+FFFF). Each text is cut at 2,000
+  characters and then marked `…`; `--json` prints it whole.
 
 ### Exit codes
 

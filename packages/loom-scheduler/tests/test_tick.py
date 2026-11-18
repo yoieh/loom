@@ -1,12 +1,16 @@
 import asyncio
+import contextlib
+import io
 import unittest
 from datetime import UTC, datetime, timedelta
+from unittest import mock
 
 from loom_contracts.calls import CallName
 
-from loom_scheduler import Tick
+from loom_scheduler import Scheduler, Tick
+from loom_scheduler.events import EventSource
 
-from .fakes import START, FakeClock, SchedulerCase
+from .fakes import START, FakeClock, SchedulerCase, assert_scheduler_error
 
 
 class FakeSource:
@@ -28,7 +32,7 @@ class FakeSource:
 
 class RecordingTick(Tick):
     def __init__(self, clock: FakeClock) -> None:
-        super().__init__(clock)
+        super().__init__(clock, log=io.StringIO())
         self.timeouts: list[float] = []
         self.waiting = asyncio.Event()
 
@@ -99,6 +103,18 @@ class RunOnceTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(loop, return_exceptions=True)
 
 
+    async def test_a_failing_source_is_logged_and_the_next_source_still_runs(self) -> None:
+        log = io.StringIO()
+        tick = Tick(FakeClock(), log=log)
+        broken = FakeSource(START, RuntimeError('Tick.run_once'))
+        healthy = FakeSource(START)
+        tick.register(broken)
+        tick.register(healthy)
+        await tick.run_once()
+        self.assertEqual((broken.passes, healthy.passes), ([START], [START]))
+        assert_scheduler_error(self, log.getvalue(), 'Tick.run_once')
+
+
 class WakeTest(unittest.IsolatedAsyncioTestCase):
     async def test_wake_starts_a_pass_without_waiting_out_the_delay(self) -> None:
         clock = FakeClock()
@@ -160,6 +176,31 @@ class ClockJumpTest(SchedulerCase):
                 self.assertGreater(datetime.fromisoformat(next_run), now)
         self.assertEqual(self.host.calls_of(CallName.THREADS_SEND), [])
         self.assertEqual(len(self.host.events), 2)
+
+
+
+class DefaultLogTest(SchedulerCase):
+    async def test_without_a_log_errors_go_to_stderr(self) -> None:
+        await self.add()
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            tick = Tick(self.clock)
+            tick.register(FakeSource(START, RuntimeError('from the tick')))
+            await tick.run_once()
+            events = EventSource(self.host, self.clock, tick.wake)
+            with mock.patch.object(events, '_pass', side_effect=RuntimeError('from the events')):
+                await events.run_due(START)
+            scheduler = Scheduler(self.host, clock=self.clock)
+            scheduler.open()
+            self.addAsyncCleanup(scheduler.close)
+            with mock.patch.object(scheduler, '_run',
+                                   side_effect=RuntimeError('from the schedules')):
+                await scheduler.run_due(self.clock.advance(minutes=1))
+        logged = stderr.getvalue()
+        self.assertEqual(logged.count('loom: internal error in the scheduler\nTraceback '), 3)
+        for message in ('from the tick', 'from the events', 'from the schedules'):
+            self.assertIn(f'\nRuntimeError: {message}\n', logged)
+        self.assertEqual(self.log.getvalue(), '')
 
 
 if __name__ == '__main__':

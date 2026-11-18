@@ -23,11 +23,33 @@ EVENT_KEYS = {'id', 'type', 'at', 'thread_id', 'data'}
 ASK = 'Ask for permission.'
 GIT_ENV = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'GIT_CONFIG_GLOBAL': '/dev/null',
            'GIT_CONFIG_NOSYSTEM': '1', 'HOME': '/nonexistent'}
-PERSON_CALL = '''
-import json, sys
-from loom_client import Client
-method = getattr(Client(sys.argv[1], timeout=float(sys.argv[2])), sys.argv[3])
-print(json.dumps(method(*json.loads(sys.argv[4]))))
+RELAY = '''
+import asyncio, sys
+
+async def pipe(reader, writer):
+    try:
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
+    except OSError:
+        pass
+    finally:
+        writer.close()
+
+async def relay(reader, writer):
+    try:
+        upstream = await asyncio.open_unix_connection(sys.argv[2])
+    except OSError:
+        writer.close()
+        return
+    await asyncio.gather(pipe(reader, upstream[1]), pipe(upstream[0], writer))
+
+async def main():
+    server = await asyncio.start_unix_server(relay, sys.argv[1])
+    print('ready', flush=True)
+    await server.serve_forever()
+
+asyncio.run(main())
 '''
 
 
@@ -106,7 +128,7 @@ class LiveCase(unittest.TestCase):
             'XDG_DATA_HOME': str(self.base / 'xdg-data'),
             'XDG_CONFIG_HOME': str(self.base / 'xdg-config'),
         }
-        self.client = Client(str(self.socket), timeout=TIMEOUT)
+        self.client = Client(str(self.relay()), timeout=TIMEOUT)
 
     def stop(self, process: subprocess.Popen, signum: int = signal.SIGTERM) -> int:
         if process.poll() is None:
@@ -132,14 +154,15 @@ class LiveCase(unittest.TestCase):
         self.assertEqual(self.client.projects_list(), [])
         return process
 
-    def as_person(self, method: str, *args: object) -> object:
-        done = subprocess.run(
-            [sys.executable, '-c', PERSON_CALL, str(self.socket), str(TIMEOUT), method,
-             json.dumps(args)],
-            env=self.env, cwd=self.base, stdin=subprocess.DEVNULL, capture_output=True,
-            text=True, timeout=TIMEOUT)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        return json.loads(done.stdout)
+    def relay(self) -> Path:
+        path = self.base / 'relay.sock'
+        process = subprocess.Popen(
+            [sys.executable, '-I', '-c', RELAY, str(path), str(self.socket)], env=self.env,
+            cwd=self.base, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(process.stdout.close)
+        self.addCleanup(self.stop, process, signal.SIGKILL)
+        self.assertEqual(Lines(process.stdout).next(), 'ready\n')
+        return path
 
     def cli(self, *argv: str, stdin: str | None = None, cwd: Path | None = None,
             socket: bool = True, **env: str) -> subprocess.CompletedProcess:
@@ -283,7 +306,7 @@ class ApiTest(LiveCase):
         self.assertEqual(client.threads_stop(child['id'])['id'], child['id'])
         self.assertEqual(client.threads_settle(child['id'])['state'], 'settled')
 
-        changed = self.as_person('projects_set_mode', 'repo', 'approval-required')
+        changed = client.projects_set_mode('repo', 'approval-required')
         self.assertEqual(changed['permission_mode'], 'approval-required')
         other = client.projects_add('Other', str(make_repo(self.base / 'other')))
         self.assertEqual(client.projects_remove('other'), other)

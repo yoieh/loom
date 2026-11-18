@@ -324,10 +324,11 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   `t3_thread_launch` once more, and the launch still runs at most once, since T3 refuses such a
   request before any tool runs. A launch is never retried after a timeout or a connection
   error, since T3 may already have acted. `resume` reads the stored id and checks it with
-  `t3_thread_read`; a thread that is gone or archived in T3 fails the start. A thread T3
-  doesn't know is an `isError` result with code `thread_not_found` ("Thread <id> is no longer
-  available."). An archived thread reads as before, with `thread.archived` `true`, so the
-  runner checks that field (*seen*, T3 0.1.2).
+  `t3_thread_read`; a thread that is gone or archived in T3, or whose `runtimeMode` is
+  wider than the thread's `permission_mode`, or none of the four modes (§11), fails the start.
+  A thread T3 doesn't know is an `isError` result with code `thread_not_found` ("Thread <id>
+  is no longer available."). An archived thread reads as before, with `thread.archived`
+  `true`, so the runner checks that field (*seen*, T3 0.1.2).
 - **Send and interrupt.** `t3_thread_send {threadId, message, mode, clientRequestId}`, with
   `steer` → `steer`, `queue` → `queue` and `interrupt` → `restart`. The `clientRequestId`
   comes from the command id that `send` or `interrupt` takes (§6):
@@ -565,7 +566,8 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
 - Loom starts a thread only from a client's call or a stored schedule; always in a registered
   project's root or a worktree Loom made for it.
 - The socket and every store and secret file are mode 0600, under the user's runtime and data
-  dirs. Nothing binds to a network port.
+  dirs. Nothing binds to a network port. `loom serve` refuses a socket directory that is not the
+  user's own or that group or others can write, and serves at most 256 connections at once.
 - A thread an agent starts, and a schedule it makes, gets the target project's permission mode,
   never the caller's if that is wider (T3's `DispatchModeLimit.ts`). So an agent can't start a
   `full-access` thread from an `approval-required` one.
@@ -589,8 +591,9 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
   so a check should run a program agents can't change.
 - Pairing with T3 (§6.1) makes Loom a full-access T3 client. Its token is the `t3-client`
   secret, sent only to the loopback origin it was paired with; a thread Loom starts in T3 gets
-  its project's mode, never the ceiling; and the user can revoke it with `loom t3 unpair` or in
-  T3 Settings → Connections.
+  its project's mode, never the ceiling, and a resume refuses a T3 thread whose `runtimeMode`
+  is now wider than the thread's mode, as someone may have widened it in T3's app; and the
+  user can revoke it with `loom t3 unpair` or in T3 Settings → Connections.
 - The `t3_threads.*` calls (§6.1) give agents a path to that full-access pairing. Without a
   guard, any Loom agent could message a T3 thread wider than its own mode, which T3's own
   `t3_thread_send` refuses. So `t3_threads.send` from an agent's thread is `forbidden` when the
@@ -598,6 +601,11 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
   tell either: an unknown or unchecked caller, a schedule, or a `runtimeMode` that is none of
   the four. A person's calls, the reads and `interrupt` are not checked, as in T3, since they
   widen nothing. As in `docs/api.md`, it guards an agent's own calls and is not a sandbox
+  (`LOOM_THREAD` is what the process says).
+- An agent acts as its own thread: a `threads.delegate` from an agent's thread must name that
+  thread as `parent_id`, and a `threads.launch` from one may give only `thread:<its id>` as
+  `origin`; anything else is `invalid`. A person's, a schedule's and an unchecked caller's calls
+  are not checked. As in `docs/api.md`, it guards an agent's own calls and is not a sandbox
   (`LOOM_THREAD` is what the process says).
 - Webhooks (later) get T3's checks: a per-schedule random secret compared in constant time,
   optional HMAC-SHA256 signatures, a rate limit and a cap on queued deliveries.

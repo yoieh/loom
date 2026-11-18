@@ -23,7 +23,7 @@ from .config import Config, StartError, config_path, data_dir_path, load_config,
 from .host import Host
 from .peer import PROC
 from .scheduling import ServiceHost, serve_schedules
-from .server import MAX_LINE, Server
+from .server import MAX_CONNECTIONS, MAX_LINE, Server
 from .t3_threads import serve_t3_threads
 
 
@@ -53,11 +53,13 @@ class Serving:
 
 async def start(socket: Path, data_dir: Path, config: Config, *,
                 environ: Mapping[str, str] | None = None, log: TextIO | None = None,
-                max_line: int = MAX_LINE, proc: str | Path = PROC,
+                max_line: int = MAX_LINE, max_connections: int = MAX_CONNECTIONS,
+                proc: str | Path = PROC,
                 memory: Callable[[], int | None] = available_memory,
                 t3_http: HttpCall = http_call) -> Serving:
     log = sys.stderr if log is None else log
-    server = Server(socket, max_line=max_line, log=log, proc=proc)
+    server = Server(socket, max_line=max_line, max_connections=max_connections, log=log,
+                    proc=proc)
     server.bind()
     agents_max = config.agents_max
     if agents_max is None:
@@ -79,10 +81,19 @@ async def start(socket: Path, data_dir: Path, config: Config, *,
     orchestrator = Orchestrator(store, projects, runners, host,
                                 agents_max=agents_max, idle_after=config.idle_after,
                                 request_timeout=config.request_timeout)
-    await orchestrator.recover()
+    try:
+        await orchestrator.recover()
+    except Exception as error:
+        await orchestrator.close()
+        store.close()
+        await server.close()
+        server.unlink()
+        if isinstance(error, (sqlite3.Error, OSError)):
+            raise StartError(f'cannot recover the threads in {data_dir}: {error}') from None
+        raise
     service = Service(store, projects, orchestrator)
     scheduler = Scheduler(ServiceHost(store, service, environment=host.check_environment()),
-                          clock=store.clock)
+                          clock=store.clock, log=log)
     try:
         scheduler.open()
     except sqlite3.Error as error:
