@@ -44,6 +44,11 @@ SEND_MODES = {
     DispatchMode.INTERRUPT: 'restart',
 }
 
+MODE_ORDER = (
+    PermissionMode.APPROVAL_REQUIRED, PermissionMode.AUTO_ACCEPT_EDITS, PermissionMode.AUTO,
+    PermissionMode.FULL_ACCESS,
+)
+
 _MODEL = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,199}')
 
 Call = Callable[[str, dict[str, object]], Awaitable[dict]]
@@ -173,6 +178,15 @@ async def find_project(call: Call, main: str) -> str:
     raise T3NotFound(safe_reason(f't3: no T3 project at {main}', ()))
 
 
+def check_mode(thread: ThreadSpec, t3_id: str, mode: str | None) -> None:
+    if mode not in set(PermissionMode):
+        raise failure('mode', f'cannot tell the runtimeMode of the T3 thread {t3_id}')
+    own = PermissionMode(thread.permission_mode)
+    if MODE_ORDER.index(PermissionMode(mode)) > MODE_ORDER.index(own):
+        raise failure('mode', f'the T3 thread {t3_id} has runtimeMode {mode}, '
+                              f"wider than this thread's {own}")
+
+
 async def read_pages(call: Call, t3_id: str, tracker: Tracker,
                      take: Callable[[Activity], None]) -> Activity | None:
     last = None
@@ -264,6 +278,7 @@ class T3Runner:
         last = await read_pages(call, t3_id, tracker, tracker.baseline)
         if last is not None and last.archived:
             raise failure('archived', f'the T3 thread {t3_id} is archived')
+        check_mode(thread, t3_id, None if last is None else last.runtime_mode)
         return t3_id
 
 

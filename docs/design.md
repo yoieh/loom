@@ -324,10 +324,11 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   `t3_thread_launch` once more, and the launch still runs at most once, since T3 refuses such a
   request before any tool runs. A launch is never retried after a timeout or a connection
   error, since T3 may already have acted. `resume` reads the stored id and checks it with
-  `t3_thread_read`; a thread that is gone or archived in T3 fails the start. A thread T3
-  doesn't know is an `isError` result with code `thread_not_found` ("Thread <id> is no longer
-  available."). An archived thread reads as before, with `thread.archived` `true`, so the
-  runner checks that field (*seen*, T3 0.1.2).
+  `t3_thread_read`; a thread that is gone or archived in T3, or whose `runtimeMode` is
+  wider than the thread's `permission_mode`, or none of the four modes (§11), fails the start.
+  A thread T3 doesn't know is an `isError` result with code `thread_not_found` ("Thread <id>
+  is no longer available."). An archived thread reads as before, with `thread.archived`
+  `true`, so the runner checks that field (*seen*, T3 0.1.2).
 - **Send and interrupt.** `t3_thread_send {threadId, message, mode, clientRequestId}`, with
   `steer` → `steer`, `queue` → `queue` and `interrupt` → `restart`. The `clientRequestId`
   comes from the command id that `send` or `interrupt` takes (§6):
@@ -589,8 +590,9 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
   so a check should run a program agents can't change.
 - Pairing with T3 (§6.1) makes Loom a full-access T3 client. Its token is the `t3-client`
   secret, sent only to the loopback origin it was paired with; a thread Loom starts in T3 gets
-  its project's mode, never the ceiling; and the user can revoke it with `loom t3 unpair` or in
-  T3 Settings → Connections.
+  its project's mode, never the ceiling, and a resume refuses a T3 thread whose `runtimeMode`
+  is now wider than the thread's mode, as someone may have widened it in T3's app; and the
+  user can revoke it with `loom t3 unpair` or in T3 Settings → Connections.
 - The `t3_threads.*` calls (§6.1) give agents a path to that full-access pairing. Without a
   guard, any Loom agent could message a T3 thread wider than its own mode, which T3's own
   `t3_thread_send` refuses. So `t3_threads.send` from an agent's thread is `forbidden` when the

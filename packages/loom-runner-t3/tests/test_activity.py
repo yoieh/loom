@@ -58,6 +58,15 @@ class ParseTest(unittest.TestCase):
                 with self.subTest(case=case, position=line['nextPosition']):
                     parsed = parse_activity(line)
                     self.assertEqual(parsed.status, line['thread']['status'])
+                    self.assertEqual(parsed.runtime_mode, 'approval-required')
+
+    def test_a_runtime_mode_that_is_not_a_string_is_none(self) -> None:
+        for name, value in (('missing', ...), ('null', None), ('a number', 3)):
+            with self.subTest(name):
+                data = answer()
+                if value is not ...:
+                    data['thread']['runtimeMode'] = value
+                self.assertIsNone(parse_activity(data).runtime_mode)
 
     def test_a_null_missing_or_wrong_position_fails(self) -> None:
         good = answer(items=[item(0, 'user_message', 'hi')])

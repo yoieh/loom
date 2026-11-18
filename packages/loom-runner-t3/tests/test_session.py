@@ -108,7 +108,8 @@ def running_read(position: int | None = None, items: list | None = None,
                  pending: int = 0) -> dict:
     return {
         'thread': {'threadId': T3_THREAD, 'status': status, 'activeRunId': active,
-                   'latestRunId': RUN_1, 'pendingRequestCount': pending, 'archived': False},
+                   'latestRunId': RUN_1, 'pendingRequestCount': pending, 'archived': False,
+                   'runtimeMode': 'approval-required'},
         'recentRuns': [{'runId': RUN_1, 'status': status}],
         'items': items or [],
         'nextPosition': position,
@@ -540,6 +541,71 @@ class ResumeTest(Base):
         await self.start(resume=True)
         self.assertEqual([call.arguments['afterPosition']
                           for call in self.http.sent('t3_thread_read')], [None, 1])
+
+    async def test_resume_refuses_a_wider_runtime_mode(self) -> None:
+        write_record(str(self.data_dir), THREAD_ID, T3_THREAD)
+        order = list(PermissionMode)
+        for own in PermissionMode:
+            for theirs in PermissionMode:
+                with self.subTest(own=own, theirs=theirs):
+                    self.http.on('t3_thread_read', tool(idle_read(runtimeMode=str(theirs))))
+                    if order.index(theirs) <= order.index(own):
+                        session = await self.start(resume=True, permission_mode=own)
+                        self.assertEqual(session.t3_id, T3_THREAD)
+                    else:
+                        await self.start_fails(
+                            f't3: mode: the T3 thread {T3_THREAD} has runtimeMode {theirs}, '
+                            f"wider than this thread's {own}",
+                            resume=True, permission_mode=own)
+
+    async def test_resume_refuses_a_runtime_mode_it_cannot_tell(self) -> None:
+        write_record(str(self.data_dir), THREAD_ID, T3_THREAD)
+        for name, value in (('missing', MISSING), ('null', None), ('a number', 3),
+                            ('unknown', 'yolo')):
+            with self.subTest(name):
+                read = idle_read(runtimeMode=value)
+                if value is MISSING:
+                    del read['thread']['runtimeMode']
+                self.http.on('t3_thread_read', tool(read))
+                message = await self.start_fails(
+                    f't3: mode: cannot tell the runtimeMode of the T3 thread {T3_THREAD}',
+                    resume=True, permission_mode=PermissionMode.FULL_ACCESS)
+                self.assertNotIn('yolo', message)
+
+    async def test_a_refused_resume_makes_no_other_call(self) -> None:
+        write_record(str(self.data_dir), THREAD_ID, T3_THREAD)
+        for name, value in (('wider', 'full-access'), ('unknown', 'yolo')):
+            with self.subTest(name):
+                self.http.calls.clear()
+                self.http.on('t3_thread_read', tool(idle_read(runtimeMode=value)))
+                await self.start_fails(resume=True)
+                self.assertEqual(self.http.keys(), ['initialize', 'notifications/initialized',
+                                                    't3_thread_read'])
+
+    async def test_an_archived_thread_with_a_wider_mode_fails_as_archived(self) -> None:
+        write_record(str(self.data_dir), THREAD_ID, T3_THREAD)
+        self.http.on('t3_thread_read', tool(idle_read(archived=True, runtimeMode='full-access')))
+        await self.start_fails(f't3: archived: the T3 thread {T3_THREAD} is archived',
+                               resume=True)
+
+    async def test_the_mode_of_the_last_page_is_checked(self) -> None:
+        write_record(str(self.data_dir), THREAD_ID, T3_THREAD)
+        first = running_read(1, [user_item(0), user_item(1)], status='completed', active=None)
+        first['hasMore'] = True
+        last = running_read(2, [user_item(2)], status='completed', active=None)
+        first['thread']['runtimeMode'] = 'full-access'
+        self.http.on('t3_thread_read', tool(first), tool(last))
+        session = await self.start(resume=True)
+        self.assertEqual(session.t3_id, T3_THREAD)
+        self.assertEqual(self.http.count('t3_thread_read'), 2)
+        self.http.calls.clear()
+        first['thread']['runtimeMode'] = 'approval-required'
+        last['thread']['runtimeMode'] = 'full-access'
+        self.http.on('t3_thread_read', tool(first), tool(last))
+        await self.start_fails(
+            f't3: mode: the T3 thread {T3_THREAD} has runtimeMode full-access, '
+            "wider than this thread's approval-required", resume=True)
+        self.assertEqual(self.http.count('t3_thread_read'), 2)
 
 
 class SendTest(Base):

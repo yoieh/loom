@@ -2320,7 +2320,9 @@ CLI). It drives a thread in the T3 app that runs on this machine, through T3's M
   the thread's workspace itself (see [Workspaces](#workspaces)); a worktree must be on a branch.
 - **Thread id.** T3 picks its own id. Loom keeps it in `<data_dir>/t3/<loom thread id>` (the folder
   mode 0700, each file 0600) and reads it to resume the thread after it sleeps or the server
-  restarts. A T3 thread that is gone or archived in T3 fails the resume.
+  restarts. A T3 thread that is gone or archived in T3 fails the resume, and so does one whose
+  `runtimeMode` is wider than the thread's `permission_mode` (ranked as under
+  [Permission modes](#permission-modes)), or is none of the four modes.
 - **Model.** With no `model`, the thread uses T3's default model. A `model` of the form
   `<instance>/<model>` sets both; a bare model keeps the default's instance.
 - **Permission prompts** are answered in T3's app, not through Loom: a T3 thread opens no
@@ -2351,6 +2353,7 @@ A failed start or turn gives one reason line, cut to 200 characters, with the to
 | `t3: no T3 project at <path>` | No T3 project has the project's path as its root. |
 | `t3: no model: <why>` | No `model` and no usable default in `<t3_home>/userdata/settings.json`. |
 | `t3: git: <why>` | Git can't tell the workspace's checkout or branch, such as a detached worktree. |
+| `t3: mode: <why>` | On a resume, the T3 thread's `runtimeMode` is wider than the thread's `permission_mode`, or is missing or none of the four modes. |
 | `t3: timeout: ...`, `t3: unreachable: ...` | T3 did not answer within 10 s, or the connection failed. The call is not sent again, since T3 may have acted on it. |
 | `t3: <code>: <message>` | T3's own error, such as `t3: thread_not_found: ...`. |
 
