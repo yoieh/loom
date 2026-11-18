@@ -72,6 +72,13 @@ SANDBOX_OF = {
 UNREADABLE = f'the codex thread record for {THREAD_ID} is unreadable'
 
 
+def path_without_agents(path: str) -> str:
+    entries = [entry for entry in path.split(os.pathsep)
+               if entry and not any(os.path.lexists(os.path.join(entry, name))
+                                    for name in ('claude', 'codex'))]
+    return os.pathsep.join(entries)
+
+
 def first_argv(sandbox: str = 'workspace-write', workspace: str = WORKSPACE,
                codex_bin: str = 'codex') -> list[str]:
     return [codex_bin, 'exec', '--json', '-C', workspace, '-s', sandbox, '-']
@@ -1074,7 +1081,7 @@ class RealProcessTest(unittest.IsolatedAsyncioTestCase):
         self.host = FakeHost(
             str(self.data_dir),
             environment={
-                'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+                'PATH': path_without_agents(os.environ.get('PATH', '/usr/bin:/bin')),
                 'HOME': str(root),
                 'LANG': 'C.UTF-8',
                 'ANTHROPIC_AUTH_TOKEN': 'host-token',
@@ -1096,6 +1103,12 @@ class RealProcessTest(unittest.IsolatedAsyncioTestCase):
         events = Events(session)
         self.addAsyncCleanup(session.close)
         return session, events
+
+    def test_host_path_holds_no_claude_or_codex(self) -> None:
+        for entry in self.host.environment(self.thread)['PATH'].split(os.pathsep):
+            with self.subTest(entry=entry):
+                self.assertFalse(os.path.lexists(os.path.join(entry, 'claude')))
+                self.assertFalse(os.path.lexists(os.path.join(entry, 'codex')))
 
     async def test_two_turns_see_argv_cwd_env_and_stdin(self) -> None:
         session, events = await self.start()
