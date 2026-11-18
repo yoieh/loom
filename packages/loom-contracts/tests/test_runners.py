@@ -1,4 +1,5 @@
 import dataclasses
+import inspect
 import unittest
 from collections.abc import AsyncIterator
 from enum import StrEnum
@@ -161,13 +162,13 @@ class FullSession:
     def __init__(self) -> None:
         self.events: AsyncIterator[RunnerEvent] = NoEvents()
 
-    async def send(self, message: str, mode: DispatchMode) -> None:
+    async def send(self, message: str, mode: DispatchMode, command_id: str) -> None:
         pass
 
     async def respond(self, request_id: str, answer: RequestAnswer) -> None:
         pass
 
-    async def interrupt(self) -> None:
+    async def interrupt(self, command_id: str) -> None:
         pass
 
     async def close(self) -> None:
@@ -178,7 +179,7 @@ class SessionWithoutInterrupt:
     def __init__(self) -> None:
         self.events: AsyncIterator[RunnerEvent] = NoEvents()
 
-    async def send(self, message: str, mode: DispatchMode) -> None:
+    async def send(self, message: str, mode: DispatchMode, command_id: str) -> None:
         pass
 
     async def respond(self, request_id: str, answer: RequestAnswer) -> None:
@@ -209,6 +210,15 @@ class ProtocolTest(unittest.IsolatedAsyncioTestCase):
     def test_session(self) -> None:
         self.assertIsInstance(FullSession(), RunnerSession)
         self.assertNotIsInstance(SessionWithoutInterrupt(), RunnerSession)
+
+    def test_send_and_interrupt_take_the_command_id(self) -> None:
+        self.assertEqual(
+            list(inspect.signature(RunnerSession.send).parameters),
+            ['self', 'message', 'mode', 'command_id'],
+        )
+        self.assertEqual(
+            list(inspect.signature(RunnerSession.interrupt).parameters), ['self', 'command_id'],
+        )
 
     async def test_runner(self) -> None:
         runner = FullRunner()

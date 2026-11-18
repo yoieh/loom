@@ -26,8 +26,10 @@ class FakeSession:
         self.runner = runner
         self.thread = thread
         self.sent: list[tuple[str, DispatchMode]] = []
+        self.command_ids: list[str] = []
         self.responses: list[tuple[str, RequestAnswer]] = []
         self.interrupts = 0
+        self.interrupt_ids: list[str] = []
         self.closed = False
         self.closing = False
         self.fail_send: Exception | None = None
@@ -47,11 +49,12 @@ class FakeSession:
         self.emit(Exited(code))
         self._queue.put_nowait(_END)
 
-    async def send(self, message: str, mode: DispatchMode) -> None:
+    async def send(self, message: str, mode: DispatchMode, command_id: str) -> None:
         if self.fail_send is not None:
             error, self.fail_send = self.fail_send, None
             raise error
         self.sent.append((message, mode))
+        self.command_ids.append(command_id)
 
     async def respond(self, request_id: str, answer: RequestAnswer) -> None:
         if self.fail_respond is not None:
@@ -59,8 +62,9 @@ class FakeSession:
             raise error
         self.responses.append((request_id, answer))
 
-    async def interrupt(self) -> None:
+    async def interrupt(self, command_id: str) -> None:
         self.interrupts += 1
+        self.interrupt_ids.append(command_id)
         if self.fail_interrupt is not None:
             error, self.fail_interrupt = self.fail_interrupt, None
             raise error

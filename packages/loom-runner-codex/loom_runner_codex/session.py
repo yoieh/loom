@@ -228,7 +228,7 @@ class CodexSession:
         self._shutdown: asyncio.Task[None] | None = None
         self.events: AsyncIterator[RunnerEvent] = self._iterate()
 
-    async def send(self, message: str, mode: DispatchMode) -> None:
+    async def send(self, message: str, mode: DispatchMode, command_id: str | None = None) -> None:
         mode = DispatchMode(mode)
         self._check_open()
         if self._turn is not None and mode is not DispatchMode.INTERRUPT:
@@ -246,7 +246,7 @@ class CodexSession:
     async def respond(self, request_id: str, answer: RequestAnswer) -> None:
         raise KeyError(request_id)
 
-    async def interrupt(self) -> None:
+    async def interrupt(self, command_id: str | None = None) -> None:
         if self._is_closed():
             return
         await self._stop()

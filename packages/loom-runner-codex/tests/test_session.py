@@ -51,6 +51,7 @@ from .replay import (
 FAKE_CODEX = Path(__file__).resolve().parent / 'fake_codex.py'
 
 TOKEN = 'loom-test-token-3f9c2a7e'
+COMMAND_ID = 'command-c1'
 
 OTHER_ID = '01a163a2-40b1-7412-ab12-1043a0b6795a'
 
@@ -362,6 +363,15 @@ class TurnTest(SessionTest):
         for item in self.spawn.argvs[0]:
             self.assertNotIn('lynx', item)
             self.assertNotIn(TOKEN, item)
+
+    async def test_the_command_id_is_accepted_and_ignored(self) -> None:
+        session = await self.start(FakeProcess(stream_lines('first-turn')))
+        await session.send(MESSAGE, DispatchMode.QUEUE, COMMAND_ID)
+        await self.events.take(TurnResult)
+        self.assertEqual(self.spawn.argvs, [first_argv()])
+        self.assertEqual(bytes(self.process().stdin.data), MESSAGE.encode())
+        for item in self.spawn.argvs[0]:
+            self.assertNotIn(COMMAND_ID, item)
 
     async def test_first_turn_with_a_model(self) -> None:
         session = await self.start(FakeProcess(stream_lines('first-turn')),
@@ -774,6 +784,19 @@ class InterruptTest(SessionTest):
         self.assertEqual(self.events.new(), [stopped(INTRO)])
         self.assertEqual(await self.turn(session, 'next'), resume_turn('next'))
         self.assertEqual(self.spawn.argvs, [first_argv(), resume_argv()])
+
+    async def test_interrupt_with_a_command_id_acts_as_without(self) -> None:
+        session = await self.start(FakeProcess(stream_lines('first-turn')[:4], stay=True))
+        await session.interrupt(COMMAND_ID)
+        self.assertEqual(self.spawn.calls, [])
+        await session.send(MESSAGE, DispatchMode.QUEUE, COMMAND_ID)
+        await self.events.take(ToolUse)
+        await asyncio.wait_for(session.interrupt(COMMAND_ID), 1)
+        self.assertEqual(self.process().group_sent(), [signal.SIGTERM])
+        self.assertEqual(self.process().signals, [])
+        self.assertEqual(self.events.new(), [stopped(INTRO)])
+        self.assertNotIn(COMMAND_ID.encode(), bytes(self.process().stdin.data))
+        self.assertFalse([item for item in self.spawn.argvs[0] if COMMAND_ID in item])
 
     async def test_interrupt_before_turn_started(self) -> None:
         session = await self.start(FakeProcess([STARTED], stay=True))

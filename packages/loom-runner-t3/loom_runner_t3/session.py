@@ -200,7 +200,6 @@ class T3Runner:
         idle_interval: float = 15.0,
         timeout: float = TIMEOUT,
         git: Git = run_git,
-        new_id: Callable[[], str] = lambda: str(uuid.uuid4()),
     ) -> None:
         self._http = http
         self._clock = clock
@@ -209,7 +208,6 @@ class T3Runner:
         self._idle_interval = idle_interval
         self._timeout = timeout
         self._git = git
-        self._new_id = new_id
 
     async def start(self, thread: ThreadSpec, host: RunnerHost) -> 'T3Session':
         credential = usable_credential(host.secret(SECRET), self._clock())
@@ -230,7 +228,7 @@ class T3Runner:
             t3_id = await self._launch(thread, host, t3_home, call)
         return T3Session(call, t3_id, tracker, sleep=self._sleep,
                          running_interval=self._running_interval,
-                         idle_interval=self._idle_interval, new_id=self._new_id)
+                         idle_interval=self._idle_interval)
 
     async def _launch(self, thread: ThreadSpec, host: RunnerHost, t3_home: str,
                       call: Call) -> str:
@@ -279,7 +277,6 @@ class T3Session:
         sleep: Sleep = asyncio.sleep,
         running_interval: float = 1.0,
         idle_interval: float = 15.0,
-        new_id: Callable[[], str] = lambda: str(uuid.uuid4()),
     ) -> None:
         self._call = call
         self.t3_id = t3_id
@@ -287,7 +284,6 @@ class T3Session:
         self._sleep = sleep
         self._running_interval = running_interval
         self._idle_interval = idle_interval
-        self._new_id = new_id
         self._loop = asyncio.get_running_loop()
         self._queue: asyncio.Queue[RunnerEvent] = asyncio.Queue()
         self._wake = asyncio.Event()
@@ -296,29 +292,36 @@ class T3Session:
         self.events: AsyncIterator[RunnerEvent] = self._iterate()
         self._poller = self._loop.create_task(self._poll())
 
-    async def send(self, message: str, mode: DispatchMode) -> None:
+    async def send(self, message: str, mode: DispatchMode, command_id: str) -> None:
         mode = DispatchMode(mode)
         self._check_open()
-        await self._call('t3_thread_send', {
+        answer = await self._call('t3_thread_send', {
             'threadId': self.t3_id,
             'message': message,
             'mode': SEND_MODES[mode],
-            'clientRequestId': self._new_id(),
+            'clientRequestId': self._request_id('runner.send', command_id),
         })
+        repeat = self._tracker.repeat(answer, message)
+        if repeat:
+            self._emit(repeat)
+            return
         self._tracker.expect_turn()
         self._wake.set()
 
     async def respond(self, request_id: str, answer: RequestAnswer) -> None:
         raise T3Error(ANSWERED_IN_T3)
 
-    async def interrupt(self) -> None:
+    async def interrupt(self, command_id: str) -> None:
         if self._closed or self._ended:
             return
         await self._call('t3_thread_interrupt', {
             'threadId': self.t3_id,
-            'clientRequestId': self._new_id(),
+            'clientRequestId': self._request_id('runner.interrupt', command_id),
         })
         self._wake.set()
+
+    def _request_id(self, call: str, command_id: str) -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f'loom:{call}:{self.t3_id}:{command_id}'))
 
     async def close(self) -> None:
         if self._closed:
