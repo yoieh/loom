@@ -1231,8 +1231,10 @@ unknown caller's `schedules.add` with `check` answers `forbidden`, told apart as
     killed by a signal Loom did not send fails it with `check was killed by signal <n>`.
 - **Order.** For a clock trigger the Overlap rule comes first, so a busy run is `skipped_busy`
   and its check does not run; then the check; then the launch. For an event trigger the skips
-  (`own`, `hops`, `rate`) come first, so a skipped event runs no check. A `skipped_check` run
-  does not count toward `rate_max`, which counts fired runs only.
+  (`own`, `hops`, `rate`) come first, so a skipped event runs no check. For a schedule with a
+  check, `rate_max` counts its `fired`, `skipped_check` and `failed` runs, so matching events run
+  its check at most `rate_max` times in 60 minutes; a schedule without a check counts its fired
+  runs only.
 - **The thread.** A late run puts its late line before the check's text too. The thread's title
   is the schedule's `title`, else the first non-empty line of the text it launches with, and the
   run's `schedule.fired` holds that text, without the late line.
@@ -1298,11 +1300,13 @@ matches it (§15 Event triggers):
     it is this schedule's own `schedule.fired`;
   - `hops`: its hops (see [Cause chains](#cause-chains)) are `hops_max` or more, so with the
     default 8, an event with hops 8 is skipped and one with hops 7 runs;
-  - `rate`: the schedule fired `rate_max` times in the last 60 minutes (a run exactly 60 minutes
-    old no longer counts). The first such skip in 60 minutes also sends a `notify`
-    [`schedule.fired`](#schedulefired), with the schedule's thread (or none) and the text
-    `Schedule <schedule id> fired <rate_max> times in the last hour, so it skipped event
-    <event id>.` So a schedule sends at most one such notify an hour.
+  - `rate`: the schedule has `rate_max` counted runs in the last 60 minutes (a run exactly 60
+    minutes old no longer counts). Its `fired` runs count, and for a schedule with a check also
+    its `skipped_check` and `failed` runs (see Checks). The first such skip in 60 minutes also
+    sends a `notify` [`schedule.fired`](#schedulefired), with the schedule's thread (or none) and
+    the text `Schedule <schedule id> fired <rate_max> times in the last hour, so it skipped event
+    <event id>.`, where a schedule with a check says `ran` in place of `fired`. So a schedule
+    sends at most one such notify an hour.
 - **Running.** A `post` sends the filled text with `threads.send`, `mode: "queue"` and the
   event's id as `cause`. A `launch` calls `threads.launch` with the filled text, the event's id as
   `cause`, `origin` `schedule:<schedule id>`, and a title from the schedule's `title`, else the
@@ -1842,7 +1846,7 @@ the next event.
 |---|---|---|
 | `schedule_id` | string | The schedule whose trigger skipped. |
 | `event_id` | int | The event it skipped. |
-| `reason` | string | `own` when the event came from a thread the schedule launched (or is its own `schedule.fired`), `hops` when the event's hops reached the trigger's `hops_max`, `rate` when the trigger fired `rate_max` times in the last hour. The first is checked first. |
+| `reason` | string | `own` when the event came from a thread the schedule launched (or is its own `schedule.fired`), `hops` when the event's hops reached the trigger's `hops_max`, `rate` when the trigger reached `rate_max` counted runs in the last hour (see Event triggers under [How schedules run](#how-schedules-run)). The first is checked first. |
 
 Two `launch` schedules on `thread.settled` start each other's next step, and each skips the
 `thread.settled` of the threads it launched. Event 200 is where their chain stopped, at an event
