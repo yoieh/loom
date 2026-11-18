@@ -12,7 +12,12 @@ EVENT_TRIGGER = {'type': 'event', 'topic': 'factory.run.status', 'project_id': '
 WORKSPACE = {'strategy': 'worktree', 'branch': 'fix', 'base': 'main'}
 MAY_HAVE_RUN = 'the call may have run, so check with threads or schedules before calling again'
 MAY_HAVE_EMITTED = 'the signal may have been written, and emitting it again writes a second one'
+MAY_HAVE_SENT = 'the call may have run, so check with t3_thread_read before calling again'
 LOST = 'the connection closed before a full answer line'
+T3_LIST = {'threads': [{'id': 'mcp:t', 'title': 'LM-99', 'status': 'running'}], 'cursor': 1}
+T3_READ = {'thread': {'id': 'mcp:t', 'runtimeMode': 'full-access'}, 'items': []}
+T3_SENT = {'messageId': 'm1', 'runId': 'r1'}
+T3_STOPPED = {'interrupted': True}
 
 VALID = {
     'launch_thread': {'title': 'Fix it', 'message': 'Make the test pass.', 'project_id': 'demo'},
@@ -25,12 +30,20 @@ VALID = {
     'schedule': {'trigger': AT_TRIGGER, 'text': 'Stand-up'},
     'schedules': {},
     'unschedule': {'id': 'sc1'},
+    't3_thread_list': {'project_id': 'demo'},
+    't3_thread_search': {'query': 'LM-99'},
+    't3_thread_read': {'thread_id': 'mcp:t'},
+    't3_thread_send': {'thread_id': 'mcp:t', 'message': 'Hi.'},
+    't3_thread_interrupt': {'thread_id': 'mcp:t'},
 }
 
 REQUIRED_STRINGS = [('launch_thread', 'title'), ('launch_thread', 'message'),
                     ('delegate', 'task'), ('task_status', 'task_id'), ('task_cancel', 'task_id'),
                     ('thread_send', 'thread_id'), ('thread_send', 'message'),
-                    ('emit', 'topic'), ('schedule', 'text'), ('unschedule', 'id')]
+                    ('emit', 'topic'), ('schedule', 'text'), ('unschedule', 'id'),
+                    ('t3_thread_search', 'query'), ('t3_thread_read', 'thread_id'),
+                    ('t3_thread_send', 'thread_id'), ('t3_thread_send', 'message'),
+                    ('t3_thread_interrupt', 'thread_id')]
 
 OPTIONAL = [('launch_thread', 'project_id', 'string'), ('launch_thread', 'workspace', 'object'),
             ('launch_thread', 'runner', 'string'), ('launch_thread', 'model', 'string'),
@@ -47,12 +60,29 @@ OPTIONAL = [('launch_thread', 'project_id', 'string'), ('launch_thread', 'worksp
             ('schedule', 'project_id', 'string'), ('schedule', 'title', 'string'),
             ('schedule', 'concurrency_key', 'string'), ('schedule', 'on_busy', 'string'),
             ('schedule', 'settle', 'string'), ('schedule', 'workspace', 'object'),
-            ('schedule', 'runner', 'string'), ('schedule', 'model', 'string')]
+            ('schedule', 'runner', 'string'), ('schedule', 'model', 'string'),
+            ('t3_thread_list', 'project_id', 'string'), ('t3_thread_list', 'statuses', 'array'),
+            ('t3_thread_list', 'title_contains', 'string'),
+            ('t3_thread_list', 'limit', 'integer'), ('t3_thread_list', 'cursor', 'integer'),
+            ('t3_thread_search', 'project_id', 'string'),
+            ('t3_thread_search', 'limit', 'integer'), ('t3_thread_read', 'view', 'string'),
+            ('t3_thread_read', 'after_position', 'integer'),
+            ('t3_thread_read', 'limit', 'integer'), ('t3_thread_read', 'item_id', 'string'),
+            ('t3_thread_read', 'text_offset', 'integer'), ('t3_thread_send', 'mode', 'string'),
+            ('t3_thread_interrupt', 'reason', 'string')]
 
-GIVEN = {'string': 'value', 'object': {'strategy': 'root'}, 'integer': 5}
+DEFAULT_PROJECT = [('launch_thread', 'project_id'), ('t3_thread_list', 'project_id')]
+T3_WRITES = [('t3_thread_send', 't3_threads.send'),
+             ('t3_thread_interrupt', 't3_threads.interrupt')]
+T3_READS = [('t3_thread_list', 't3_threads.list'), ('t3_thread_search', 't3_threads.search'),
+            ('t3_thread_read', 't3_threads.read')]
+
+GIVEN = {'string': 'value', 'object': {'strategy': 'root'}, 'integer': 5, 'array': ['running']}
 WRONG = {'string': [5, True, ['x'], {'a': 1}], 'object': ['root', 5, ['root'], False],
-         'integer': ['5', True, 5.5, 5.0, [5], {'a': 1}]}
-ARTICLES = {'string': 'a string', 'object': 'an object', 'integer': 'an integer'}
+         'integer': ['5', True, 5.5, 5.0, [5], {'a': 1}],
+         'array': ['running', 5, {'a': 1}, True]}
+ARTICLES = {'string': 'a string', 'object': 'an object', 'integer': 'an integer',
+            'array': 'an array'}
 
 
 def compact(value: object) -> str:
@@ -86,6 +116,11 @@ class ToolsCase(McpCase):
         self.loom.on('schedules.add', ok(schedule_info()))
         self.loom.on('schedules.list', ok([schedule_info()]))
         self.loom.on('schedules.remove', ok(schedule_info()))
+        self.loom.on('t3_threads.list', ok(T3_LIST))
+        self.loom.on('t3_threads.search', ok(T3_LIST))
+        self.loom.on('t3_threads.read', ok(T3_READ))
+        self.loom.on('t3_threads.send', ok(T3_SENT))
+        self.loom.on('t3_threads.interrupt', ok(T3_STOPPED))
 
     def start_thread(self, **extra: str):
         return self.start(LOOM_THREAD='t1', **extra)
@@ -316,6 +351,61 @@ class EachToolTest(ToolsCase):
         self.assertEqual(delegate['parent_id'], 't1')
         self.assertEqual(remove['schedule_id'], 'sc1')
 
+    def test_t3_thread_list(self) -> None:
+        mcp = self.start_thread()
+        arguments = {'project_id': 'other', 'statuses': ['running', 'idle'],
+                     'title_contains': 'LM-99', 'limit': 5, 'cursor': 2}
+        self.assertEqual(mcp.tool('t3_thread_list', arguments), (compact(T3_LIST), False))
+        self.assertEqual(self.loom.calls, [('t3_threads.list', arguments)])
+
+    def test_t3_thread_search(self) -> None:
+        mcp = self.start_thread()
+        arguments = {'query': 'LM-99', 'project_id': 'other', 'limit': 3}
+        self.assertEqual(mcp.tool('t3_thread_search', arguments), (compact(T3_LIST), False))
+        self.assertEqual(self.loom.calls, [('t3_threads.search', arguments)])
+
+    def test_t3_thread_read(self) -> None:
+        mcp = self.start_thread()
+        self.assertEqual(mcp.tool('t3_thread_read', {'thread_id': 'mcp:t', 'after_position': 3}),
+                         (compact(T3_READ), False))
+        arguments = {'thread_id': 'mcp:t', 'view': 'activity', 'after_position': 0, 'limit': 10,
+                     'item_id': 'i1', 'text_offset': 400}
+        mcp.ok('t3_thread_read', arguments)
+        self.assertEqual(self.loom.calls, [
+            ('t3_threads.read', {'thread_id': 'mcp:t', 'after_position': 3}),
+            ('t3_threads.read', arguments)])
+
+    def test_t3_thread_send(self) -> None:
+        mcp = self.start_thread()
+        arguments = {'thread_id': 'mcp:t', 'message': 'Hi.', 'mode': 'queue'}
+        self.assertEqual(mcp.tool('t3_thread_send', arguments), (compact(T3_SENT), False))
+        [(call, params)] = self.loom.calls
+        self.assertEqual(call, 't3_threads.send')
+        self.assert_command_id(params)
+        self.assertEqual({key: value for key, value in params.items() if key != 'id'},
+                         arguments)
+
+    def test_t3_thread_interrupt(self) -> None:
+        mcp = self.start_thread()
+        arguments = {'thread_id': 'mcp:t', 'reason': 'Off track.'}
+        self.assertEqual(mcp.tool('t3_thread_interrupt', arguments),
+                         (compact(T3_STOPPED), False))
+        [(call, params)] = self.loom.calls
+        self.assertEqual(call, 't3_threads.interrupt')
+        self.assert_command_id(params)
+        self.assertEqual({key: value for key, value in params.items() if key != 'id'},
+                         arguments)
+
+    def test_each_t3_write_gets_its_own_command_id(self) -> None:
+        mcp = self.start_thread()
+        for tool, call in T3_WRITES:
+            with self.subTest(tool=tool):
+                self.loom.requests.clear()
+                mcp.ok(tool, VALID[tool])
+                mcp.ok(tool, VALID[tool])
+                first, second = (params['id'] for _, params in self.loom.calls)
+                self.assertNotEqual(first, second)
+
 
 class DefaultProjectTest(ToolsCase):
     def test_the_callers_project_is_the_default(self) -> None:
@@ -330,15 +420,43 @@ class DefaultProjectTest(ToolsCase):
     def test_a_caller_without_a_project_string_gives_an_error(self) -> None:
         caller = thread_info('t1')
         del caller['project_id']
+        tools = (('launch_thread', {'title': 'Fix it', 'message': 'Go.'}), ('t3_thread_list', {}))
         for thread in (thread_info('t1', project_id=None), caller,
                        thread_info('t1', project_id=5), [thread_info('t1')]):
-            with self.subTest(thread=thread):
-                self.loom.requests.clear()
-                self.loom.on_get({'t1': ok(thread)})
-                mcp = self.start_thread()
-                self.assertEqual(mcp.tool('launch_thread', {'title': 'Fix it', 'message': 'Go.'}),
-                                 ("cannot tell this thread's project; give project_id", True))
-                self.assertEqual(self.loom.names(), ['threads.get'])
+            for tool, arguments in tools:
+                with self.subTest(thread=thread, tool=tool):
+                    self.loom.requests.clear()
+                    self.loom.on_get({'t1': ok(thread)})
+                    mcp = self.start_thread()
+                    self.assertEqual(mcp.tool(tool, arguments), (
+                        "cannot tell this thread's project; give project_id", True))
+                    self.assertEqual(self.loom.names(), ['threads.get'])
+
+    def test_t3_thread_list_lists_the_callers_project(self) -> None:
+        mcp = self.start_thread()
+        self.assertEqual(mcp.tool('t3_thread_list', {}), (compact(T3_LIST), False))
+        mcp.ok('t3_thread_list', {'project_id': None, 'limit': 5})
+        self.assertEqual(self.loom.calls, [
+            ('threads.get', {'thread_id': 't1'}), ('t3_threads.list', {'project_id': 'demo'}),
+            ('threads.get', {'thread_id': 't1'}),
+            ('t3_threads.list', {'project_id': 'demo', 'limit': 5})])
+
+    def test_t3_thread_list_outside_a_loom_thread_needs_a_project(self) -> None:
+        mcp = self.start()
+        for arguments in ({}, {'project_id': None, 'statuses': ['running']}):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(mcp.tool('t3_thread_list', arguments),
+                                 ('project_id is required outside a Loom thread', True))
+        self.assertEqual(self.loom.requests, [])
+        mcp.ok('t3_thread_list', {'project_id': 'demo'})
+        self.assertEqual(self.loom.calls, [('t3_threads.list', {'project_id': 'demo'})])
+
+    def test_t3_thread_search_searches_every_project_by_default(self) -> None:
+        mcp = self.start_thread()
+        self.assertEqual(mcp.tool('t3_thread_search', {'query': 'LM-99'}),
+                         (compact(T3_LIST), False))
+        mcp.ok('t3_thread_search', {'query': 'LM-99', 'project_id': None})
+        self.assertEqual(self.loom.calls, [('t3_threads.search', {'query': 'LM-99'})] * 2)
 
     def test_a_missing_caller_thread_is_passed_on(self) -> None:
         self.loom.on_get({})
@@ -421,8 +539,9 @@ class ArgumentCheckTest(ToolsCase):
                         arguments[name] = None
                     mcp.ok(tool, arguments)
                     params = self.loom.calls[-1][1]
-                    if (tool, name) == ('launch_thread', 'project_id'):
-                        self.assertEqual(self.loom.names(), ['threads.get', 'threads.launch'])
+                    if (tool, name) in DEFAULT_PROJECT:
+                        self.assertEqual(self.loom.names()[0], 'threads.get')
+                        self.assertEqual(len(self.loom.calls), 2)
                         self.assertEqual(params['project_id'], 'demo')
                     else:
                         self.assertNotIn(name, params)
@@ -452,6 +571,33 @@ class ArgumentCheckTest(ToolsCase):
                          ('message must be a string', True))
         self.assertEqual(mcp.tool('schedule', {'text': 5, 'title': 5}),
                          ('trigger is required', True))
+        self.assertEqual(self.loom.requests, [])
+
+    def test_statuses_must_be_an_array_and_its_entries_are_left_to_the_server(self) -> None:
+        mcp = self.start_thread()
+        for value in ('running', {}, 5, False):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    mcp.tool('t3_thread_list', {'project_id': 'demo', 'statuses': value}),
+                    ('statuses must be an array', True))
+        self.assertEqual(self.loom.requests, [])
+        for value in ([], ['running', 5, None]):
+            with self.subTest(value=value):
+                self.loom.requests.clear()
+                mcp.ok('t3_thread_list', {'project_id': 'demo', 'statuses': value})
+                self.assertEqual(self.loom.calls,
+                                 [('t3_threads.list', {'project_id': 'demo', 'statuses': value})])
+
+    def test_t3_integers_are_never_bools_or_floats(self) -> None:
+        mcp = self.start_thread()
+        cases = [('t3_thread_list', 'limit'), ('t3_thread_list', 'cursor'),
+                 ('t3_thread_search', 'limit'), ('t3_thread_read', 'after_position'),
+                 ('t3_thread_read', 'limit'), ('t3_thread_read', 'text_offset')]
+        for tool, name in cases:
+            for value in (True, 5.0):
+                with self.subTest(tool=tool, name=name, value=value):
+                    self.assertEqual(mcp.tool(tool, {**VALID[tool], name: value}),
+                                     (f'{name} must be an integer', True))
         self.assertEqual(self.loom.requests, [])
 
     def test_values_are_left_to_the_server(self) -> None:
@@ -527,7 +673,18 @@ class ErrorMappingTest(ToolsCase):
                   'trigger.type must be one of at, interval, fixed_time'),
                  ('schedules', 'schedules.list', 'failed', 'internal error'),
                  ('unschedule', 'schedules.remove', 'not_found', "no schedule with id 'sc1'"),
-                 ('task_cancel', 'threads.stop', 'not_found', "no thread with id 'c1'")]
+                 ('task_cancel', 'threads.stop', 'not_found', "no thread with id 'c1'"),
+                 ('t3_thread_list', 't3_threads.list', 'failed',
+                  't3: not paired (run loom t3 pair)'),
+                 ('t3_thread_search', 't3_threads.search', 'not_found',
+                  "no project with id 'nope'"),
+                 ('t3_thread_read', 't3_threads.read', 'not_found',
+                  't3: thread_not_found: no thread mcp:t'),
+                 ('t3_thread_send', 't3_threads.send', 'forbidden',
+                  'a thread may not send to a T3 thread whose permission mode is wider than its '
+                  'own'),
+                 ('t3_thread_interrupt', 't3_threads.interrupt', 'invalid',
+                  'reason must be a string of at most 2000 characters')]
         mcp = self.start_thread()
         for tool, call, code, message in cases:
             with self.subTest(tool=tool, code=code):
@@ -606,15 +763,18 @@ class RetryTest(ToolsCase):
         self.assertEqual(self.loom.names(), ['threads.launch', 'threads.launch'])
 
     def test_every_write_is_retried_once_with_the_same_id(self) -> None:
-        writes = [('delegate', 'threads.delegate'), ('task_cancel', 'threads.stop'),
-                  ('thread_send', 'threads.send'), ('schedule', 'schedules.add'),
-                  ('unschedule', 'schedules.remove')]
+        writes = [('delegate', 'threads.delegate', MAY_HAVE_RUN),
+                  ('task_cancel', 'threads.stop', MAY_HAVE_RUN),
+                  ('thread_send', 'threads.send', MAY_HAVE_RUN),
+                  ('schedule', 'schedules.add', MAY_HAVE_RUN),
+                  ('unschedule', 'schedules.remove', MAY_HAVE_RUN),
+                  *((tool, call, MAY_HAVE_SENT) for tool, call in T3_WRITES)]
         mcp = self.start_thread()
-        for tool, call in writes:
+        for tool, call, text in writes:
             with self.subTest(tool=tool):
                 self.loom.requests.clear()
                 self.loom.on(call, dropped())
-                self.assertEqual(mcp.tool(tool, VALID[tool]), (f'{LOST}; {MAY_HAVE_RUN}', True))
+                self.assertEqual(mcp.tool(tool, VALID[tool]), (f'{LOST}; {text}', True))
                 sent = [params for name, params in self.loom.calls if name == call]
                 self.assertEqual(len(sent), 2)
                 self.assertEqual(sent[0], sent[1])
@@ -629,9 +789,22 @@ class RetryTest(ToolsCase):
         self.assertEqual(first, second)
         self.assert_command_id(first)
 
+    def test_a_dropped_t3_write_is_sent_once_more_with_the_same_params(self) -> None:
+        answers = {'t3_threads.send': T3_SENT, 't3_threads.interrupt': T3_STOPPED}
+        mcp = self.start_thread()
+        for tool, call in T3_WRITES:
+            with self.subTest(tool=tool):
+                self.loom.requests.clear()
+                self.loom.on(call, dropped(), ok(answers[call]))
+                self.assertEqual(mcp.tool(tool, VALID[tool]), (compact(answers[call]), False))
+                first, second = self.loom.calls
+                self.assertEqual(first, second)
+                self.assertEqual(first[0], call)
+                self.assert_command_id(first[1])
+
     def test_a_dropped_read_is_not_retried(self) -> None:
         reads = [('threads', 'threads.list'), ('schedules', 'schedules.list'),
-                 ('task_status', 'threads.get')]
+                 ('task_status', 'threads.get'), *T3_READS]
         mcp = self.start_thread()
         for tool, call in reads:
             with self.subTest(tool=tool):
@@ -655,6 +828,11 @@ class RetryTest(ToolsCase):
         text, is_error = mcp.tool('thread_send', VALID['thread_send'])
         self.assertTrue(is_error)
         self.assertTrue(text.endswith(MAY_HAVE_RUN), text)
+        for tool, _ in T3_WRITES:
+            with self.subTest(tool=tool):
+                text, is_error = mcp.tool(tool, VALID[tool])
+                self.assertTrue(is_error)
+                self.assertTrue(text.endswith(MAY_HAVE_SENT), text)
 
     def test_an_unreachable_loom_fails_emit_with_its_own_text(self) -> None:
         mcp = self.start_thread(LOOM_SOCKET=str(self.base / 'none.sock'))

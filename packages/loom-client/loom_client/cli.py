@@ -37,6 +37,7 @@ GROUPS = {
     'schedules': ('add, list, pause and remove schedules', ('schedule',)),
     'requests': ("answer threads' permission prompts", ('request',)),
     'signals': ('emit signals for event triggers', ('signal',)),
+    't3_threads': ('read and message threads in the T3 app', ('t3-threads',)),
 }
 
 WORKSPACE_FIELDS = {
@@ -368,6 +369,65 @@ def _emit(client: Client, args: argparse.Namespace) -> object:
                                cause=args.cause, id=args.id)
 
 
+def _t3_list_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument('project_id', help='the Loom project whose T3 threads to list')
+    command.add_argument('--status', dest='statuses', action='append', metavar='S',
+                         help='only threads with this T3 status (repeatable)')
+    command.add_argument('--title', dest='title_contains', metavar='TEXT',
+                         help='only threads whose title holds this text')
+    command.add_argument('--limit', type=int, metavar='N', help='at most this many threads')
+    command.add_argument('--cursor', type=int, metavar='N',
+                         help="the cursor of the last page's answer")
+
+
+def _t3_list(client: Client, args: argparse.Namespace) -> object:
+    return client.t3_threads_list(args.project_id, statuses=args.statuses,
+                                  title_contains=args.title_contains, limit=args.limit,
+                                  cursor=args.cursor)
+
+
+def _t3_search_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument('query')
+    command.add_argument('--project', dest='project_id', metavar='P',
+                         help='only threads of this Loom project (default every T3 project)')
+    command.add_argument('--limit', type=int, metavar='N', help='at most this many threads')
+
+
+def _t3_search(client: Client, args: argparse.Namespace) -> object:
+    return client.t3_threads_search(args.query, project_id=args.project_id, limit=args.limit)
+
+
+def _t3_read_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument('thread_id', help='a T3 thread id')
+    command.add_argument('--view', choices=('messages', 'activity'), help='what to read')
+    command.add_argument('--after', dest='after_position', type=int, metavar='N',
+                         help='only items after this position')
+    command.add_argument('--limit', type=int, metavar='N', help='at most this many items')
+    command.add_argument('--item', dest='item_id', metavar='I', help='read this one item')
+    command.add_argument('--offset', dest='text_offset', type=int, metavar='N',
+                         help="where to go on in the item's text")
+
+
+def _t3_read(client: Client, args: argparse.Namespace) -> object:
+    return client.t3_threads_read(args.thread_id, view=args.view,
+                                  after_position=args.after_position, limit=args.limit,
+                                  item_id=args.item_id, text_offset=args.text_offset)
+
+
+def _t3_send_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument('thread_id', help='a T3 thread id')
+    command.add_argument('message')
+    command.add_argument('--mode', choices=_values(DispatchMode),
+                         help='how to deliver it (default steer)')
+    _add_id(command)
+
+
+def _t3_interrupt_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument('thread_id', help='a T3 thread id')
+    command.add_argument('--reason', metavar='R', help='why it is interrupted')
+    _add_id(command)
+
+
 def _no_args(command: argparse.ArgumentParser) -> None:
     pass
 
@@ -418,6 +478,18 @@ COMMANDS: dict[CallName, tuple[str, Callable[[argparse.ArgumentParser], None], R
         lambda client, args: client.schedules_remove(args.schedule_id, id=args.id)),
     CallName.REQUESTS_RESPOND: ('answer a permission prompt', _respond_args, _respond),
     CallName.SIGNALS_EMIT: ('emit a signal', _emit_args, _emit),
+    CallName.T3_THREADS_LIST: ("list a project's T3 threads", _t3_list_args, _t3_list),
+    CallName.T3_THREADS_SEARCH: ('search T3 threads', _t3_search_args, _t3_search),
+    CallName.T3_THREADS_READ: ("read a T3 thread's messages or activity", _t3_read_args,
+                               _t3_read),
+    CallName.T3_THREADS_SEND: (
+        'send a message to a T3 thread', _t3_send_args,
+        lambda client, args: client.t3_threads_send(args.thread_id, args.message,
+                                                    mode=args.mode, id=args.id)),
+    CallName.T3_THREADS_INTERRUPT: (
+        "interrupt a T3 thread's turn", _t3_interrupt_args,
+        lambda client, args: client.t3_threads_interrupt(args.thread_id, reason=args.reason,
+                                                         id=args.id)),
 }
 
 

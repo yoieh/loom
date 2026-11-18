@@ -163,4 +163,6 @@ def human(call: str, result: object) -> list[str]:
         return [project_line(item) for item in _items(result)]
     if call.startswith('schedules.'):
         return [schedule_line(item) for item in _items(result)]
+    if call.startswith('t3_threads.'):
+        return thread_detail(result)
     return [thread_line(item) for item in _items(result)]

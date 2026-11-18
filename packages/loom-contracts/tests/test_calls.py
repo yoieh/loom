@@ -64,9 +64,22 @@ PARAMS: dict[str, tuple[set[str], set[str]]] = {
     'projects.set_mode': ({'id', 'project_id', 'permission_mode'}, set()),
     'projects.remove': ({'id', 'project_id'}, set()),
     'projects.list': (set(), set()),
+    't3_threads.list': ({'project_id'}, {'statuses', 'title_contains', 'limit', 'cursor'}),
+    't3_threads.search': ({'query'}, {'project_id', 'limit'}),
+    't3_threads.read': (
+        {'thread_id'}, {'view', 'after_position', 'limit', 'item_id', 'text_offset'},
+    ),
+    't3_threads.send': ({'id', 'thread_id', 'message'}, {'mode'}),
+    't3_threads.interrupt': ({'id', 'thread_id'}, {'reason'}),
 }
 
-READ_CALLS = {'threads.list', 'threads.get', 'threads.events', 'schedules.list', 'projects.list'}
+READ_CALLS = {'threads.list', 'threads.get', 'threads.events', 'schedules.list', 'projects.list',
+              't3_threads.list', 't3_threads.search', 't3_threads.read'}
+
+T3_THREADS_CALLS = {
+    't3_threads.list', 't3_threads.search', 't3_threads.read', 't3_threads.send',
+    't3_threads.interrupt',
+}
 
 
 class CallNameTest(unittest.TestCase):
@@ -168,10 +181,44 @@ class CallParamsTest(unittest.TestCase):
             ('schedules.list', 'project_id'): str,
             ('projects.add', 'permission_mode'): PermissionMode,
             ('projects.set_mode', 'permission_mode'): PermissionMode,
+            ('t3_threads.list', 'project_id'): str,
+            ('t3_threads.list', 'statuses'): list[str],
+            ('t3_threads.list', 'title_contains'): str,
+            ('t3_threads.list', 'limit'): int,
+            ('t3_threads.list', 'cursor'): int,
+            ('t3_threads.search', 'query'): str,
+            ('t3_threads.search', 'project_id'): str,
+            ('t3_threads.search', 'limit'): int,
+            ('t3_threads.read', 'thread_id'): str,
+            ('t3_threads.read', 'after_position'): int,
+            ('t3_threads.read', 'limit'): int,
+            ('t3_threads.read', 'item_id'): str,
+            ('t3_threads.read', 'text_offset'): int,
+            ('t3_threads.send', 'id'): str,
+            ('t3_threads.send', 'thread_id'): str,
+            ('t3_threads.send', 'message'): str,
+            ('t3_threads.send', 'mode'): DispatchMode,
+            ('t3_threads.interrupt', 'id'): str,
+            ('t3_threads.interrupt', 'thread_id'): str,
+            ('t3_threads.interrupt', 'reason'): str,
         }
         for (call, key), kind in expected.items():
             with self.subTest(call=call, key=key):
                 self.assertEqual(get_type_hints(CALL_PARAMS[CallName(call)])[key], kind)
+
+    def test_t3_threads_read_view_is_messages_or_activity(self) -> None:
+        hints = get_type_hints(CALL_PARAMS[CallName.T3_THREADS_READ])
+        self.assertEqual(set(get_args(hints['view'])), {'messages', 'activity'})
+
+    def test_t3_threads_references_end_in_id(self) -> None:
+        for call in T3_THREADS_CALLS:
+            with self.subTest(call=call):
+                params = CALL_PARAMS[CallName(call)]
+                keys = params.__required_keys__ | params.__optional_keys__
+                self.assertFalse(keys & {'project', 'thread'})
+                self.assertLessEqual(keys & {'project_id', 'thread_id'}, keys)
+                self.assertFalse({key for key in keys if key.endswith('_id')}
+                                 - {'project_id', 'thread_id', 'item_id'})
 
     def test_launch_requests_is_caller_or_any(self) -> None:
         hints = get_type_hints(CALL_PARAMS[CallName.THREADS_LAUNCH])

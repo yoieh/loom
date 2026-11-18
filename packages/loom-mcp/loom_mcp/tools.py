@@ -9,7 +9,9 @@ from .identity import Caller, Identity
 STRING = 'string'
 OBJECT = 'object'
 INTEGER = 'integer'
-KINDS = {STRING: (str, 'a string'), OBJECT: (dict, 'an object'), INTEGER: (int, 'an integer')}
+ARRAY = 'array'
+KINDS = {STRING: (str, 'a string'), OBJECT: (dict, 'an object'), INTEGER: (int, 'an integer'),
+         ARRAY: (list, 'an array')}
 
 WORKSPACE = ('Where the thread works: {"strategy": "root"}, {"strategy": "worktree", '
              '"branch"?, "base"?} or {"strategy": "existing_worktree", "path", "branch"}.')
@@ -27,6 +29,7 @@ NEEDS_PROJECT = 'project_id is required outside a Loom thread'
 UNKNOWN_PROJECT = "cannot tell this thread's project; give project_id"
 MAY_HAVE_RUN = 'the call may have run, so check with threads or schedules before calling again'
 MAY_HAVE_EMITTED = 'the signal may have been written, and emitting it again writes a second one'
+MAY_HAVE_SENT = 'the call may have run, so check with t3_thread_read before calling again'
 NO_CHECK = 'an agent may not add a schedule with a check'
 
 CONCURRENCY_KEY = ('A key, such as pm:demo, that at most one thread holds at a time; the launch '
@@ -38,6 +41,8 @@ SETTLE = ('on_result: the thread settles after its first completed or failed res
 LAUNCH_ONLY = 'Only with action launch. '
 SCHEDULE_WORKSPACE = ('Where each thread works: {"strategy": "root"} or {"strategy": "worktree", '
                       '"base"?}. Default: a new worktree.')
+T3_THREAD = 'A T3 thread id.'
+T3_PROJECT = 'A Loom project; Loom uses the T3 project with the same root.'
 
 
 class ToolError(Exception):
@@ -59,12 +64,17 @@ class Tool:
     args: tuple[Arg, ...] = ()
 
     def listing(self) -> dict:
-        properties = {arg.name: {'type': arg.kind, 'description': arg.description}
-                      for arg in self.args}
+        properties = {arg.name: _property(arg) for arg in self.args}
         required = [arg.name for arg in self.args if arg.required]
         return {'name': self.name, 'description': self.description,
                 'inputSchema': {'type': 'object', 'properties': properties,
                                 'required': required}}
+
+
+def _property(arg: Arg) -> dict:
+    if arg.kind == ARRAY:
+        return {'type': arg.kind, 'items': {'type': STRING}, 'description': arg.description}
+    return {'type': arg.kind, 'description': arg.description}
 
 
 def _runner_args() -> tuple[Arg, ...]:
@@ -149,6 +159,38 @@ TOOLS = (
     Tool('unschedule', 'Remove a schedule.', (
         Arg('id', STRING, 'The schedule id.', True),
     )),
+    Tool('t3_thread_list', 'List the threads of a project in the T3 app.', (
+        Arg('project_id', STRING, T3_PROJECT + " Default: this thread's project."),
+        Arg('statuses', ARRAY, 'Only threads with one of these T3 statuses, such as running.'),
+        Arg('title_contains', STRING, 'Only threads whose title contains this text.'),
+        Arg('limit', INTEGER, 'At most this many threads, 1 to 100.'),
+        Arg('cursor', INTEGER, 'Where the next page starts: the cursor an earlier list gave.'),
+    )),
+    Tool('t3_thread_search', 'Search the threads in the T3 app for a text.', (
+        Arg('query', STRING, 'The text to look for.', True),
+        Arg('project_id', STRING, T3_PROJECT + ' Default: every T3 project.'),
+        Arg('limit', INTEGER, 'At most this many threads, 1 to 50.'),
+    )),
+    Tool('t3_thread_read', 'Read the messages or the activity of a thread in the T3 app.', (
+        Arg('thread_id', STRING, T3_THREAD, True),
+        Arg('view', STRING, 'messages or activity.'),
+        Arg('after_position', INTEGER, 'Only the items after this position.'),
+        Arg('limit', INTEGER, 'At most this many items, 1 to 100.'),
+        Arg('item_id', STRING, 'The one item whose text to read.'),
+        Arg('text_offset', INTEGER, "Where in the item's text to start reading."),
+    )),
+    Tool('t3_thread_send',
+         'Send a message into a thread in the T3 app. A T3 thread with a wider permission mode '
+         'than this thread refuses it.', (
+             Arg('thread_id', STRING, T3_THREAD, True),
+             Arg('message', STRING, 'The message.', True),
+             Arg('mode', STRING,
+                 'What happens when a turn is running: steer (default), queue or interrupt.'),
+         )),
+    Tool('t3_thread_interrupt', 'Interrupt the running turn of a thread in the T3 app.', (
+        Arg('thread_id', STRING, T3_THREAD, True),
+        Arg('reason', STRING, 'Why it is interrupted.'),
+    )),
 )
 
 BY_NAME = {tool.name: tool for tool in TOOLS}
@@ -197,6 +239,11 @@ class Tools:
             'schedule': self._schedule,
             'schedules': self._schedules,
             'unschedule': self._unschedule,
+            't3_thread_list': self._t3_thread_list,
+            't3_thread_search': self._t3_thread_search,
+            't3_thread_read': self._t3_thread_read,
+            't3_thread_send': self._t3_thread_send,
+            't3_thread_interrupt': self._t3_thread_interrupt,
         }
 
     def call(self, name: str, arguments: dict) -> object:
@@ -290,3 +337,31 @@ class Tools:
 
     def _unschedule(self, client: Client, values: dict) -> object:
         return _write(lambda command_id: client.schedules_remove(values['id'], id=command_id))
+
+    def _t3_thread_list(self, client: Client, values: dict) -> object:
+        project_id = values.get('project_id')
+        if project_id is None:
+            project_id = self._caller_project(client, self._identity.caller(client))
+        return client.t3_threads_list(
+            project_id, statuses=values.get('statuses'),
+            title_contains=values.get('title_contains'), limit=values.get('limit'),
+            cursor=values.get('cursor'))
+
+    def _t3_thread_search(self, client: Client, values: dict) -> object:
+        return client.t3_threads_search(values['query'], project_id=values.get('project_id'),
+                                        limit=values.get('limit'))
+
+    def _t3_thread_read(self, client: Client, values: dict) -> object:
+        return client.t3_threads_read(
+            values['thread_id'], view=values.get('view'),
+            after_position=values.get('after_position'), limit=values.get('limit'),
+            item_id=values.get('item_id'), text_offset=values.get('text_offset'))
+
+    def _t3_thread_send(self, client: Client, values: dict) -> object:
+        return _write(lambda command_id: client.t3_threads_send(
+            values['thread_id'], values['message'], mode=values.get('mode'), id=command_id),
+            MAY_HAVE_SENT)
+
+    def _t3_thread_interrupt(self, client: Client, values: dict) -> object:
+        return _write(lambda command_id: client.t3_threads_interrupt(
+            values['thread_id'], reason=values.get('reason'), id=command_id), MAY_HAVE_SENT)

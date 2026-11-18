@@ -12,6 +12,10 @@ class T3Error(Exception):
     pass
 
 
+class T3NotFound(T3Error):
+    pass
+
+
 class NotPaired(T3Error):
     def __init__(self) -> None:
         super().__init__(NOT_PAIRED)

@@ -34,6 +34,11 @@ class CallName(StrEnum):
     PROJECTS_SET_MODE = 'projects.set_mode'
     PROJECTS_REMOVE = 'projects.remove'
     PROJECTS_LIST = 'projects.list'
+    T3_THREADS_LIST = 't3_threads.list'
+    T3_THREADS_SEARCH = 't3_threads.search'
+    T3_THREADS_READ = 't3_threads.read'
+    T3_THREADS_SEND = 't3_threads.send'
+    T3_THREADS_INTERRUPT = 't3_threads.interrupt'
 
 
 class Audience(StrEnum):
@@ -194,6 +199,42 @@ class ProjectsListParams(TypedDict):
     pass
 
 
+class T3ThreadsListParams(TypedDict):
+    project_id: str
+    statuses: NotRequired[list[str]]
+    title_contains: NotRequired[str]
+    limit: NotRequired[int]
+    cursor: NotRequired[int]
+
+
+class T3ThreadsSearchParams(TypedDict):
+    query: str
+    project_id: NotRequired[str]
+    limit: NotRequired[int]
+
+
+class T3ThreadsReadParams(TypedDict):
+    thread_id: str
+    view: NotRequired[Literal['messages', 'activity']]
+    after_position: NotRequired[int]
+    limit: NotRequired[int]
+    item_id: NotRequired[str]
+    text_offset: NotRequired[int]
+
+
+class T3ThreadsSendParams(TypedDict):
+    id: str
+    thread_id: str
+    message: str
+    mode: NotRequired[DispatchMode]
+
+
+class T3ThreadsInterruptParams(TypedDict):
+    id: str
+    thread_id: str
+    reason: NotRequired[str]
+
+
 CALL_PARAMS: dict[CallName, type] = {
     CallName.THREADS_LAUNCH: ThreadsLaunchParams,
     CallName.THREADS_DELEGATE: ThreadsDelegateParams,
@@ -215,6 +256,11 @@ CALL_PARAMS: dict[CallName, type] = {
     CallName.PROJECTS_SET_MODE: ProjectsSetModeParams,
     CallName.PROJECTS_REMOVE: ProjectsRemoveParams,
     CallName.PROJECTS_LIST: ProjectsListParams,
+    CallName.T3_THREADS_LIST: T3ThreadsListParams,
+    CallName.T3_THREADS_SEARCH: T3ThreadsSearchParams,
+    CallName.T3_THREADS_READ: T3ThreadsReadParams,
+    CallName.T3_THREADS_SEND: T3ThreadsSendParams,
+    CallName.T3_THREADS_INTERRUPT: T3ThreadsInterruptParams,
 }
 
 
