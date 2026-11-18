@@ -13,6 +13,7 @@ CHECK = ['python3', '-c', 'print(1)']
 DUE = '2026-10-23T07:01:00.000+00:00'
 NO_TEXT = 'check printed no JSON object with a non-empty text'
 SHAPE = 'check must be a list of 1 to 64 strings, the first not empty, with no NUL'
+TEXT = 'check arguments must be valid text'
 
 
 def printed(text: object) -> CheckResult:
@@ -85,8 +86,12 @@ class AddTest(CheckCase):
             ({'check': ['true', 'a\x00']}, SHAPE),
             ({'check': ['x' * 4093]}, 'check must be at most 4096 bytes as JSON'),
             ({'check': ['a', 'é' * 2045]}, 'check must be at most 4096 bytes as JSON'),
+            ({'check': ['true', '\ud800']}, TEXT),
+            ({'check': ['\udc80']}, TEXT),
+            ({'check': ['x' * 4093, '\ud800']}, TEXT),
+            ({'check': ['true', '\ud800\x00']}, SHAPE),
         ]
-        rows = self.schedule_rows()
+        rows, receipts = self.schedule_rows(), self.receipts()
         for fields, message in cases:
             with self.subTest(fields=str(fields)[:60]):
                 self.assertEqual(await self.refused('schedules.add', {
@@ -100,7 +105,7 @@ class AddTest(CheckCase):
                     'id': 'bad', 'trigger': {'type': 'interval', 'everyMs': 60_000},
                     'text': 'sweep', 'check': CHECK, **action,
                 }), 'check goes only with launch')
-        self.assertEqual(self.schedule_rows(), rows)
+        self.assertEqual((self.schedule_rows(), self.receipts()), (rows, receipts))
 
     async def test_the_largest_checks_are_taken(self) -> None:
         longest = await self.launcher('c1', check=['a'] * 64)
@@ -112,6 +117,11 @@ class AddTest(CheckCase):
         self.assertEqual(len(json.dumps(wide, separators=(',', ':'),
                                         ensure_ascii=False).encode()), 4096)
         self.assertEqual((await self.launcher('c3', check=wide))['check'], wide)
+
+    async def test_a_check_with_non_ascii_text_is_taken(self) -> None:
+        check = ['echo', 'å', json.loads('"\\ud83d\\ude00"')]
+        info = await self.launcher('c1', check=check)
+        self.assertEqual(info['check'], ['echo', 'å', '\U0001f600'])
 
 
 class ClockTest(CheckCase):
