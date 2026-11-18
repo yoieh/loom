@@ -24,6 +24,10 @@ gate file's `## Must fix`; a "note" goes under `## Notes` and never blocks.
 - A new import between packages must match `docs/design.md` §3's table; the packaging test checks
   it.
 - A runner change comes with a replay test: a recorded stream in, the events out.
+- A change that makes the server or a client read the process environment (for example `LOOM_THREAD`
+  or `LOOM_SOCKET`) gives every test that talks to an in-process server its own explicit
+  environment, and runs the suite twice, once with `LOOM_THREAD` set to a foreign id and once with
+  it unset; the results go in `output.md`.
 
 ## Reviewing code
 
