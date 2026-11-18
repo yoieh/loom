@@ -13,12 +13,14 @@ from .checks import Stopped, checked_text
 from .fill import fill
 from .host import Maker, ScheduleError, SchedulerHost
 from .table import (
-    FAILED, FIRED, MAX_REASON, RETRY_AFTER, SELECT, launch_options, title, to_row,
+    FAILED, FIRED, MAX_REASON, RETRY_AFTER, SELECT, SKIPPED_CHECK, launch_options, title,
+    to_row,
 )
 from .timing import iso
 
 PAGE = 1_000
 RATE_WINDOW = timedelta(hours=1)
+CHECK_RUNS = (FIRED, SKIPPED_CHECK, FAILED)
 NOW = datetime.min.replace(tzinfo=UTC)
 READER = Maker(None, False, None)
 
@@ -246,15 +248,17 @@ class EventSource:
             return SkipReason.OWN
         if hops >= watch.trigger.get('hops_max', HOPS_MAX):
             return SkipReason.HOPS
-        if self._runs_lately(watch.id, FIRED, now) >= watch.trigger.get('rate_max', RATE_MAX):
+        counted = (FIRED,) if watch.row['check_argv'] is None else CHECK_RUNS
+        if self._runs_lately(watch.id, counted, now) >= watch.trigger.get('rate_max', RATE_MAX):
             return SkipReason.RATE
         return None
 
-    def _runs_lately(self, schedule_id: str, outcome: str, now: datetime) -> int:
+    def _runs_lately(self, schedule_id: str, outcomes: tuple[str, ...], now: datetime) -> int:
         with self.host.transaction() as tx:
             return tx.execute(
-                'SELECT COUNT(*) FROM schedule_runs WHERE schedule_id = ? AND outcome = ? '
-                'AND at > ?', (schedule_id, outcome, iso(now - RATE_WINDOW)),
+                'SELECT COUNT(*) FROM schedule_runs WHERE schedule_id = ? AND at > ? '
+                f'AND outcome IN ({", ".join("?" * len(outcomes))})',
+                (schedule_id, iso(now - RATE_WINDOW), *outcomes),
             ).fetchone()[0]
 
     def _active(self, watch: Watch) -> bool:
@@ -309,7 +313,7 @@ class EventSource:
                 skip: SkipReason | None = None, text: str = '', thread_id: str | None = None,
                 failure: str | None = None) -> None:
         notify = skip is SkipReason.RATE and not self._runs_lately(
-            watch.id, skipped(SkipReason.RATE), now)
+            watch.id, (skipped(SkipReason.RATE),), now)
         schedule = watch.row
         with self.host.transaction() as tx:
             current = tx.execute('SELECT paused FROM schedules WHERE id = ?',
@@ -334,7 +338,8 @@ class EventSource:
                 })
             if notify:
                 limit = watch.trigger.get('rate_max', RATE_MAX)
-                message = (f'Schedule {watch.id} fired {limit} times in the last hour, '
+                verb = 'fired' if schedule['check_argv'] is None else 'ran'
+                message = (f'Schedule {watch.id} {verb} {limit} times in the last hour, '
                            f'so it skipped event {seen.id}.')
                 self.host.append_event(tx, EventType.SCHEDULE_FIRED, schedule['thread_id'],
                                        self._fired_data(watch, seen, ScheduleAction.NOTIFY.value,
