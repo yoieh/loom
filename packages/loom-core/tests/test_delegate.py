@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from loom_contracts.events import EventType
@@ -62,6 +63,16 @@ class ChildTest(DelegateTest):
         self.assertEqual((info['workspace_path'], info['branch']),
                          (parent['workspace_path'], parent['branch']))
         self.assertEqual(self.row(info['id'])['workspace_strategy'], 'existing_worktree')
+        self.assertEqual(self.runner.starts[-1].workspace_path, parent['workspace_path'])
+
+    async def test_a_grandchild_shares_the_worktree_by_default(self) -> None:
+        parent_id, _ = await self.running(workspace=WORKTREE)
+        parent = self.orchestrator.get(parent_id)
+        child, _ = await self.child(parent_id)
+        grandchild, _ = await self.child(child['id'])
+        self.assertEqual((grandchild['workspace_path'], grandchild['branch']),
+                         (parent['workspace_path'], parent['branch']))
+        self.assertEqual(self.row(grandchild['id'])['workspace_strategy'], 'existing_worktree')
         self.assertEqual(self.runner.starts[-1].workspace_path, parent['workspace_path'])
 
     async def test_runner_and_model_default_to_the_parents(self) -> None:
@@ -256,6 +267,15 @@ class DelegateErrorsTest(DelegateTest):
         await self.assert_error('invalid', self.orchestrator.delegate,
                                 self.delegate_params(parent_id, workspace=existing(path, branch)),
                                 'path')
+        self.assertEqual([spec.id for spec in self.runner.starts], [parent_id])
+
+    async def test_the_parents_path_with_another_branch_is_invalid(self) -> None:
+        parent_id, _ = await self.running(workspace=WORKTREE)
+        parent = self.orchestrator.get(parent_id)
+        git(Path(parent['workspace_path']), 'switch', '-q', '-c', 'side')
+        params = self.delegate_params(
+            parent_id, workspace=existing(parent['workspace_path'], 'side'))
+        await self.assert_error('invalid', self.orchestrator.delegate, params, 'branch')
         self.assertEqual([spec.id for spec in self.runner.starts], [parent_id])
 
     async def test_retry_returns_the_first_child_and_starts_once(self) -> None:
