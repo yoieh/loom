@@ -4,7 +4,7 @@ import unittest
 from loom_contracts.calls import CallName
 from loom_contracts.events import EventType
 
-from loom_scheduler import CheckResult
+from loom_scheduler import CheckResult, ScheduleError
 
 from .fakes import AGENT, PERSON, UNKNOWN, Event
 from .test_events import EventCase
@@ -277,14 +277,49 @@ class EventTest(CheckCase):
         self.assertEqual([skip['reason'] for skip in self.skips()], ['own', 'hops', 'rate'])
         self.assertEqual(len(self.host.checked), 1)
 
-    async def test_a_skipped_check_does_not_count_toward_rate_max(self) -> None:
-        info = await self.watcher(trigger={'rate_max': 1})
-        self.host.checks.append(CheckResult(1, '', None))
+    async def test_skipped_checks_count_toward_rate_max(self) -> None:
+        info = await self.watcher(trigger={'rate_max': 2})
+        self.host.checks.extend([CheckResult(1, '', None)] * 4)
+        self.host.signal('demo.done')
+        self.host.signal('demo.done')
+        third = self.host.signal('demo.done')
+        await self.read_events()
+        self.assertEqual([run[0] for run in self.event_runs(info['id'])],
+                         ['skipped_check', 'skipped_check', 'skipped_rate'])
+        self.assertEqual(len(self.host.checked), 2)
+        self.assertEqual(self.fired()[-1].data['text'],
+                         f'Schedule {info["id"]} ran 2 times in the last hour, so it skipped '
+                         f'event {third}.')
+        self.clock.advance(minutes=60)
+        self.host.signal('demo.done')
+        await self.read_events()
+        self.assertEqual(self.event_runs(info['id'])[-1][0], 'skipped_check')
+        self.assertEqual(len(self.host.checked), 3)
+
+    async def test_every_check_run_counts_toward_rate_max(self) -> None:
+        info = await self.watcher(trigger={'rate_max': 3})
+        self.host.checks.extend([CheckResult(None, '', 'check ran over 60 s'),
+                                 CheckResult(1, '', None), CheckResult(0, '', None)])
+        for _ in range(4):
+            self.host.signal('demo.done')
+        await self.read_events()
+        self.assertEqual([run[0] for run in self.event_runs(info['id'])],
+                         ['failed', 'skipped_check', 'fired', 'skipped_rate'])
+        self.assertEqual(len(self.host.checked), 3)
+
+    async def test_without_a_check_only_fired_runs_count(self) -> None:
+        info = await self.on('demo.done', trigger={'rate_max': 1}, action='launch',
+                             thread_id=..., project_id='p1')
+        self.host.fail[CallName.THREADS_LAUNCH] = ScheduleError('conflict', 'busy')
+        self.host.signal('demo.done')
+        self.host.signal('demo.done')
+        await self.read_events()
+        del self.host.fail[CallName.THREADS_LAUNCH]
         self.host.signal('demo.done')
         self.host.signal('demo.done')
         await self.read_events()
         self.assertEqual([run[0] for run in self.event_runs(info['id'])],
-                         ['skipped_check', 'fired'])
+                         ['failed', 'failed', 'fired', 'skipped_rate'])
 
 
 if __name__ == '__main__':
