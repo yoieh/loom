@@ -110,12 +110,35 @@ CALLS = [
      {'project_id': 'demo', 'permission_mode': 'full-access'}),
     ('projects_remove', ('demo',), {}, 'projects.remove', {'project_id': 'demo'}),
     ('projects_list', (), {}, 'projects.list', {}),
+    ('t3_threads_list', ('demo',), {}, 't3_threads.list', {'project_id': 'demo'}),
+    ('t3_threads_list', ('demo',),
+     {'statuses': ['running', 'idle'], 'title_contains': 'LM-99', 'limit': 5, 'cursor': 10},
+     't3_threads.list',
+     {'project_id': 'demo', 'statuses': ['running', 'idle'], 'title_contains': 'LM-99',
+      'limit': 5, 'cursor': 10}),
+    ('t3_threads_search', ('LM-99',), {}, 't3_threads.search', {'query': 'LM-99'}),
+    ('t3_threads_search', ('LM-99',), {'project_id': 'demo', 'limit': 3}, 't3_threads.search',
+     {'query': 'LM-99', 'project_id': 'demo', 'limit': 3}),
+    ('t3_threads_read', ('mcp:t1',), {}, 't3_threads.read', {'thread_id': 'mcp:t1'}),
+    ('t3_threads_read', ('mcp:t1',),
+     {'view': 'activity', 'after_position': 4, 'limit': 20, 'item_id': 'i1', 'text_offset': 0},
+     't3_threads.read',
+     {'thread_id': 'mcp:t1', 'view': 'activity', 'after_position': 4, 'limit': 20,
+      'item_id': 'i1', 'text_offset': 0}),
+    ('t3_threads_send', ('mcp:t1', 'hi'), {}, 't3_threads.send',
+     {'thread_id': 'mcp:t1', 'message': 'hi'}),
+    ('t3_threads_send', ('mcp:t1', 'hi'), {'mode': 'queue'}, 't3_threads.send',
+     {'thread_id': 'mcp:t1', 'message': 'hi', 'mode': 'queue'}),
+    ('t3_threads_interrupt', ('mcp:t1',), {}, 't3_threads.interrupt', {'thread_id': 'mcp:t1'}),
+    ('t3_threads_interrupt', ('mcp:t1',), {'reason': 'stuck'}, 't3_threads.interrupt',
+     {'thread_id': 'mcp:t1', 'reason': 'stuck'}),
 ]
 
 WRITES = {
     'threads.launch', 'threads.delegate', 'threads.send', 'threads.steer', 'threads.stop',
     'threads.settle', 'threads.update', 'requests.respond', 'signals.emit', 'schedules.add', 'schedules.pause',
     'schedules.remove', 'projects.add', 'projects.set_mode', 'projects.remove',
+    't3_threads.send', 't3_threads.interrupt',
 }
 
 BAD_ANSWERS = {

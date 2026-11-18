@@ -278,3 +278,32 @@ class Client:
 
     def projects_list(self) -> list[ProjectInfo]:
         return self.call(CallName.PROJECTS_LIST, {})
+
+    def t3_threads_list(self, project_id: str, *, statuses: list[str] | None = None,
+                        title_contains: str | None = None, limit: int | None = None,
+                        cursor: int | None = None) -> dict:
+        return self.call(CallName.T3_THREADS_LIST, _params(
+            project_id=project_id, statuses=statuses, title_contains=title_contains,
+            limit=limit, cursor=cursor))
+
+    def t3_threads_search(self, query: str, *, project_id: str | None = None,
+                          limit: int | None = None) -> dict:
+        return self.call(CallName.T3_THREADS_SEARCH,
+                         _params(query=query, project_id=project_id, limit=limit))
+
+    def t3_threads_read(self, thread_id: str, *, view: str | None = None,
+                        after_position: int | None = None, limit: int | None = None,
+                        item_id: str | None = None, text_offset: int | None = None) -> dict:
+        return self.call(CallName.T3_THREADS_READ, _params(
+            thread_id=thread_id, view=view, after_position=after_position, limit=limit,
+            item_id=item_id, text_offset=text_offset))
+
+    def t3_threads_send(self, thread_id: str, message: str, *, mode: str | None = None,
+                        id: str | None = None) -> dict:
+        return self.call(CallName.T3_THREADS_SEND, _params(
+            id=_command_id(id), thread_id=thread_id, message=message, mode=mode))
+
+    def t3_threads_interrupt(self, thread_id: str, *, reason: str | None = None,
+                             id: str | None = None) -> dict:
+        return self.call(CallName.T3_THREADS_INTERRUPT, _params(
+            id=_command_id(id), thread_id=thread_id, reason=reason))
