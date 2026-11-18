@@ -2208,21 +2208,21 @@ on Saturday). The `--at` time was five minutes in the past, so that reminder ran
 $ loom threads launch demo "Fix the login test" "Make the login test pass." --workspace root
 f6c4…  queued  demo  Fix the login test
 $ loom schedules add "Run the tests and report what fails." --every 3600 --thread f6c4…
-bc65…  2026-10-24T23:33:10.311+00:00  post  every 3600s  f6c4…  Run the tests and report what fails.
+bc65…  2026-10-24T23:33:10.311+00:00  post  every 3600s  f6c4…  -  -  Run the tests and report what fails.
 $ loom schedules add "Write the stand-up notes." --time 9:00 --weekdays 1,2,3,4,5 --action launch --project demo --title "Stand-up notes"
-403b…  2026-10-26T08:00:00.000+00:00  launch  9:00 on 1,2,3,4,5  demo  Stand-up notes
+403b…  2026-10-26T08:00:00.000+00:00  launch  9:00 on 1,2,3,4,5  demo  -  -  Stand-up notes
 $ loom schedules add "Stand-up in five minutes." --at 2026-10-25T00:28 --action notify
-e6c4…  2026-10-24T22:28:00.000+00:00  notify  at 2026-10-25T00:28  -  Stand-up in five minutes.
+e6c4…  2026-10-24T22:28:00.000+00:00  notify  at 2026-10-25T00:28  -  -  -  Stand-up in five minutes.
 $ loom schedules list
-bc65…  2026-10-24T23:33:10.311+00:00  post  every 3600s  f6c4…  Run the tests and report what fails.
-403b…  2026-10-26T08:00:00.000+00:00  launch  9:00 on 1,2,3,4,5  demo  Stand-up notes
-e6c4…  done  notify  at 2026-10-25T00:28  -  Stand-up in five minutes.
+bc65…  2026-10-24T23:33:10.311+00:00  post  every 3600s  f6c4…  -  -  Run the tests and report what fails.
+403b…  2026-10-26T08:00:00.000+00:00  launch  9:00 on 1,2,3,4,5  demo  -  -  Stand-up notes
+e6c4…  done  notify  at 2026-10-25T00:28  -  -  -  Stand-up in five minutes.
 $ loom threads events --after 8
 9 2026-10-24T22:33:10.492+00:00 - schedule.fired e6c4… notify late Stand-up in five minutes.
 $ loom schedules pause bc65…
-bc65…  paused  post  every 3600s  f6c4…  Run the tests and report what fails.
+bc65…  paused  post  every 3600s  f6c4…  -  -  Run the tests and report what fails.
 $ loom schedules remove bc65…
-bc65…  paused  post  every 3600s  f6c4…  Run the tests and report what fails.
+bc65…  paused  post  every 3600s  f6c4…  -  -  Run the tests and report what fails.
 $ loom schedules add "Ping." --every 30 --action notify
 loom: invalid: trigger.everyMs must be an integer from 60000 to 31536000000
 $ loom schedules add "Ping." --every 60
@@ -2234,7 +2234,7 @@ the second does not, and event 2 is its run:
 
 ```text
 $ loom schedules add 'Run {{payload.to}} for {{event.id}}' --event demo.done --match '{"to":"done"}' --action notify
-bda8…  active  notify  on demo.done  -  Run {{payload.to}} for {{event.id}}
+bda8…  active  notify  on demo.done  -  -  -  Run {{payload.to}} for {{event.id}}
 $ loom signals emit demo.done --payload '{"to":"done","run":"LM-12"}' --project demo
 1 2026-10-25T05:06:42.640+00:00 - signal demo.done demo 0 {"to": "done", "run": "LM-12"}
 $ loom signals emit demo.done --payload '{"to":"open"}'
@@ -2313,7 +2313,7 @@ cause: 11
 hops: 3
 created_at: 2026-10-25T04:31:06.869+00:00
 $ loom schedules add "Stand-up in five minutes." --at 2026-10-25T05:00 --action notify
-171d…  2026-10-25T04:00:00.000+00:00  notify  at 2026-10-25T05:00  -  Stand-up in five minutes.
+171d…  2026-10-25T04:00:00.000+00:00  notify  at 2026-10-25T05:00  -  -  -  Stand-up in five minutes.
 $ loom threads events --audience person --after 10
 28 2026-10-25T04:31:25.925+00:00 - schedule.fired 171d… notify late Stand-up in five minutes.
 $ loom threads events --audience agent --after 10
@@ -2393,13 +2393,13 @@ is the event object, so any language can follow Loom by reading the CLI's stdout
   title. A schedule is one line: id, state (`paused` when paused, `active` for an `event`
   trigger, else its `next_run`, else `done`), action, trigger (`at <at>`, `every <seconds>s`,
   `<timeOfDay>`, `<timeOfDay> on <weekdays>` or `on <topic>`), the thread or else the project it
-  targets, and its title, else its text. An event is one line: id, time, thread (or `-`), type
-  and its data fields, with single spaces. A null prints as `-`. A field an event lacks is left
-  out: a `request.closed` line shows `request_id`, `decision` and, when it has one, `reason`
-  (`request.closed r1 deny timeout`). A `request.opened` line shows `request_id`, `tool_name`,
-  `description` and `input`, not `expires_at`. A `signal` line shows `topic`, `project_id`,
-  `key`, `hops` and `payload`, and a `trigger.skipped` line `schedule_id`, `event_id` and
-  `reason`. `signals emit` prints its event as one such line.
+  targets, its runner, its model, and its title, else its text. An event is one line: id, time,
+  thread (or `-`), type and its data fields, with single spaces. A null prints as `-`. A field an
+  event lacks is left out: a `request.closed` line shows `request_id`, `decision` and, when it has
+  one, `reason` (`request.closed r1 deny timeout`). A `request.opened` line shows `request_id`,
+  `tool_name`, `description` and `input`, not `expires_at`. A `signal` line shows `topic`,
+  `project_id`, `key`, `hops` and `payload`, and a `trigger.skipped` line `schedule_id`, `event_id`
+  and `reason`. `signals emit` prints its event as one such line.
 - Agent-written text is shown as text: each control character (newline and tab too, DEL and the
   C1 range) prints as an escape such as `\n`, `\t` or `\x1b`, so each event is one line. Each text
   is cut at 2,000 characters and then marked `…`; `--json` prints it whole.
@@ -2411,7 +2411,7 @@ is the event object, so any language can follow Loom by reading the CLI's stdout
 | Code | When |
 |---|---|
 | 0 | Done. |
-| 1 | The API answered `ok: false`. stderr gets `loom: <code>: <message>`; with `--json`, stdout also gets `{"error": {"code": ..., "message": ...}}`. |
+| 1 | The API answered `ok: false`, or `schedules add` found that Loom did not store a param it sent (see [`Client`](#client)). stderr gets `loom: <code>: <message>`; with `--json`, stdout also gets `{"error": {"code": ..., "message": ...}}`. |
 | 2 | A usage error: an unknown command, a missing argument, an option outside its choices. |
 | 3 | Loom can't be reached, the connection dropped or the answer broke the protocol. stderr gets `loom: <what happened>`; a lost follow adds `resume with --after <last event id>`, and a write command whose connection was lost after it reached Loom adds `retry with --id <the id it sent>`. |
 | 130 | Ctrl-C, without a traceback. |
@@ -2693,6 +2693,7 @@ A tool error is a tool result with `isError: true` and a one-line `text`:
 | An outside thread's `delegate`, `task_status` or `task_cancel` | `this agent is not a Loom thread, so it has no tasks; use launch_thread` |
 | A `task_status` or `task_cancel` on a thread that is not the caller's task | `<task_id> is not a task of this thread` |
 | Loom answers `ok: false` | `<code>: <message>`, such as `conflict: thread <id> is stopping` |
+| A `schedule` whose answer lacks an argument it sent | `invalid: ` and the [`schedules_add`](#client) message, such as `invalid: Loom did not store model, so it runs older code than this client; the schedule was removed. Restart loom serve and add it again.` |
 | Loom can't be reached, the connection drops, or the answer breaks the protocol | the [`loom_client` error](#errors)'s message |
 
 The arguments are checked in the table's order before any call. An optional argument that is
@@ -2803,6 +2804,19 @@ not_found no thread with id 'nope'
   again to retry it safely. When such a call fails after it connected (the connection dropped,
   the answer timed out or broke the protocol), the `LoomConnectionError` has `command_id`, the
   `id` it sent: pass it as `id=` on the retry. It is missing when the socket couldn't be reached.
+- `schedules_add` checks its answer. When the answer is an object that lacks a key for a param it
+  sent (`id` aside), the server runs older code than the client and ignored that param (see
+  [Request](#request)). It then removes the new schedule with `schedules_remove` and raises
+  `LoomApiError` with code `invalid` and the message `Loom did not store <fields>, so it runs older
+  code than this client; the schedule was removed. Restart loom serve and add it again.`, `<fields>`
+  being the missing params in the order sent, such as `runner, model`. A `not_found` answer to the
+  remove counts as removed. When the remove fails otherwise, the message is `Loom did not store
+  <fields>, so it runs older code than this client, and removing schedule <id> failed: <reason>.
+  Remove it, restart loom serve and add it again.` When the answer's `id` is not a non-empty string,
+  it sends no remove and the message is `Loom did not store <fields>, so it runs older code than
+  this client, and its answer names no schedule id. Find the schedule with loom schedules list,
+  remove it, restart loom serve and add it again.` It returns an answer that is not an object as it
+  is. The `loom` CLI's `schedules add` and `loom-mcp`'s `schedule` tool go through it.
 - `Client.follow_events(after=0, thread_id=None, *, audience=None) -> Iterator[Event]`: yields
   every event after `after`, then each new one, until you stop iterating. When the connection is
   lost it raises `LoomConnectionError` whose `last_event_id` is the id of the last event it
@@ -2812,6 +2826,6 @@ not_found no thread with id 'nope'
 
 | Class | When |
 |---|---|
-| `LoomApiError` | The answer was `ok: false`. It has `.code` and `.message`. |
+| `LoomApiError` | The answer was `ok: false`, or `schedules_add` found a param missing from its answer (see [`Client`](#client)). It has `.code` and `.message`. |
 | `LoomConnectionError` | The socket can't be reached, or the connection dropped. It has `.message` and `.last_event_id` (an int after a lost follow, else `None`). When a call whose params hold a string `id` fails after the socket connected, it also has `.command_id`, the `id` it sent; otherwise that attribute is missing, so read it with `getattr(error, 'command_id', None)`. The subclass `LoomProtocolError` carries it the same way. |
 | `LoomProtocolError` | A subclass of `LoomConnectionError`: the answer broke this protocol, for example a line that is not JSON. |

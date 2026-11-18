@@ -12,7 +12,7 @@ from loom_client import (
     Client, LoomApiError, LoomConnectionError, LoomProtocolError, default_socket,
 )
 
-from .support import CLOSE, FakeServerCase, event, failed, line, ok, stream
+from .support import CLOSE, FakeServerCase, event, failed, line, ok, schedule_info, stream
 
 WORKSPACE = {'strategy': 'worktree', 'branch': 'b', 'base': 'main'}
 TRIGGER = {'type': 'interval', 'seconds': 60}
@@ -177,6 +177,8 @@ class RequestTest(FakeServerCase):
         for method, args, kwargs, call, params in CALLS:
             with self.subTest(method=method, kwargs=kwargs):
                 answer = [event(1)] if method == 'threads_events' else {'answer': method}
+                if method == 'schedules_add':
+                    answer = {'answer': method, **params}
                 self.answer(ok(answer))
                 self.assertEqual(getattr(client, method)(*args, **kwargs), answer)
                 request = self.server.requests[-1]
@@ -283,6 +285,120 @@ class AnswerTest(FakeServerCase):
             Client(str(self.socket), timeout=0.2).projects_list()
         self.assertNotIsInstance(caught.exception, LoomProtocolError)
         self.assertIn(str(self.socket), str(caught.exception))
+
+
+SONNET = 'claude-sonnet-5-5'
+OLD_ANSWER = {key: value for key, value in schedule_info().items()
+              if key not in ('runner', 'model', 'workspace', 'check')}
+
+
+def unstored(fields: str) -> str:
+    return (f'Loom did not store {fields}, so it runs older code than this client; the '
+            'schedule was removed. Restart loom serve and add it again.')
+
+
+def unremoved(fields: str, schedule_id: str, reason: str) -> str:
+    return (f'Loom did not store {fields}, so it runs older code than this client, and '
+            f'removing schedule {schedule_id} failed: {reason}. Remove it, restart loom serve '
+            'and add it again.')
+
+
+def unnamed(fields: str) -> str:
+    return (f'Loom did not store {fields}, so it runs older code than this client, and its '
+            'answer names no schedule id. Find the schedule with loom schedules list, remove '
+            'it, restart loom serve and add it again.')
+
+
+class ScheduleAnswerTest(FakeServerCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.client = Client(str(self.socket))
+
+    def reply(self, answer: object, removed: list[object] | None = None) -> None:
+        def reply(request: dict) -> list[object]:
+            if request['call'] == 'schedules.add':
+                return ok(answer)
+            return ok(schedule_info()) if removed is None else removed
+
+        self.answer_with(reply)
+
+    def add(self, **kwargs: object) -> object:
+        return self.client.schedules_add(TRIGGER, 'tick', action='launch', project_id='demo',
+                                         **kwargs)
+
+    def refused(self, **kwargs: object) -> LoomApiError:
+        with self.assertRaises(LoomApiError) as caught:
+            self.add(**kwargs)
+        self.assertEqual(caught.exception.code, 'invalid')
+        return caught.exception
+
+    def test_an_answer_without_a_sent_model_removes_the_schedule_and_raises(self) -> None:
+        self.reply({key: value for key, value in schedule_info('s9').items() if key != 'model'})
+        error = self.refused(model=SONNET)
+        self.assertEqual(error.message, unstored('model'))
+        (add, add_params), (remove, remove_params) = self.server.calls
+        self.assertEqual((add, remove), ('schedules.add', 'schedules.remove'))
+        self.assertEqual(remove_params['schedule_id'], 's9')
+        self.assertTrue(is_uuid4(remove_params['id']), remove_params)
+        self.assertNotEqual(remove_params['id'], add_params['id'])
+        self.assertEqual(set(remove_params), {'id', 'schedule_id'})
+
+    def test_the_message_names_every_missing_param_in_the_order_sent(self) -> None:
+        cases = [
+            ({'runner': 'claude', 'model': 'm'}, 'runner, model'),
+            ({'model': 'm', 'runner': 'claude'}, 'runner, model'),
+            ({'runner': 'claude', 'model': SONNET, 'workspace': {'strategy': 'root'}},
+             'runner, model, workspace'),
+        ]
+        for kwargs, fields in cases:
+            with self.subTest(kwargs=kwargs):
+                self.server.requests.clear()
+                self.reply(OLD_ANSWER)
+                self.assertEqual(self.refused(**kwargs).message, unstored(fields))
+                self.assertEqual([call for call, _ in self.server.calls],
+                                 ['schedules.add', 'schedules.remove'])
+
+    def test_a_remove_that_fails_names_the_schedule_and_the_reason(self) -> None:
+        cases = {
+            'not_found': (failed('not_found', "no schedule with id 's1'"), unstored('model')),
+            'failed': (failed('failed', 'internal error'),
+                       unremoved('model', 's1', 'failed: internal error')),
+            'closed': ([CLOSE], unremoved(
+                'model', 's1', 'the connection closed before a full answer line')),
+        }
+        for name, (removed, message) in cases.items():
+            with self.subTest(name):
+                self.server.requests.clear()
+                self.reply(OLD_ANSWER, removed)
+                self.assertEqual(self.refused(model=SONNET).message, message)
+                self.assertEqual([call for call, _ in self.server.calls],
+                                 ['schedules.add', 'schedules.remove'])
+
+    def test_an_answer_with_no_schedule_id_sends_no_remove(self) -> None:
+        without = {key: value for key, value in OLD_ANSWER.items() if key != 'id'}
+        for name, answer in {'missing': without, 'None': without | {'id': None},
+                             '5': without | {'id': 5}, 'empty': without | {'id': ''}}.items():
+            with self.subTest(name):
+                self.server.requests.clear()
+                self.reply(answer)
+                self.assertEqual(self.refused(model=SONNET).message, unnamed('model'))
+                self.assertEqual([call for call, _ in self.server.calls], ['schedules.add'])
+
+    def test_an_answer_that_is_not_an_object_is_returned_as_it_is(self) -> None:
+        for answer in (None, [1], 'ok'):
+            with self.subTest(answer=answer):
+                self.server.requests.clear()
+                self.reply(answer)
+                self.assertEqual(self.add(model=SONNET), answer)
+                self.assertEqual(len(self.server.requests), 1)
+
+    def test_an_answer_with_every_sent_key_is_returned_unchanged(self) -> None:
+        for answer in (schedule_info('s9', model=SONNET), schedule_info('s9', model=None)):
+            with self.subTest(model=answer['model']):
+                self.server.requests.clear()
+                self.reply(answer)
+                self.assertEqual(self.add(model=SONNET, runner='claude'), answer)
+                self.assertEqual(len(self.server.requests), 1)
 
 
 class FollowTest(FakeServerCase):

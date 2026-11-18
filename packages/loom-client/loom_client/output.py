@@ -130,7 +130,9 @@ def schedule_line(schedule: object) -> str:
         target = schedule.get('project_id')
     return '  '.join([entry(schedule.get('id')), entry(_schedule_state(schedule)),
                       entry(schedule.get('action')), entry(_trigger_text(schedule.get('trigger'))),
-                      entry(target), entry(schedule.get('title') or schedule.get('text'))])
+                      entry(target), entry(schedule.get('runner')),
+                      entry(schedule.get('model')),
+                      entry(schedule.get('title') or schedule.get('text'))])
 
 
 def event_line(event: object) -> str:
