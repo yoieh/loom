@@ -376,6 +376,29 @@ class EventTriggerTest(ScheduleCase):
                           for event in events],
                          [(added['id'], handled['id']), (added['id'], missed)])
 
+    async def test_a_filled_text_that_is_not_valid_utf8_fails_once(self) -> None:
+        conn = await self.connect()
+        await self.add_project(conn)
+        added = await conn.ok('schedules.add', id=conn.new_id(), action='launch',
+                              project_id='repo', text='Look at {{payload.result}}',
+                              trigger={'type': 'event', 'topic': 'thread.settled'})
+        store = self.serving.service.store
+        with store.transaction() as tx:
+            bad = store.append_event(tx, 'thread.settled', None, {'result': 'done \ud800'})
+        deadline = asyncio.get_running_loop().time() + TIMEOUT
+        while True:
+            with store.transaction() as tx:
+                runs = tx.execute('SELECT outcome, event_id, thread_id, reason FROM schedule_runs '
+                                  'WHERE schedule_id = ?', (added['id'],)).fetchall()
+                cursor = tx.execute('SELECT event_after FROM schedules WHERE id = ?',
+                                    (added['id'],)).fetchone()[0]
+            if runs or asyncio.get_running_loop().time() > deadline:
+                break
+            await asyncio.sleep(0.02)
+        self.assertEqual(runs, [('failed', bad, None, 'UnicodeEncodeError')])
+        self.assertEqual(cursor, bad)
+        self.assertEqual(await conn.ok('threads.list'), [])
+
 
 class LifecycleTest(ScheduleCase):
     def ticking(self) -> list[asyncio.Task]:

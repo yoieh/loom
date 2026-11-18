@@ -481,6 +481,15 @@ class CursorTest(EventCase):
         self.assertEqual(self.causes(info['id']), [fine])
         self.assertIsNone(self.scheduler.events.next_wake())
 
+    async def test_a_post_whose_filled_text_is_not_valid_utf8_records_failed(self) -> None:
+        info = await self.on('request.opened', action='post', text='Answer {{payload.input}}')
+        bad = self.host.emit(EventType.REQUEST_OPENED, 't1', input={'q': '\udfff'})
+        await self.read_events()
+        self.assertEqual(self.event_runs(info['id']),
+                         [('failed', bad, self.at(bad), None, 'UnicodeEncodeError')])
+        self.assertEqual(self.cursor(info['id']), bad)
+        self.assertIsNone(self.scheduler.events.next_wake())
+
     async def test_events_are_read_in_pages_of_a_thousand(self) -> None:
         info = await self.on('demo.done')
         for _ in range(1_001):

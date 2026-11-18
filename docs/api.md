@@ -1390,7 +1390,11 @@ matches it (§15 Event triggers):
   event after a schedule's cursor runs once, and one at or before it never runs again. Events are
   kept 30 days (§4), so a schedule catches up on at most that much.
 - **Failures.** A run whose call fails with a Loom error is logged as `failed`, and the schedule
-  goes on with the next event. When the scheduler itself fails (the store, say), the schedule
+  goes on with the next event. So is a `post` or `launch` whose text is not valid UTF-8, such as a
+  filled payload string with an unpaired surrogate (`"\ud800"` in the JSON) that an agent's stream
+  carried in: that is a failed call, not a failure of the scheduler. Its row keeps the error's
+  type name, `UnicodeEncodeError`, and the event is not tried again, so a check, when the schedule
+  has one, runs only once for it. When the scheduler itself fails (the store, say), the schedule
   stays at the event before and tries it again after 5 s.
 
 **Runs.** Each run is a row in the `schedule_runs` table of `loom.db`: when it was due, when it

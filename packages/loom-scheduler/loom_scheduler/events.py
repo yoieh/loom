@@ -297,6 +297,8 @@ class EventSource:
             return stopped.outcome, None, stopped.reason, text
         except ScheduleError as error:
             return FAILED, None, error.message[:MAX_REASON], text
+        except UnicodeError as error:
+            return FAILED, None, type(error).__name__, text
 
     def _fired_data(self, watch: Watch, seen: Seen, action: str, text: str,
                     hops: int) -> dict[str, object]:

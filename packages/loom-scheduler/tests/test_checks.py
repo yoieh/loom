@@ -331,6 +331,35 @@ class EventTest(CheckCase):
         self.assertEqual([run[0] for run in self.event_runs(info['id'])],
                          ['failed', 'failed', 'fired', 'skipped_rate'])
 
+    async def test_a_filled_text_that_is_not_valid_utf8_fails_once_and_moves_on(self) -> None:
+        info = await self.on('thread.settled', action='launch', thread_id=..., project_id='p1',
+                             check=CHECK, text='Look at {{payload.result}}')
+        bad = self.host.emit(EventType.THREAD_SETTLED, 't1', result='done \ud800')
+        await self.read_events()
+        self.assertEqual(self.event_runs(info['id']),
+                         [('failed', bad, self.at(bad), None, 'UnicodeEncodeError')])
+        self.assertEqual(self.cursor(info['id']), bad)
+        self.assertIsNone(self.scheduler.events.next_wake())
+        await self.run_pass(seconds=5)
+        await self.run_pass(seconds=5)
+        self.assertEqual(len(self.host.checked), 1)
+        self.assertEqual(len(self.launches()), 1)
+        self.assertEqual(self.fired(), [])
+        fine = self.host.emit(EventType.THREAD_SETTLED, 't1', result='ok')
+        await self.read_events()
+        self.assertEqual(self.event_runs(info['id'])[-1][:2], ('fired', fine))
+        self.assertEqual(self.launches()[-1]['message'], 'Look at ok')
+        self.assertEqual(len(self.host.checked), 2)
+
+    async def test_a_printed_text_that_is_not_valid_utf8_fails_the_run(self) -> None:
+        info = await self.watcher()
+        self.host.checks.append(printed('Go \ud800'))
+        bad = self.host.signal('demo.done')
+        await self.read_events()
+        self.assertEqual(self.event_runs(info['id']),
+                         [('failed', bad, self.at(bad), None, 'UnicodeEncodeError')])
+        self.assertEqual(self.cursor(info['id']), bad)
+
 
 if __name__ == '__main__':
     unittest.main()

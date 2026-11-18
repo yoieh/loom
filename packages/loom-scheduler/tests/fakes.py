@@ -165,6 +165,7 @@ class FakeHost:
         self.calls.append(Call(call, params, maker))
         if call in self.fail:
             raise self.fail[call]
+        json.dumps(params, ensure_ascii=False).encode('utf-8')
         answer = self._answer(call, params)
         if call == self.cut_after:
             self.cut_after = None
