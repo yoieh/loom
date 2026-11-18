@@ -13,7 +13,7 @@ TOOL_NAMES = ['launch_thread', 'delegate', 'task_status', 'task_cancel', 'thread
 PROPERTIES = {
     'launch_thread': ['title', 'message', 'project_id', 'workspace', 'runner', 'model',
                       'audience', 'concurrency_key', 'on_busy', 'settle'],
-    'delegate': ['task', 'workspace', 'runner', 'model', 'concurrency_key', 'on_busy'],
+    'delegate': ['task', 'workspace', 'runner', 'model', 'concurrency_key', 'on_busy', 'settle'],
     'task_status': ['task_id'],
     'task_cancel': ['task_id'],
     'thread_send': ['thread_id', 'message', 'mode'],

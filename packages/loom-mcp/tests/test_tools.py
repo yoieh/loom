@@ -52,7 +52,7 @@ OPTIONAL = [('launch_thread', 'project_id', 'string'), ('launch_thread', 'worksp
             ('launch_thread', 'on_busy', 'string'), ('launch_thread', 'settle', 'string'),
             ('delegate', 'workspace', 'object'), ('delegate', 'runner', 'string'),
             ('delegate', 'model', 'string'), ('delegate', 'concurrency_key', 'string'),
-            ('delegate', 'on_busy', 'string'),
+            ('delegate', 'on_busy', 'string'), ('delegate', 'settle', 'string'),
             ('thread_send', 'mode', 'string'), ('threads', 'project_id', 'string'),
             ('emit', 'project_id', 'string'), ('emit', 'key', 'string'),
             ('emit', 'cause', 'integer'),
@@ -154,7 +154,8 @@ class EachToolTest(ToolsCase):
         mcp = self.start_thread()
         text, is_error = mcp.tool('delegate', {
             'task': 'Review it.', 'workspace': {'strategy': 'root'}, 'runner': 'claude',
-            'model': 'opus', 'concurrency_key': 'review:demo', 'on_busy': 'queue'})
+            'model': 'opus', 'concurrency_key': 'review:demo', 'on_busy': 'queue',
+            'settle': 'on_result'})
         self.assertEqual((text, is_error),
                          (compact({'task_id': 'c1', 'thread': own_child()}), False))
         [(call, params)] = self.loom.calls
@@ -163,14 +164,14 @@ class EachToolTest(ToolsCase):
         self.assertEqual({key: value for key, value in params.items() if key != 'id'}, {
             'parent_id': 't1', 'task': 'Review it.', 'workspace': {'strategy': 'root'},
             'runner': 'claude', 'model': 'opus', 'concurrency_key': 'review:demo',
-            'on_busy': 'queue'})
+            'on_busy': 'queue', 'settle': 'on_result'})
 
-    def test_delegate_ignores_settle(self) -> None:
+    def test_delegate_passes_settle(self) -> None:
         mcp = self.start_thread()
         mcp.ok('delegate', {'task': 'Review it.', 'settle': 'on_result'})
         [(call, params)] = self.loom.calls
         self.assertEqual(call, 'threads.delegate')
-        self.assertNotIn('settle', params)
+        self.assertEqual(params['settle'], 'on_result')
 
     def test_task_status(self) -> None:
         mcp = self.start_thread()

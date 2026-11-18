@@ -173,15 +173,14 @@ def _add_audience(command: argparse.ArgumentParser, text: str, required: bool = 
     command.add_argument('--audience', choices=_values(Audience), required=required, help=text)
 
 
-def _add_key(command: argparse.ArgumentParser, settle: bool = True) -> None:
+def _add_key(command: argparse.ArgumentParser) -> None:
     command.add_argument('--concurrency-key', metavar='K',
                          help='a key at most one thread holds at a time')
     command.add_argument('--on-busy', choices=_values(OnBusy),
                          help='with --concurrency-key, wait in line (default) or join the '
                               'waiting launch')
-    if settle:
-        command.add_argument('--settle', choices=_values(Settle),
-                             help='settle after the first completed or failed result')
+    command.add_argument('--settle', choices=_values(Settle),
+                         help='settle after the first completed or failed result')
 
 
 def _add_workspace(command: argparse.ArgumentParser) -> None:
@@ -220,14 +219,15 @@ def _delegate_args(command: argparse.ArgumentParser) -> None:
     command.add_argument('parent_id')
     command.add_argument('task', help='the task, or - to read it from stdin')
     _add_workspace(command)
-    _add_key(command, settle=False)
+    _add_key(command)
     _add_id(command)
 
 
 def _delegate(client: Client, args: argparse.Namespace) -> object:
     return client.threads_delegate(
         args.parent_id, _stdin_or(args.task), workspace=args.workspace, runner=args.runner,
-        model=args.model, concurrency_key=args.concurrency_key, on_busy=args.on_busy, id=args.id)
+        model=args.model, concurrency_key=args.concurrency_key, on_busy=args.on_busy,
+        settle=args.settle, id=args.id)
 
 
 def _send_args(command: argparse.ArgumentParser) -> None:

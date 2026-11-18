@@ -111,6 +111,7 @@ TOOLS = (
              Arg('task', STRING, "The child's first message.", True),
              *_runner_args(),
              *_key_args(),
+             Arg('settle', STRING, SETTLE),
          )),
     Tool('task_status', "Read one of this thread's tasks.", (
         Arg('task_id', STRING, 'The task_id delegate answered.', True),
@@ -299,7 +300,7 @@ class Tools:
             parent_id, values['task'], workspace=values.get('workspace'),
             runner=values.get('runner'), model=values.get('model'),
             concurrency_key=values.get('concurrency_key'), on_busy=values.get('on_busy'),
-            id=command_id))
+            settle=values.get('settle'), id=command_id))
         task_id = thread.get('id') if isinstance(thread, dict) else None
         return {'task_id': task_id, 'thread': thread}
 

@@ -677,11 +677,12 @@ factory's prompts and rules, not Loom's; Loom gives only the parts below.
   `coalesce` joins only a waiting launch of the same project and parent. A joining launch's
   `title`, `workspace`, `runner`, `model`, `requests`, `origin`, `audience` and `settle` are
   checked but not used: the waiting thread keeps its own.
-- **One goal, then settled.** A launch with `settle: "on_result"` settles on its first
-  `completed` or `failed` result instead of going idle. A `stopped` result, or any result while
-  a stop is in progress, does not settle it: the thread goes idle, and the `completed` or
-  `failed` result of a later message settles it. Its `thread.settled` event carries the result,
-  so the next step can trigger on it.
+- **One goal, then settled.** A launch or a delegate with `settle: "on_result"` settles on its
+  first `completed` or `failed` result instead of going idle; a delegated child's result is
+  still posted to its parent. A `stopped` result, or any result while a stop is in progress,
+  does not settle it: the thread goes idle, and the `completed` or `failed` result of a later
+  message settles it. Its `thread.settled` event carries the result, so the next step can
+  trigger on it.
 - **Audience.** A thread is `person` (a person talks with it) or `agent` (the default). Thread
   Voice lists only `person` threads; the CLI sees all. An agent thread that needs a person asks
   through `thread-voice-mcp` as now, or is changed to `person` with `threads.update`. An event

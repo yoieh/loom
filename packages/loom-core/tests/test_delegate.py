@@ -244,6 +244,48 @@ class ResultTest(DelegateTest):
         self.assertEqual(self.state(parent_id), 'settled')
 
 
+class DelegateSettleTest(DelegateTest):
+    def settled_events(self, thread_id: str) -> list[dict]:
+        return [event['data'] for event in self.events(thread_id, EventType.THREAD_SETTLED)]
+
+    async def test_a_completed_result_settles_the_child_and_reaches_the_parent(self) -> None:
+        parent_id, parent = await self.idle()
+        info, session = await self.child(parent_id, 'Review it', settle='on_result')
+        self.assertEqual(info['settle'], 'on_result')
+        self.assertEqual(self.orchestrator.get(info['id'])['settle'], 'on_result')
+        await self.finish(info['id'], session, done(text='done'))
+        self.assertEqual(self.state(info['id']), 'settled')
+        self.assertTrue(session.closed)
+        self.assertEqual(self.settled_events(info['id']), [{'result': 'done'}])
+        self.assertEqual(parent.sent[-1],
+                         (f'Task {info["id"]} (Review it) completed.\n\ndone', QUEUE))
+
+    async def test_a_failed_result_settles_the_child_and_reaches_the_parent(self) -> None:
+        parent_id, parent = await self.idle()
+        info, session = await self.child(parent_id, 'Review it', settle='on_result')
+        await self.finish(info['id'], session, TurnResult(TurnState.FAILED, None, 'boom'))
+        self.assertEqual(self.state(info['id']), 'settled')
+        self.assertTrue(session.closed)
+        self.assertEqual(len(self.settled_events(info['id'])), 1)
+        self.assertEqual(parent.sent[-1], (f'Task {info["id"]} (Review it) failed: boom.', QUEUE))
+
+    async def test_a_stopped_result_does_not_settle_the_child(self) -> None:
+        parent_id, _ = await self.idle()
+        info, session = await self.child(parent_id, settle='on_result')
+        await self.finish(info['id'], session, TurnResult(TurnState.STOPPED, 'cut', 'interrupted'))
+        self.assertEqual(self.state(info['id']), 'idle')
+        self.assertFalse(session.closed)
+        self.assertEqual(self.settled_events(info['id']), [])
+        self.assertEqual(self.pending(parent_id), [])
+        self.assertEqual(self.sent_to(parent_id), ['Hello'])
+
+    async def test_a_child_without_settle_has_none(self) -> None:
+        parent_id, _ = await self.running()
+        info = await self.delegate(parent_id)
+        self.assertIsNone(info['settle'])
+        self.assertIsNone(self.orchestrator.get(info['id'])['settle'])
+
+
 class DelegateErrorsTest(DelegateTest):
     async def test_unknown_parent_is_not_found(self) -> None:
         await self.assert_error('not_found', self.orchestrator.delegate,
@@ -301,7 +343,7 @@ class DelegateParamsTest(DelegateTest):
         return {**self.delegate_params(self.parent_id), **extra}
 
     async def test_null_fields_are_invalid(self) -> None:
-        for field in ('parent_id', 'task', 'workspace', 'runner', 'model'):
+        for field in ('parent_id', 'task', 'workspace', 'runner', 'model', 'settle'):
             with self.subTest(field=field):
                 await self.assert_error('invalid', self.orchestrator.delegate,
                                         self.params(**{field: None}), field)

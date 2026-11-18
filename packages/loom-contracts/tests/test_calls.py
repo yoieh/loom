@@ -40,7 +40,7 @@ PARAMS: dict[str, tuple[set[str], set[str]]] = {
     ),
     'threads.delegate': (
         {'id', 'parent_id', 'task'},
-        {'workspace', 'runner', 'model', 'concurrency_key', 'on_busy'},
+        {'workspace', 'runner', 'model', 'concurrency_key', 'on_busy', 'settle'},
     ),
     'threads.send': ({'id', 'thread_id', 'message'}, {'mode', 'cause'}),
     'threads.steer': ({'id', 'thread_id', 'message_id'}, set()),
@@ -152,6 +152,7 @@ class CallParamsTest(unittest.TestCase):
             ('threads.delegate', 'runner'): RunnerName,
             ('threads.delegate', 'concurrency_key'): str,
             ('threads.delegate', 'on_busy'): OnBusy,
+            ('threads.delegate', 'settle'): Settle,
             ('threads.send', 'mode'): DispatchMode,
             ('threads.send', 'cause'): int,
             ('threads.steer', 'thread_id'): str,

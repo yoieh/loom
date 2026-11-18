@@ -239,6 +239,9 @@ class Orchestrator:
         has_model = 'model' in params
         model = _text(_not_null(params, 'model'), 'model') if has_model else None
         key, on_busy = concurrency.key_params(params)
+        settle = None
+        if 'settle' in params:
+            settle = _choice(_not_null(params, 'settle'), 'settle', Settle)
         command_id = params.get('id')
         start = False
 
@@ -279,6 +282,7 @@ class Orchestrator:
                 'parent_id': parent_id,
                 'audience': Audience.AGENT,
                 'concurrency_key': key,
+                'settle': settle,
                 'key_state': key_state,
                 'cause': chain.cause,
                 'hops': chain.hops,
