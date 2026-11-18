@@ -219,12 +219,10 @@ class AdmissionTest(SlotsTest):
         await self.limit(1)
         idle, idle_session = await self.idle()
         self.runner.close_gate = asyncio.Event()
-        try:
-            newcomer = (await self.launch())['id']
-            await wait_for(lambda: idle_session.closing)
-            await self.send(idle, 'still there?')
-        finally:
-            self.runner.close_gate.set()
+        newcomer = (await self.launch())['id']
+        await wait_for(lambda: idle_session.closing)
+        await self.send(idle, 'still there?')
+        self.runner.close_gate.set()
         await self.orchestrator.drain()
         self.assertEqual(self.state(newcomer), 'running')
         self.assertEqual(self.state(idle), 'queued')
