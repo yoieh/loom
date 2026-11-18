@@ -7,7 +7,7 @@ import urllib.parse
 from collections.abc import Callable
 
 from .credential import Credential
-from .reasons import NotPaired, NotRunning, T3Error, failure
+from .reasons import NotPaired, NotRunning, T3Error, T3NotFound, failure, reason
 
 PROTOCOL = '2025-06-18'
 TIMEOUT = 10.0
@@ -134,6 +134,8 @@ def tool_failure(result: dict, secrets: tuple[str, ...]) -> T3Error:
     if isinstance(data, dict):
         code, message = data.get('code'), data.get('message')
         if isinstance(code, str) and code and isinstance(message, str):
+            if code == 'thread_not_found':
+                return T3NotFound(reason(code, message, secrets))
             return failure(code, message, secrets)
     return failure('error', text, secrets)
 

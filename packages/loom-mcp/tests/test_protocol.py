@@ -6,8 +6,9 @@ from loom_mcp.server import MAX_LINE, Server
 
 from .support import McpCase, ok
 
-TEN = ['launch_thread', 'delegate', 'task_status', 'task_cancel', 'thread_send', 'threads',
-       'emit', 'schedule', 'schedules', 'unschedule']
+TOOL_NAMES = ['launch_thread', 'delegate', 'task_status', 'task_cancel', 'thread_send',
+              'threads', 'emit', 'schedule', 'schedules', 'unschedule', 't3_thread_list',
+              't3_thread_search', 't3_thread_read', 't3_thread_send', 't3_thread_interrupt']
 
 PROPERTIES = {
     'launch_thread': ['title', 'message', 'project_id', 'workspace', 'runner', 'model',
@@ -22,6 +23,20 @@ PROPERTIES = {
                  'concurrency_key', 'on_busy', 'settle', 'workspace', 'runner', 'model'],
     'schedules': [],
     'unschedule': ['id'],
+    't3_thread_list': ['project_id', 'statuses', 'title_contains', 'limit', 'cursor'],
+    't3_thread_search': ['query', 'project_id', 'limit'],
+    't3_thread_read': ['thread_id', 'view', 'after_position', 'limit', 'item_id',
+                       'text_offset'],
+    't3_thread_send': ['thread_id', 'message', 'mode'],
+    't3_thread_interrupt': ['thread_id', 'reason'],
+}
+
+T3_TYPES = {
+    't3_thread_list': ['string', 'array', 'string', 'integer', 'integer'],
+    't3_thread_search': ['string', 'string', 'integer'],
+    't3_thread_read': ['string', 'string', 'integer', 'integer', 'string', 'integer'],
+    't3_thread_send': ['string', 'string', 'string'],
+    't3_thread_interrupt': ['string', 'string'],
 }
 
 
@@ -60,10 +75,10 @@ class InitializeTest(McpCase):
 
 
 class ToolsListTest(McpCase):
-    def test_lists_exactly_the_ten_tools(self) -> None:
+    def test_lists_exactly_the_fifteen_tools(self) -> None:
         mcp = self.start()
         tools = mcp.request('tools/list')['result']['tools']
-        self.assertEqual([tool['name'] for tool in tools], TEN)
+        self.assertEqual([tool['name'] for tool in tools], TOOL_NAMES)
         for tool in tools:
             with self.subTest(tool=tool['name']):
                 self.assertIsInstance(tool['description'], str)
@@ -85,7 +100,7 @@ class ToolsListTest(McpCase):
                 self.assertFalse(name.startswith('project') and name != 'project_id')
                 self.assertFalse('mode' in name and name not in ('mode', 'model'))
         modes = [tool['name'] for tool in tools if 'mode' in tool['inputSchema']['properties']]
-        self.assertEqual(modes, ['thread_send'])
+        self.assertEqual(modes, ['thread_send', 't3_thread_send'])
         text = json.dumps(tools)
         for word in ('permission_mode', 'projects.add', 'projects.set_mode', 'projects.remove',
                      'set_mode', 'full-access'):
@@ -100,8 +115,29 @@ class ToolsListTest(McpCase):
             'task_status': ['task_id'], 'task_cancel': ['task_id'],
             'thread_send': ['thread_id', 'message'], 'threads': [],
             'emit': ['topic', 'payload'], 'schedule': ['trigger', 'text'], 'schedules': [],
-            'unschedule': ['id'],
+            'unschedule': ['id'], 't3_thread_list': [], 't3_thread_search': ['query'],
+            't3_thread_read': ['thread_id'], 't3_thread_send': ['thread_id', 'message'],
+            't3_thread_interrupt': ['thread_id'],
         })
+
+    def test_the_t3_thread_tools_argument_types(self) -> None:
+        mcp = self.start()
+        tools = {tool['name']: tool for tool in mcp.request('tools/list')['result']['tools']}
+        for name, types in T3_TYPES.items():
+            with self.subTest(tool=name):
+                properties = tools[name]['inputSchema']['properties']
+                self.assertEqual([value['type'] for value in properties.values()], types)
+                self.assertIn('T3 app', tools[name]['description'])
+        statuses = tools['t3_thread_list']['inputSchema']['properties']['statuses']
+        self.assertEqual(statuses['type'], 'array')
+        self.assertEqual(statuses['items'], {'type': 'string'})
+        for tool in tools.values():
+            for key, value in tool['inputSchema']['properties'].items():
+                with self.subTest(tool=tool['name'], key=key):
+                    expected = {'type', 'description'}
+                    if value['type'] == 'array':
+                        expected.add('items')
+                    self.assertEqual(set(value), expected)
 
     def test_schedule_takes_event_triggers_and_emit_an_integer_cause(self) -> None:
         mcp = self.start()
@@ -121,7 +157,7 @@ class ToolsListTest(McpCase):
                 mcp.send(message)
                 answer = mcp.read()
                 self.assertEqual(answer['id'], message['id'])
-                self.assertEqual(len(answer['result']['tools']), 10)
+                self.assertEqual(len(answer['result']['tools']), len(TOOL_NAMES))
 
 
 class NotificationTest(McpCase):

@@ -26,6 +26,7 @@ from .reasons import (
     NotPaired,
     NotRunning,
     T3Error,
+    T3NotFound,
     failure,
     safe_reason,
 )
@@ -169,7 +170,7 @@ async def find_project(call: Call, main: str) -> str:
         cursor = answer.get('nextCursor')
         if not isinstance(cursor, int) or isinstance(cursor, bool):
             break
-    raise T3Error(safe_reason(f't3: no T3 project at {main}', ()))
+    raise T3NotFound(safe_reason(f't3: no T3 project at {main}', ()))
 
 
 async def read_pages(call: Call, t3_id: str, tracker: Tracker,

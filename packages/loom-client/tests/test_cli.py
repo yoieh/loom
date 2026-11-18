@@ -143,12 +143,32 @@ COMMANDS = [
     (['signals', 'emit', 'demo.done'], 'signals.emit', {'topic': 'demo.done', 'payload': {}}),
     (['signal', 'emit', 'demo.done', '--payload', '{"n": [1, 2]}'], 'signals.emit',
      {'topic': 'demo.done', 'payload': {'n': [1, 2]}}),
+    (['t3-threads', 'list', 'demo'], 't3_threads.list', {'project_id': 'demo'}),
+    (['t3-threads', 'list', 'demo', '--status', 'running', '--status', 'idle', '--title',
+      'LM-99', '--limit', '5', '--cursor', '10'], 't3_threads.list',
+     {'project_id': 'demo', 'statuses': ['running', 'idle'], 'title_contains': 'LM-99',
+      'limit': 5, 'cursor': 10}),
+    (['t3-threads', 'search', 'LM-99'], 't3_threads.search', {'query': 'LM-99'}),
+    (['t3-threads', 'search', 'LM-99', '--project', 'demo', '--limit', '3'],
+     't3_threads.search', {'query': 'LM-99', 'project_id': 'demo', 'limit': 3}),
+    (['t3-threads', 'read', 'mcp:t1'], 't3_threads.read', {'thread_id': 'mcp:t1'}),
+    (['t3-threads', 'read', 'mcp:t1', '--view', 'activity', '--after', '4', '--limit', '20',
+      '--item', 'i1', '--offset', '0'], 't3_threads.read',
+     {'thread_id': 'mcp:t1', 'view': 'activity', 'after_position': 4, 'limit': 20,
+      'item_id': 'i1', 'text_offset': 0}),
+    (['t3-threads', 'send', 'mcp:t1', 'hi'], 't3_threads.send',
+     {'thread_id': 'mcp:t1', 'message': 'hi'}),
+    (['t3-threads', 'send', 'mcp:t1', 'hi', '--mode', 'interrupt'], 't3_threads.send',
+     {'thread_id': 'mcp:t1', 'message': 'hi', 'mode': 'interrupt'}),
+    (['t3-threads', 'interrupt', 'mcp:t1'], 't3_threads.interrupt', {'thread_id': 'mcp:t1'}),
+    (['t3-threads', 'interrupt', 'mcp:t1', '--reason', 'stuck'], 't3_threads.interrupt',
+     {'thread_id': 'mcp:t1', 'reason': 'stuck'}),
 ]
 
 WRITES = {'threads.launch', 'threads.delegate', 'threads.send', 'threads.steer', 'threads.stop',
           'threads.settle', 'threads.update', 'projects.add', 'projects.set_mode',
           'projects.remove', 'schedules.add', 'schedules.pause', 'schedules.remove',
-          'requests.respond', 'signals.emit'}
+          'requests.respond', 'signals.emit', 't3_threads.send', 't3_threads.interrupt'}
 
 USAGE_ERRORS = [
     [],
@@ -226,6 +246,15 @@ USAGE_ERRORS = [
     ['t3', 'nope'],
     ['t3', 'status', '--socket', '/r/api.sock'],
     ['t3', 'pair', 'extra'],
+    ['t3-threads'],
+    ['t3-threads', 'list'],
+    ['t3-threads', 'list', 'demo', '--limit', 'x'],
+    ['t3-threads', 'search'],
+    ['t3-threads', 'read', 'mcp:t1', '--view', 'all'],
+    ['t3-threads', 'read', 'mcp:t1', '--after', '1.5'],
+    ['t3-threads', 'send', 'mcp:t1'],
+    ['t3-threads', 'send', 'mcp:t1', 'hi', '--mode', 'restart'],
+    ['t3-threads', 'interrupt'],
 ]
 
 
@@ -294,7 +323,8 @@ class CommandTest(CliCase):
                      ['schedules', 'add', 'x', '--every', '60'], ['schedules', 'pause', 's1'],
                      ['schedules', 'remove', 's1'],
                      ['threads', 'update', 't1', '--audience', 'agent'],
-                     ['requests', 'respond', 'r1', 'allow'], ['signals', 'emit', 'demo.done']):
+                     ['requests', 'respond', 'r1', 'allow'], ['signals', 'emit', 'demo.done'],
+                     ['t3-threads', 'send', 'mcp:t1', 'm'], ['t3-threads', 'interrupt', 'mcp:t1']):
             with self.subTest(argv=argv):
                 self.assertEqual(self.run_cli(*argv, '--id', 'retry-7')[0], 0)
                 self.assertEqual(self.server.requests[-1]['params']['id'], 'retry-7')
@@ -307,7 +337,8 @@ class CommandTest(CliCase):
             'threads.get', 'threads.stop', 'threads.settle', 'threads.update', 'threads.events', 'projects.add',
             'projects.set_mode', 'projects.remove', 'projects.list', 'schedules.add',
             'schedules.list', 'schedules.pause', 'schedules.remove', 'requests.respond',
-            'signals.emit',
+            'signals.emit', 't3_threads.list', 't3_threads.search', 't3_threads.read',
+            't3_threads.send', 't3_threads.interrupt',
         })
 
     def test_requests_respond_sends_a_new_uuid4_id_or_the_given_one(self) -> None:
@@ -448,7 +479,7 @@ class UsageTest(CliCase):
     def test_help_lists_the_commands_and_exits_0(self) -> None:
         for argv, names in (
             (['--help'], ['serve', 'install', 't3', 'threads', 'projects', 'schedules',
-                          'requests', 'signals']),
+                          'requests', 'signals', 't3_threads']),
             (['t3', '--help'], ['pair', 'unpair', 'status']),
             (['threads', '--help'],
              ['launch', 'delegate', 'send', 'list', 'get', 'stop', 'settle', 'update',
@@ -461,6 +492,7 @@ class UsageTest(CliCase):
             (['request', '--help'], ['respond']),
             (['signals', '--help'], ['emit']),
             (['signal', '--help'], ['emit']),
+            (['t3-threads', '--help'], ['list', 'search', 'read', 'send', 'interrupt']),
         ):
             with self.subTest(argv=argv):
                 out = io.StringIO()
@@ -904,6 +936,21 @@ class HumanOutputTest(CliCase):
         self.assertIn('title: a\\nb', lines)
         self.assertIn('origin: -', lines)
         self.assertIn('waiting: false', lines)
+
+    def test_a_t3_threads_result_prints_one_line_per_top_level_field(self) -> None:
+        result = {'thread': {'id': 'mcp:t1', 'runtimeMode': 'auto'}, 'items': [1, 2],
+                  'nextCursor': None, 'title': 'a\nb', 'text': 'x' * 2001}
+        for argv in (['t3-threads', 'list', 'demo'], ['t3-threads', 'search', 'q'],
+                     ['t3-threads', 'read', 'mcp:t1'], ['t3-threads', 'send', 'mcp:t1', 'hi'],
+                     ['t3-threads', 'interrupt', 'mcp:t1']):
+            with self.subTest(argv=argv):
+                self.answer(ok(result))
+                code, out, err = self.run_cli(*argv)
+                self.assertEqual((code, err), (0, ''))
+                self.assertEqual(out.splitlines(), [
+                    'thread: {"id": "mcp:t1", "runtimeMode": "auto"}', 'items: [1, 2]',
+                    'nextCursor: -', 'title: a\\nb', f'text: {"x" * 2000}…',
+                ])
 
     def test_an_unexpected_result_shape_still_prints(self) -> None:
         for result in (None, 'text\x1b', 5, [1, None]):

@@ -376,6 +376,19 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   `exited`; it never stops, settles or archives the T3 thread. Stop (§4) uses `interrupt`.
   T3 has a tool that archives a thread, `t3_thread_organize {action: "archive"}`, and none
   that deletes one (*seen*, T3 0.1.2); Loom doesn't call it.
+- **Other T3 threads.** `loom-service` serves `t3_threads.list`, `.search`, `.read`, `.send` and
+  `.interrupt` (§8) in `serve_t3_threads`, with the runner's `T3Threads`
+  (`loom_runner_t3/threads.py`). It uses the same `t3-client` secret, origin check and MCP
+  client as a T3 thread, and reaches any T3 thread, not only those Loom started. Thread ids are
+  T3's own; Loom checks only that one is a string of 1 to 200 characters. A Loom `project_id`
+  becomes the T3 project with the same root, as at a start. A send or interrupt has no Loom
+  receipt: its `clientRequestId` comes from the command id, `uuid5(NAMESPACE_URL,
+  'loom:<call>:<thread_id>:<id>')`, so a retry with the same id enters once and T3 answers it
+  again. Answers pass through unchanged, with T3's camelCase fields, which `v1`'s stability (§8)
+  doesn't cover. T3's `thread_not_found`, and no T3 project at the root, are `not_found`; any
+  other T3 failure is `failed` with the one-line `t3: ...` reason. Each call ends within 25 s,
+  below the client's 30 s. A send from an agent's thread is refused into a T3 thread whose
+  `runtimeMode` is wider than its own (§11).
 - **Errors** are one line, `t3: <code>: <message>`, cut to 200 characters, from T3's `isError`
   results (*seen*), such as `{_tag: "OrchestratorMcpFailure", code: "thread_not_found",
   message}` (*seen*, T3 0.1.2). A 401 is "t3: not paired (run loom t3 pair)"; a failed origin
@@ -441,7 +454,8 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   `threads.get`, `threads.stop`, `threads.settle`, `threads.update` (a thread's audience, §15),
   `threads.events` (a stream from a given event id, so a client that reconnects misses nothing),
   `requests.respond`, `signals.emit` (§15), `schedules.add`, `schedules.list`, `schedules.pause`,
-  `schedules.remove`, `projects.*`. Each call and event is documented, with examples, in `docs/api.md`.
+  `schedules.remove`, `projects.*`, `t3_threads.*` (list, search, read, send to and interrupt any
+  T3 thread, §6.1). Each call and event is documented, with examples, in `docs/api.md`.
 - **Transport.** `loom serve` listens on `$XDG_RUNTIME_DIR/loom/api.sock` (user-only, mode
   0600), JSON lines. A local client needs no token and nothing listens on a port. A remote
   client waits for a relay and is not covered.
@@ -486,12 +500,19 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
 | `threads {project_id?}` | threads and their states | `t3_thread_list` |
 | `emit {topic, payload, project_id?, key?, cause?}` | a signal (§15) | none |
 | `schedule {trigger, text, action?, thread_id?, project_id?, title?, concurrency_key?, on_busy?, settle?, runner?, model?, workspace?}`, `schedules {}`, `unschedule {id}` | §7: a clock or an event trigger (§7, §15); `concurrency_key`, `on_busy`, `settle`, `runner`, `model` and `workspace` go with a launch | `schedule_task` and friends |
+| `t3_thread_list {project_id?, statuses?, title_contains?, limit?, cursor?}` | the threads of a project in the T3 app, by default the caller's thread's project (`t3_threads.list`, §6.1) | `t3_thread_list` |
+| `t3_thread_search {query, project_id?, limit?}` | T3 threads that hold a text, in every T3 project by default | `t3_thread_search` |
+| `t3_thread_read {thread_id, view?, after_position?, limit?, item_id?, text_offset?}` | a T3 thread's messages or activity | `t3_thread_read` |
+| `t3_thread_send {thread_id, message, mode?}` | a message into a T3 thread; refused into one with a wider mode (§11) | `t3_thread_send` |
+| `t3_thread_interrupt {thread_id, reason?}` | interrupt a T3 thread's running turn | `t3_thread_interrupt` |
 
 - No depth or count limits: a task can delegate, and a thread can have any number of tasks.
   Every thread records where it came from, and Stop reaches all the way down (§4).
-- The tools act in registered projects only.
+- The tools act in registered projects only, the T3 tools' `project_id` too; a T3 `thread_id`
+  may name any thread in the T3 app.
 - No tool adds a project, changes a project's mode or takes a permission mode, and no tool adds a
-  schedule with a check (§11). A thread a tool starts gets its project's mode (§11).
+  schedule with a check (§11); the T3 tools reach no T3 launch, archive or project tool. A thread
+  a tool starts gets its project's mode (§11).
 
 ## §10 Clients
 
@@ -537,6 +558,14 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
   secret, sent only to the loopback origin it was paired with; a thread Loom starts in T3 gets
   its project's mode, never the ceiling; and the user can revoke it with `loom t3 unpair` or in
   T3 Settings → Connections.
+- The `t3_threads.*` calls (§6.1) give agents a path to that full-access pairing. Without a
+  guard, any Loom agent could message a T3 thread wider than its own mode, which T3's own
+  `t3_thread_send` refuses. So `t3_threads.send` from an agent's thread is `forbidden` when the
+  T3 thread's `runtimeMode` is wider than the thread's `permission_mode`, and when Loom can't
+  tell either: an unknown or unchecked caller, a schedule, or a `runtimeMode` that is none of
+  the four. A person's calls, the reads and `interrupt` are not checked, as in T3, since they
+  widen nothing. As in `docs/api.md`, it guards an agent's own calls and is not a sandbox
+  (`LOOM_THREAD` is what the process says).
 - Webhooks (later) get T3's checks: a per-schedule random secret compared in constant time,
   optional HMAC-SHA256 signatures, a rate limit and a cap on queued deliveries.
 

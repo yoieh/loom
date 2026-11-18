@@ -5,8 +5,8 @@ script in any language. It documents the socket protocol `loom serve` speaks, ev
 event, `loom serve` itself, the `loom` CLI and the Python API. The design behind it is
 `docs/design.md` §8; this page says what the code does today.
 
-Served now: all nineteen `v1` calls, the `threads.*`, `projects.*` and `schedules.*` ones,
-`requests.respond` and `signals.emit`.
+Served now: all twenty-five `v1` calls, the `threads.*`, `projects.*`, `schedules.*` and
+`t3_threads.*` ones, `requests.respond` and `signals.emit`.
 
 ## Start here
 
@@ -37,7 +37,10 @@ the changes ran in; each read shows the state at its point in that run, and `pro
 succeeded once both threads were settled. The `schedules.*` examples, those of `threads.update`
 and the `audience` filters, those of concurrency keys and `thread.settled`, those of
 permission requests, those of signals and cause chains, and those of event triggers, come from
-later runs of their own. The `threads.steer` examples were written from its tests.
+later runs of their own. The `threads.steer` examples were written from its tests. The
+`t3_threads.*` and T3 tool examples come from runs against a server that was not paired with T3
+or could not reach it; the successful T3 answers and the wider-mode refusal were written from
+their tests, whose T3 answers were recorded from T3 0.1.2.
 
 ## Transport
 
@@ -93,10 +96,10 @@ breaking change will be `v2`, served next to `v1`.
 | Code | When |
 |---|---|
 | `invalid` | The request is malformed, a parameter is missing or wrong, the call is unknown or not served, or the line is over the cap. |
-| `not_found` | The thread, project, schedule or request the request names does not exist. |
+| `not_found` | The thread, project, schedule or request the request names does not exist, or, for a `t3_threads.*` call, the T3 thread or the T3 project. |
 | `conflict` | The request clashes with the current state: the thread has ended or is being stopped, the request is closed, the project still has a live thread, the path is already a project's root, or the command id was used for another call. |
-| `forbidden` | The caller may not make this call (see [Callers](#callers)). |
-| `failed` | Something broke inside Loom. The message is `internal error`; the traceback goes only to the server's stderr. |
+| `forbidden` | The caller may not make this call (see [Callers](#callers)), or the T3 send guard refuses it (see [Agents may not send to a wider T3 thread](#agents-may-not-send-to-a-wider-t3-thread)). |
+| `failed` | Something broke inside Loom. The message is `internal error`; the traceback goes only to the server's stderr. For a `t3_threads.*` call it also means T3 could not be reached or refused the call, and the message is the one-line `t3: ...` reason instead (see [T3 threads](#t3-threads)). |
 
 ### Bad requests
 
@@ -152,7 +155,14 @@ string of 1 to 200 characters`. The CLI and the Python API make one for you.
 - The calls that take an `id` are `threads.launch`, `threads.delegate`, `threads.send`,
   `threads.steer`, `threads.stop`, `threads.settle`, `threads.update`, `projects.add`,
   `projects.set_mode`, `projects.remove`, `requests.respond`, `schedules.add`,
-  `schedules.pause` and `schedules.remove`.
+  `schedules.pause`, `schedules.remove`, `t3_threads.send` and `t3_threads.interrupt`.
+- `t3_threads.send` and `t3_threads.interrupt` are retried by T3, not by Loom. Loom stores no
+  receipt for them. It makes T3's `clientRequestId` from the call, the `thread_id` and the `id`,
+  so the same `id` for the same thread becomes the same `clientRequestId`. T3 then enters the
+  message or the interrupt once, and answers the retry with the same `runId` (and, for a send,
+  the same `messageId`). The answer is T3's answer to the retry, not a stored first answer. An
+  `id` used before for another call is not refused, and these two calls make no other call refuse
+  theirs.
 - Loom's scheduler uses ids of the form `schedule:<schedule id>:<due>` for the calls its runs make
   (see [How schedules run](#how-schedules-run)), so don't choose ids that begin with `schedule:`.
 
@@ -210,6 +220,55 @@ the peer's process id and walks up its parent chain in `/proc`, at most 64 proce
   count as the user.
 - `projects.remove` is not refused: it only removes the project's entry, and Loom refuses it
   while the project has a live thread.
+
+### Agents may not send to a wider T3 thread
+
+[`t3_threads.send`](#t3_threadssend) checks who sends, told apart as above, before it sends
+anything to T3:
+
+- A person's send, from a process the server counts as the user, is not checked.
+- An agent's send is checked. Loom reads its thread's `permission_mode` and the T3 thread's
+  `runtimeMode` (one `t3_thread_read` with `view: "activity"` and `limit: 1`), and ranks both as
+  under [Permission modes](#permission-modes). When the T3 thread's mode is wider, the answer is
+  `forbidden`, `a thread may not send to a T3 thread whose permission mode is wider than its
+  own`. The same or a narrower mode sends.
+- When Loom can't tell either mode, the answer is `forbidden`,
+  `cannot tell the permission mode of this thread or the T3 thread`: the caller's `LOOM_THREAD`
+  names no Loom thread, the server cannot check the caller (its `/proc` entries can't be read),
+  the call comes from a schedule, or T3's `runtimeMode` is missing or none of the four modes.
+  In the first three cases Loom makes no call to T3.
+
+The reads (`t3_threads.list`, `.search` and `.read`) and `t3_threads.interrupt` are not
+guarded, as T3 does not guard them, since they widen nothing.
+
+An agent thread with `approval-required` sends to a T3 thread with `full-access`:
+
+```json
+{"v": "v1", "call": "t3_threads.send", "params": {"id": "c2", "thread_id": "mcp:0c1e…", "message": "hi"}}
+{"ok":false,"error":{"code":"forbidden","message":"a thread may not send to a T3 thread whose permission mode is wider than its own"}}
+```
+
+A process with `LOOM_THREAD=not-a-thread` sends:
+
+```json
+{"v": "v1", "call": "t3_threads.send", "params": {"id": "c3", "thread_id": "mcp:x", "message": "hi"}}
+{"ok":false,"error":{"code":"forbidden","message":"cannot tell the permission mode of this thread or the T3 thread"}}
+```
+
+**Why.** Loom pairs with T3 with full access (see [`loom t3`](#loom-t3)). T3's own
+`t3_thread_send` refuses a caller whose mode is narrower than the thread it sends to. Without this
+guard, Loom's pairing would lift that limit for every Loom agent: an `approval-required` agent
+could have a `full-access` T3 thread do what it may not do itself.
+
+**Limits.** As for projects and requests, this guards against an agent's own calls. It is not a
+sandbox.
+
+- `LOOM_THREAD` is what the process says. An agent that names another thread's id is checked
+  with that thread's mode, and a process that leaves Loom's process tree and unsets
+  `LOOM_THREAD` counts as the user and is not checked.
+- The agent of a T3 thread runs under T3, not Loom, so it counts as the user here too.
+- The T3 thread's mode is read just before the send, in a second call to T3. A mode changed in
+  T3 between the two is not seen.
 
 ### Calls a schedule makes
 
@@ -446,6 +505,11 @@ root is not a git repo, the branch exists already, the base is not a commit), ma
 | [`schedules.list`](#scheduleslist) | yes | no |
 | [`schedules.pause`](#schedulespause) | yes | yes |
 | [`schedules.remove`](#schedulesremove) | yes | yes |
+| [`t3_threads.list`](#t3_threadslist) | yes | no |
+| [`t3_threads.search`](#t3_threadssearch) | yes | no |
+| [`t3_threads.read`](#t3_threadsread) | yes | no |
+| [`t3_threads.send`](#t3_threadssend) | yes | yes |
+| [`t3_threads.interrupt`](#t3_threadsinterrupt) | yes | yes |
 
 Any call can also answer `invalid` for a malformed request and `failed` for an internal error;
 the lists below give only the errors particular to each call.
@@ -1558,6 +1622,189 @@ missing (`schedule_id is required`) or not a string (`schedule_id must be a stri
 {"ok":false,"error":{"code":"not_found","message":"no schedule with id '2cbf…'"}}
 ```
 
+### `t3_threads.list`
+
+Lists the threads of a project in the T3 app: any T3 thread, not only those Loom started (see
+[T3 threads](#t3-threads)).
+
+These rules hold for all five `t3_threads.*` calls:
+
+- They need `loom t3 pair` once, and reach T3 with the same pairing and origin check as a `t3`
+  thread.
+- A `project_id` names a Loom project. Loom uses the T3 project whose workspace root is that
+  project's `workspace_root`, and never creates one. A `thread_id` is T3's own thread id, such as
+  `mcp:<uuid>`; Loom checks only that it is a string of 1 to 200 characters.
+- Loom calls T3's tool of the same name (`t3_thread_list` for `t3_threads.list`, and so on) with
+  each param given under T3's camelCase name (`title_contains` as `titleContains`), and leaves
+  out a param not given. Before it, a `project_id` costs a `t3_project_list` to find the T3
+  project, and an agent's send a `t3_thread_read` (see
+  [Agents may not send to a wider T3 thread](#agents-may-not-send-to-a-wider-t3-thread)). The
+  params are checked in the table's order before Loom calls T3, and a bad one calls nothing. An
+  optional param sent as null is `invalid`, with its type's message.
+- The result is T3's answer object as T3 gives it, unchanged, with T3's camelCase fields.
+  Those fields are T3's, not Loom's, so `v1`'s stability (§8, [Versions](#versions)) does not
+  cover them: Loom only ever adds to its own fields, and T3 may change its own.
+- Each call ends within 25 s (`CALL_LIMIT`), below the client's 30 s answer timeout. When it runs
+  out the answer is `failed`, `t3: timeout: T3 did not answer within 25 s`. Each request to T3
+  also has its own 10 s limit, `t3: timeout: T3 did not answer within 10 s`. A send or an
+  interrupt that T3 got may still happen after a timeout, and a retry with the same `id` doesn't
+  repeat it (see [Command ids](#command-ids-and-safe-retries)).
+- T3's errors: `not_found` with `t3: no T3 project at <path>` or
+  `t3: thread_not_found: <T3's message>`; else `failed` with the one-line reason, such as
+  `t3: not paired (run loom t3 pair)`, `t3: T3 is not running at the paired address`, a timeout,
+  `t3: unreachable: <error>` or `t3: <code>: <message>` (see the reasons under
+  [T3 threads](#t3-threads)).
+
+| Param | Type | |
+|---|---|---|
+| `project_id` | string, required | The Loom project whose T3 project to list. It is required because T3's tool does not say what a caller without a project gets. |
+| `statuses` | array of strings | Only threads with one of these T3 statuses, such as `running`. At most 10; Loom passes the values on as given. |
+| `title_contains` | string | Only threads whose title holds this text. |
+| `limit` | int | At most this many threads, 1 to 100. |
+| `cursor` | int | 0 or more: where the next page starts, the cursor an earlier answer gave. |
+
+**Result:** T3's `t3_thread_list` answer, as above.
+
+**Errors:** `not_found` for an unknown project (`no project with id '<project_id>'`, with no call
+to T3) or `t3: no T3 project at <path>`; `invalid` for `project_id is required`,
+`project_id must be a string`, `statuses must be a list of at most 10 strings`,
+`title_contains must be a string`, `limit must be an integer from 1 to 100` or
+`cursor must be an integer of 0 or more`; `failed` as above.
+
+```json
+{"v": "v1", "call": "t3_threads.list", "params": {"project_id": "demo"}}
+{"ok":false,"error":{"code":"failed","message":"t3: not paired (run loom t3 pair)"}}
+```
+
+```json
+{"v": "v1", "call": "t3_threads.list", "params": {"project_id": "nope"}}
+{"ok":false,"error":{"code":"not_found","message":"no project with id 'nope'"}}
+```
+
+### `t3_threads.search`
+
+Searches the threads in the T3 app for a text.
+
+| Param | Type | |
+|---|---|---|
+| `query` | string, required | Not empty. |
+| `project_id` | string | Only the T3 project with this Loom project's root. Without it Loom sends T3 no project, and T3's tool says it then searches every T3 project. |
+| `limit` | int | At most this many threads, 1 to 50. |
+
+**Result:** T3's `t3_thread_search` answer, unchanged, with T3's fields (see
+[`t3_threads.list`](#t3_threadslist)); `v1`'s stability does not cover them.
+
+**Errors:** `invalid` for `query is required`, `query must be a non-empty string`,
+`project_id must be a string` or `limit must be an integer from 1 to 50`; `not_found` with a
+`project_id`, as for `t3_threads.list`; `failed` for T3's errors and the 25 s `CALL_LIMIT`, as
+there.
+
+Against a server that is paired, while T3 is not running:
+
+```json
+{"v": "v1", "call": "t3_threads.search", "params": {"query": "hello"}}
+{"ok":false,"error":{"code":"failed","message":"t3: T3 is not running at the paired address"}}
+```
+
+### `t3_threads.read`
+
+Reads a T3 thread's messages or its activity, a page at a time.
+
+| Param | Type | |
+|---|---|---|
+| `thread_id` | string, required | A T3 thread id, 1 to 200 characters. |
+| `view` | string | `messages` or `activity`. Default: T3's. |
+| `after_position` | int | 0 or more: only the items after this position. |
+| `limit` | int | At most this many items, 1 to 100. |
+| `item_id` | string | Read this one item. |
+| `text_offset` | int | 0 or more: where to go on in an item's text that T3 cut short. |
+
+**Result:** T3's `t3_thread_read` answer, unchanged, with T3's fields (see
+[`t3_threads.list`](#t3_threadslist)); `v1`'s stability does not cover them. With T3 0.1.2 the
+`activity` view answered `{thread, recentRuns, items, nextPosition, hasMore}` (§6.1 Events).
+
+**Errors:** `invalid` for `thread_id is required`,
+`thread_id must be a string of 1 to 200 characters`, `view must be one of messages, activity`,
+`after_position must be an integer of 0 or more`, `limit must be an integer from 1 to 100`,
+`item_id must be a string` or `text_offset must be an integer of 0 or more`; `not_found` with
+`t3: thread_not_found: <T3's message>`; `failed` for T3's other errors and the 25 s
+`CALL_LIMIT`, as under [`t3_threads.list`](#t3_threadslist).
+
+```json
+{"v": "v1", "call": "t3_threads.read", "params": {"thread_id": "x", "limit": 0}}
+{"ok":false,"error":{"code":"invalid","message":"limit must be an integer from 1 to 100"}}
+```
+
+```json
+{"v": "v1", "call": "t3_threads.read", "params": {"thread_id": "mcp:7d2b…"}}
+{"ok":false,"error":{"code":"not_found","message":"t3: thread_not_found: Thread mcp:7d2b… is no longer available."}}
+```
+
+### `t3_threads.send`
+
+Sends a message into a T3 thread, as T3's own `t3_thread_send` does. A send from an agent's
+thread into a T3 thread with a wider permission mode is refused (see
+[Agents may not send to a wider T3 thread](#agents-may-not-send-to-a-wider-t3-thread)).
+
+| Param | Type | |
+|---|---|---|
+| `id` | string, required | Command id. It becomes T3's `clientRequestId` (see [Command ids](#command-ids-and-safe-retries)). |
+| `thread_id` | string, required | A T3 thread id, 1 to 200 characters. |
+| `message` | string, required | Not empty. |
+| `mode` | string | What happens when a turn is running: `steer` (default) adds it to the running turn, `queue` sends it after the turn, `interrupt` stops the turn and then sends it. Loom sends them to T3 as `steer`, `queue` and `restart`: `interrupt` is T3's `restart`. |
+
+**Result:** T3's `t3_thread_send` answer, unchanged, with T3's fields (see
+[`t3_threads.list`](#t3_threadslist)); `v1`'s stability does not cover them. With T3 0.1.2 it was
+`{threadId, messageId, runId, status, delivery}`. A retry with the same `id` answers the same
+`messageId` and `runId` and enters no second message.
+
+**Errors:** `invalid` for `id must be a string of 1 to 200 characters`, `thread_id is required`,
+`thread_id must be a string of 1 to 200 characters`, `message is required`,
+`message must be a non-empty string` or `mode must be one of steer, queue, interrupt`;
+`forbidden` from the send guard, with
+`a thread may not send to a T3 thread whose permission mode is wider than its own` or
+`cannot tell the permission mode of this thread or the T3 thread`; `not_found` with
+`t3: thread_not_found: <T3's message>`; `failed` for T3's other errors and the 25 s
+`CALL_LIMIT`, as under [`t3_threads.list`](#t3_threadslist).
+
+```json
+{"v": "v1", "call": "t3_threads.send", "params": {"id": "c1", "thread_id": "mcp:0c1e…", "message": "Reply with the single word ok.", "mode": "queue"}}
+{"ok":true,"result":{"threadId":"mcp:0c1e…","messageId":"message:mcp:client%3A5a8f…:thread-send:9b3d…","runId":"run:thread:mcp%3A0c1e…:ordinal:1","status":"starting","delivery":"started"}}
+```
+
+### `t3_threads.interrupt`
+
+Interrupts the running turn of a T3 thread, as T3's own `t3_thread_interrupt` does.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string, required | Command id. It becomes T3's `clientRequestId` (see [Command ids](#command-ids-and-safe-retries)). |
+| `thread_id` | string, required | A T3 thread id, 1 to 200 characters. |
+| `reason` | string | Why, at most 2,000 characters. |
+
+**Result:** T3's `t3_thread_interrupt` answer, unchanged, with T3's fields (see
+[`t3_threads.list`](#t3_threadslist)); `v1`'s stability does not cover them. With T3 0.1.2 it was
+`{threadId, runId, status: "interrupt_requested"}`, and a retry with the same `id` gave the same
+answer and no second interrupt.
+
+**Errors:** `invalid` for `id must be a string of 1 to 200 characters`, `thread_id is required`,
+`thread_id must be a string of 1 to 200 characters` or
+`reason must be a string of at most 2000 characters`; `not_found` with
+`t3: thread_not_found: <T3's message>`; `failed` for T3's other errors and the 25 s
+`CALL_LIMIT`, as under [`t3_threads.list`](#t3_threadslist).
+
+```json
+{"v": "v1", "call": "t3_threads.interrupt", "params": {"id": "c4", "thread_id": "mcp:0c1e…"}}
+{"ok":true,"result":{"threadId":"mcp:0c1e…","runId":"run:thread:mcp%3A0c1e…:ordinal:2","status":"interrupt_requested"}}
+```
+
+When T3 does not answer:
+
+```json
+{"v": "v1", "call": "t3_threads.interrupt", "params": {"id": "v1", "thread_id": "mcp:x"}}
+{"ok":false,"error":{"code":"failed","message":"t3: timeout: T3 did not answer within 10 s"}}
+```
+
 ## Events
 
 Every change of a thread's state or audience, every turn's text and tool calls, every turn's
@@ -2019,6 +2266,10 @@ CLI). It drives a thread in the T3 app that runs on this machine, through T3's M
   a running turn.
 - **Callers.** The agent runs under T3, not under Loom, so it has no `LOOM_THREAD`. When it calls
   Loom it counts as the user (see [Callers](#callers)).
+- **Other T3 threads.** The `t3_threads.*` calls (see [`t3_threads.list`](#t3_threadslist))
+  reach any T3 thread, not only those Loom started, through the same pairing and checks: the
+  token goes only to the paired origin while `server-runtime.json` names it, and errors are the
+  reasons below.
 
 A failed start or turn gives one reason line, cut to 200 characters, with the token replaced by
 `[redacted]`:
@@ -2100,10 +2351,21 @@ They go before the command.
 | `loom schedules remove <schedule_id> [--id ID]` | `schedules.remove` |
 | `loom requests respond <request_id> allow\|deny [--message M] [--id ID]` | `requests.respond` |
 | `loom signals emit <topic> [--payload JSON\|-] [--project P] [--key K] [--cause EVENT_ID] [--id ID]` | `signals.emit` |
+| `loom t3-threads list <project_id> [--status S] [--title TEXT] [--limit N] [--cursor N]` | `t3_threads.list` |
+| `loom t3-threads search <query> [--project P] [--limit N]` | `t3_threads.search` |
+| `loom t3-threads read <thread_id> [--view messages\|activity] [--after N] [--limit N] [--item I] [--offset N]` | `t3_threads.read` |
+| `loom t3-threads send <thread_id> <message> [--mode steer\|queue\|interrupt] [--id ID]` | `t3_threads.send` |
+| `loom t3-threads interrupt <thread_id> [--reason R] [--id ID]` | `t3_threads.interrupt` |
 
 - `loom project ...` is the same as `loom projects ...`, `loom schedule ...` as
-  `loom schedules ...`, `loom request ...` as `loom requests ...`, and `loom signal ...` as
-  `loom signals ...`.
+  `loom schedules ...`, `loom request ...` as `loom requests ...`, `loom signal ...` as
+  `loom signals ...`, and `loom t3_threads ...` as `loom t3-threads ...`.
+- `t3-threads list` takes `--status` any number of times and sends the values as `statuses`, in
+  order. `--title`, `--project`, `--view`, `--after`, `--item`, `--offset` and `--reason` send
+  `title_contains`, `project_id`, `view`, `after_position`, `item_id`, `text_offset` and
+  `reason`, and `--limit` and `--cursor` send `limit` and `cursor`; one not given is not sent.
+  `--limit`, `--cursor`, `--after` and `--offset` take a whole number, else it is a usage error.
+  The server checks the ranges and answers `invalid`, exit 1.
 - `--branch` and `--base` go with `--workspace worktree`, `--path` and `--branch` with
   `--workspace existing_worktree`; any other mix is a usage error.
 - `--audience` sends `audience`: on `threads launch` the new thread's audience, on `threads list`
@@ -2132,7 +2394,8 @@ They go before the command.
   [Callers](#agents-may-not-change-a-projects-mode)).
 - A `<message>`, `<task>` or `<text>` of `-` is read from stdin to the end. Prefer it in scripts
   and agents: a message given as an argument shows in the `loom` process's command line, which
-  other users on the machine can read.
+  other users on the machine can read. `t3-threads send` is the exception: it sends its
+  `<message>` as given, `-` too, so its message always shows in the command line.
 - `--id` sets the command id, to retry a call safely (see
   [Command ids](#command-ids-and-safe-retries)). Without it, each run sends a new one. When a
   write command fails with exit 3 after it reached Loom, stderr ends in `retry with --id <id>`,
@@ -2371,6 +2634,28 @@ $ loom threads events --after 17
 24 2026-10-25T03:09:48.972+00:00 8ed2… thread.state idle
 ```
 
+The `t3-threads` commands, in another run, against a server that was not paired with T3 at first.
+Then it had a `t3-client.json` whose origin T3's `server-runtime.json` did not name, and last an
+origin where nothing answered:
+
+```text
+$ loom projects add demo repo
+demo  default  /home/me/src/repo  demo
+$ loom t3-threads list demo
+loom: failed: t3: not paired (run loom t3 pair)
+$ loom t3-threads list nope
+loom: not_found: no project with id 'nope'
+$ loom t3-threads read x --limit 0
+loom: invalid: limit must be an integer from 1 to 100
+$ LOOM_THREAD=not-a-thread loom t3-threads send mcp:x hi
+loom: forbidden: cannot tell the permission mode of this thread or the T3 thread
+$ loom t3-threads search hello
+loom: failed: t3: T3 is not running at the paired address
+$ loom --json t3-threads interrupt mcp:x --id v1
+{"error": {"code": "failed", "message": "t3: timeout: T3 did not answer within 10 s"}}
+loom: failed: t3: timeout: T3 did not answer within 10 s
+```
+
 ### Following events
 
 `loom threads events` without `--follow` prints every event after `--after` (default 0), asking
@@ -2397,7 +2682,8 @@ is the event object, so any language can follow Loom by reading the CLI's stdout
 - With `--json`, stdout gets the result as one line of JSON, or one line per event.
 - Without it, a short human form, with two spaces between fields. A thread is one line: id,
   state (and `waiting`), project, title, and the reason when there is one. `threads get` prints
-  one `field: value` line per field. A project is one line: id, mode (or `default`), root and
+  one `field: value` line per field, and a `t3-threads` command one per top-level field of T3's
+  answer, with a nested value as JSON. A project is one line: id, mode (or `default`), root and
   title. A schedule is one line: id, state (`paused` when paused, `active` for an `event`
   trigger, else its `next_run`, else `done`), action, trigger (`at <at>`, `every <seconds>s`,
   `<timeOfDay>`, `<timeOfDay> on <weekdays>` or `on <topic>`), the thread or else the project it
@@ -2575,9 +2861,10 @@ Paired with T3 at http://127.0.0.1:3773: 29 days left.
 ## `loom-mcp`
 
 `loom-mcp` is the stdio MCP server that gives agents Loom's tools (§9): any agent can launch,
-delegate to, message and schedule threads, and emit signals, with one tool call. It is the `loom-mcp` package. It
-depends only on `loom-client` and makes each call through `loom_client.Client`, so the server
-checks every call as it checks any client's.
+delegate to, message and schedule threads, emit signals, and read, search, message and interrupt
+T3 threads, with one tool call. It is the `loom-mcp` package. It depends only on `loom-client`
+and makes each call through `loom_client.Client`, so the server checks every call as it checks
+any client's.
 
 To register it with Claude Code and Codex, run [`loom install`](#loom-install).
 
@@ -2607,7 +2894,7 @@ line on stdout. stdout carries nothing else; tracebacks go to stderr. When stdin
 |---|---|
 | `initialize` | `{"protocolVersion": <v>, "capabilities": {"tools": {}}, "serverInfo": {"name": "loom", "version": "0.1.0"}}`. `<v>` is the client's `protocolVersion` when it is `2024-11-05`, `2025-03-26`, `2025-06-18` or `2025-11-25`, else `2025-11-25`. |
 | `ping` | `{}` |
-| `tools/list` | `{"tools": [...]}`: the ten tools below, each with a `name`, a `description` and an `inputSchema`. |
+| `tools/list` | `{"tools": [...]}`: the fifteen tools below, each with a `name`, a `description` and an `inputSchema`. |
 | `tools/call` | `{"content": [{"type": "text", "text": <text>}], "isError": <bool>}`. On success `<text>` is the tool's result as compact JSON; on a tool error it is a one-line message. |
 
 A message without `id` is a notification and gets no answer, whatever its method. It has no
@@ -2622,7 +2909,7 @@ line is read as usual:
 | `method` is missing or not a string | `-32600` | the request's |
 | An unknown method (`unknown method: <method>`) | `-32601` | the request's |
 | `params` is not an object (null counts as missing) | `-32602` | the request's |
-| `tools/call` whose `name` is missing, not a string, or not one of the ten (`unknown tool: <name>`) | `-32602` | the request's |
+| `tools/call` whose `name` is missing, not a string, or not one of the fifteen (`unknown tool: <name>`) | `-32602` | the request's |
 | `tools/call` whose `arguments` is not an object (missing or null means `{}`) | `-32602` | the request's |
 | An error inside a tool (`internal error`; the traceback goes to stderr) | `-32603` | the request's |
 
@@ -2642,18 +2929,20 @@ without being kept in memory.
 - Else the caller is an outside thread with no id: an agent Loom didn't start, such as Claude
   Code in a terminal or a T3 thread.
 
-Only `launch_thread`, `delegate`, `task_status` and `task_cancel` need the caller; the other tools
-never look it up. `v1` has no call that registers an outside thread, so `launch_thread` records
-the caller in the new thread's `origin`: `thread:<thread id>` for a Loom thread,
-`outside:<CLAUDE_CODE_SESSION_ID>` for an outside thread with a session id, and `outside`
-otherwise. An outside thread has no tasks, so `delegate`, `task_status` and `task_cancel` answer
-it `this agent is not a Loom thread, so it has no tasks; use launch_thread`.
+Only `launch_thread`, `delegate`, `task_status`, `task_cancel`, and `t3_thread_list` without
+`project_id`, need the caller; the other tools never look it up. `v1` has no call that registers
+an outside thread, so `launch_thread` records the caller in the new thread's `origin`:
+`thread:<thread id>` for a Loom thread, `outside:<CLAUDE_CODE_SESSION_ID>` for an outside thread
+with a session id, and `outside` otherwise. An outside thread has no tasks, so `delegate`,
+`task_status` and `task_cancel` answer it
+`this agent is not a Loom thread, so it has no tasks; use launch_thread`.
 
 ### Tools
 
 Each tool makes the call in its row, and its result is the call's result. `?` marks an optional
 argument. Every argument is a string, except `workspace`, `trigger` and `payload`, which are
-objects, and `cause`, which is an integer.
+objects, `statuses`, an array of strings, and `cause`, `limit`, `cursor`, `after_position` and
+`text_offset`, which are integers.
 
 | Tool | Arguments | Call | Result |
 |---|---|---|---|
@@ -2667,6 +2956,11 @@ objects, and `cause`, which is an integer.
 | `schedule` | `trigger`, `text`, `action?`, `thread_id?`, `project_id?`, `title?`, `concurrency_key?`, `on_busy?`, `settle?`, `workspace?`, `runner?`, `model?` | [`schedules.add`](#schedulesadd) | the new schedule |
 | `schedules` | none | [`schedules.list`](#scheduleslist) | the list of schedules |
 | `unschedule` | `id` | [`schedules.remove`](#schedulesremove) with `schedule_id` the `id` | the removed schedule |
+| `t3_thread_list` | `project_id?`, `statuses?`, `title_contains?`, `limit?`, `cursor?` | [`t3_threads.list`](#t3_threadslist), with `project_id` as below | T3's answer |
+| `t3_thread_search` | `query`, `project_id?`, `limit?` | [`t3_threads.search`](#t3_threadssearch) | T3's answer |
+| `t3_thread_read` | `thread_id`, `view?`, `after_position?`, `limit?`, `item_id?`, `text_offset?` | [`t3_threads.read`](#t3_threadsread) | T3's answer |
+| `t3_thread_send` | `thread_id`, `message`, `mode?` | [`t3_threads.send`](#t3_threadssend) | T3's answer |
+| `t3_thread_interrupt` | `thread_id`, `reason?` | [`t3_threads.interrupt`](#t3_threadsinterrupt) | T3's answer |
 
 - `launch_thread` without `project_id` starts the thread in the caller's thread's project, which
   it reads with `threads.get`. An outside thread must give `project_id`. Without `audience` the
@@ -2681,6 +2975,13 @@ objects, and `cause`, which is an integer.
   [How schedules run](#how-schedules-run)). `concurrency_key`, `on_busy`, `settle`,
   `workspace`, `runner` and `model` go only with a `launch`; the tool passes them on as given,
   and the server refuses them with another action.
+- `t3_thread_list` without `project_id` lists the T3 threads of the caller's thread's project,
+  which it reads with `threads.get`, as `launch_thread` does; an outside thread must give
+  `project_id`. `t3_thread_search` without `project_id` sends none, so T3 searches every T3
+  project. The tool checks only that `statuses` is an array; the server checks its entries.
+- The T3 tools act on any thread in the T3 app, and `t3_thread_send` is refused into a T3 thread
+  with a wider permission mode than the caller's thread (see
+  [Agents may not send to a wider T3 thread](#agents-may-not-send-to-a-wider-t3-thread)).
 - No tool adds a project, changes a project's mode or removes a project, no tool adds a
   schedule with a check, and no tool takes a permission mode, `requests` or a command id. The
   `schedule` tool answers a `check` argument with the tool error
@@ -2695,9 +2996,9 @@ A tool error is a tool result with `isError: true` and a one-line `text`:
 | Problem | Text |
 |---|---|
 | A required argument is missing or null | `<name> is required` |
-| An argument of the wrong JSON type | `<name> must be a string`, `<name> must be an object` for `workspace`, `trigger` and `payload`, or `<name> must be an integer` for `cause` (`true`, `false` and `5.0` included) |
-| An outside thread's `launch_thread` without `project_id` | `project_id is required outside a Loom thread` |
-| A `launch_thread` without `project_id`, when the caller's thread has no `project_id` string | `cannot tell this thread's project; give project_id` |
+| An argument of the wrong JSON type | `<name> must be a string`, `<name> must be an object` for `workspace`, `trigger` and `payload`, `<name> must be an array` for `statuses`, or `<name> must be an integer` for `cause`, `limit`, `cursor`, `after_position` and `text_offset` (`true`, `false` and `5.0` included) |
+| An outside thread's `launch_thread` or `t3_thread_list` without `project_id` | `project_id is required outside a Loom thread` |
+| A `launch_thread` or `t3_thread_list` without `project_id`, when the caller's thread has no `project_id` string | `cannot tell this thread's project; give project_id` |
 | An outside thread's `delegate`, `task_status` or `task_cancel` | `this agent is not a Loom thread, so it has no tasks; use launch_thread` |
 | A `task_status` or `task_cancel` on a thread that is not the caller's task | `<task_id> is not a task of this thread` |
 | Loom answers `ok: false` | `<code>: <message>`, such as `conflict: thread <id> is stopping` |
@@ -2710,17 +3011,21 @@ an empty `title`, a `runner` or a trigger, are checked by the server, and its an
 `invalid: <message>`.
 
 **Retries.** Each call that changes something (`launch_thread`, `delegate`, `task_cancel`'s
-stop, `thread_send`, `emit`, `schedule` and `unschedule`) sends a new command id. When the connection
-fails before the answer, it sends the same request once more with the same id, so a call that
-already ran returns its first answer and runs only once (see
-[Command ids](#command-ids-and-safe-retries)). When that fails too, the text for `launch_thread`,
-`delegate`, `task_cancel`'s stop, `thread_send`, `schedule` and `unschedule` is the error's
-message followed by `; the call may have run, so check with threads or schedules before calling
-again`. For `emit` it is the error's message followed by
+stop, `thread_send`, `emit`, `schedule`, `unschedule`, `t3_thread_send` and
+`t3_thread_interrupt`) sends a new command id. When the connection fails before the answer, it
+sends the same request once more with the same id, so a call that already ran returns its first
+answer and runs only once; for the two T3 tools, T3 enters the message or the interrupt once and
+answers the retry itself (see [Command ids](#command-ids-and-safe-retries)). When that fails too,
+the text for `launch_thread`, `delegate`, `task_cancel`'s stop, `thread_send`, `schedule` and
+`unschedule` is the error's message followed by `; the call may have run, so check with threads
+or schedules before calling again`. For `t3_thread_send` and `t3_thread_interrupt` it is the
+error's message followed by `; the call may have run, so check with t3_thread_read before
+calling again`. For `emit` it is the error's message followed by
 `; the signal may have been written, and emitting it again writes a second one`, because a new
 call sends a new command id and only a retry with the same id writes no second event (see
-[`signals.emit`](#signalsemit)). A read (`threads`, `schedules`, `task_status`, and the
-`threads.get` calls) is not tried again.
+[`signals.emit`](#signalsemit)). A read (`threads`, `schedules`, `task_status`,
+`t3_thread_list`, `t3_thread_search`, `t3_thread_read`, and the `threads.get` calls) is not
+tried again.
 
 ### Example
 
@@ -2740,6 +3045,27 @@ The launched thread's agent, with `LOOM_THREAD=a33b…`, delegates a task:
 ```json
 {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "delegate", "arguments": {"task": "Review the login test fix."}}}
 {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"task_id\":\"43e0…\",\"thread\":{\"id\":\"43e0…\",\"title\":\"Review the login test fix.\",\"runner\":\"claude\",\"project_id\":\"demo\",\"workspace_path\":\"/home/me/src/demo\",\"branch\":null,\"model\":null,\"permission_mode\":\"approval-required\",\"state\":\"queued\",\"waiting\":false,\"reason\":null,\"parent_id\":\"a33b…\",\"origin\":null,\"audience\":\"agent\",\"concurrency_key\":null,\"settle\":null,\"cause\":null,\"hops\":0,\"created_at\":\"2026-10-25T00:50:19.080+00:00\"}}"}],"isError":false}}
+```
+
+An agent Loom didn't start uses the T3 tools, in another run against a server that was not
+paired with T3:
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"t3_thread_list","arguments":{"project_id":"demo"}}}
+{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"failed: t3: not paired (run loom t3 pair)"}],"isError":true}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"t3_thread_list","arguments":{}}}
+{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"project_id is required outside a Loom thread"}],"isError":true}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"t3_thread_list","arguments":{"project_id":"demo","statuses":"running"}}}
+{"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"statuses must be an array"}],"isError":true}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"t3_thread_search","arguments":{"query":"LM-99"}}}
+{"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"failed: t3: not paired (run loom t3 pair)"}],"isError":true}}
+```
+
+The same server, with `LOOM_THREAD=not-a-thread`:
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"t3_thread_send","arguments":{"thread_id":"mcp:x","message":"hi"}}}
+{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"forbidden: cannot tell the permission mode of this thread or the T3 thread"}],"isError":true}}
 ```
 
 ## The Python API
@@ -2808,6 +3134,13 @@ not_found no thread with id 'nope'
   - `requests_respond(request_id, decision, *, message=None, id=None)`
   - `signals_emit(topic, payload, *, project_id=None, key=None, cause=None, id=None) -> Event`:
     the `signal` event
+  - `t3_threads_list(project_id, *, statuses=None, title_contains=None, limit=None, cursor=None)`
+  - `t3_threads_search(query, *, project_id=None, limit=None)`
+  - `t3_threads_read(thread_id, *, view=None, after_position=None, limit=None, item_id=None,
+    text_offset=None)`
+  - `t3_threads_send(thread_id, message, *, mode=None, id=None)`
+  - `t3_threads_interrupt(thread_id, *, reason=None, id=None)`: each of the five returns T3's
+    answer as a `dict`
 - A call that changes something sends a new uuid4 `id` when `id` is `None`. Pass the same `id`
   again to retry it safely. When such a call fails after it connected (the connection dropped,
   the answer timed out or broke the protocol), the `LoomConnectionError` has `command_id`, the

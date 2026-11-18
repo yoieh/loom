@@ -15,7 +15,8 @@ from loom_core.slots import available_memory, default_agents_max
 from loom_core.store import Store
 from loom_runner_claude import ClaudeRunner
 from loom_runner_codex import CodexRunner
-from loom_runner_t3 import T3Runner
+from loom_runner_t3 import T3Runner, T3Threads
+from loom_runner_t3.mcp import HttpCall, http_call
 from loom_scheduler import Scheduler
 
 from .config import Config, StartError, config_path, data_dir_path, load_config, socket_path
@@ -23,6 +24,7 @@ from .host import Host
 from .peer import PROC
 from .scheduling import ServiceHost, serve_schedules
 from .server import MAX_LINE, Server
+from .t3_threads import serve_t3_threads
 
 
 class Serving:
@@ -52,7 +54,8 @@ class Serving:
 async def start(socket: Path, data_dir: Path, config: Config, *,
                 environ: Mapping[str, str] | None = None, log: TextIO | None = None,
                 max_line: int = MAX_LINE, proc: str | Path = PROC,
-                memory: Callable[[], int | None] = available_memory) -> Serving:
+                memory: Callable[[], int | None] = available_memory,
+                t3_http: HttpCall = http_call) -> Serving:
     log = sys.stderr if log is None else log
     server = Server(socket, max_line=max_line, log=log, proc=proc)
     server.bind()
@@ -88,6 +91,7 @@ async def start(socket: Path, data_dir: Path, config: Config, *,
         await service.close()
         raise StartError(f'cannot open the schedules in {data_dir}: {error}') from None
     serve_schedules(service, scheduler)
+    serve_t3_threads(service, T3Threads(host, http=t3_http))
     await server.start(service)
     await scheduler.start()
     log.write(f'loom: agents_max {agents_max}\n')
