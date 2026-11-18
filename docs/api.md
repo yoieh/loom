@@ -276,6 +276,29 @@ sandbox.
 - The T3 thread's mode is read just before the send, in a second call to T3. A mode changed in
   T3 between the two is not seen.
 
+### Agents act as their own thread
+
+An agent's [`threads.delegate`](#threadsdelegate) and [`threads.launch`](#threadslaunch) are
+checked against the caller's own thread, told apart as under
+[Agents may not change a project's mode](#agents-may-not-change-a-projects-mode):
+
+- An agent's `threads.delegate` must name the caller's thread as `parent_id`. Any other thread
+  answers `invalid`, `parent_id must be the calling thread <id>`, and starts nothing.
+- An agent's `threads.launch` that gives `origin` must give `thread:<the caller's thread id>`.
+  Any other `origin` answers `invalid`, `origin must be thread:<id>, the calling thread`, and
+  starts nothing. A launch without `origin` is not refused, and its `origin` stays null.
+- A person's calls, a schedule's and those of a caller the server can't check are not checked.
+
+A refused call stores no answer for its command id, so a retry is refused the same way. So an
+agent that talks to the socket directly keeps the boundary that `loom-mcp` gives it (see
+[Who it serves](#who-it-serves)): its tasks are its own thread's children, and the threads it
+launches name it as their origin.
+
+**Limits.** As for projects and T3 threads, this guards against an agent's own calls. It is
+not a sandbox: `LOOM_THREAD` is what the process says, so an agent that names another thread's
+id acts as that thread, and a process that leaves Loom's process tree and unsets `LOOM_THREAD`
+counts as the user and is not checked.
+
 ### Calls a schedule makes
 
 A schedule's maker is the caller of `schedules.add`, told apart as above: an agent thread, whose
@@ -534,7 +557,7 @@ Starts a new top-level thread in a project with a first message.
 | `runner` | string | Default `"claude"`. `claude`, `codex` and `t3` are served. A `t3` thread needs `loom t3 pair` first (see [T3 threads](#t3-threads)). |
 | `model` | string | Not empty. Default: the agent's own. |
 | `requests` | string | Who may answer the thread's permission prompts (§8 Requests): `"any"` (default), any caller but the thread itself, or `"caller"`, only the caller that launched it. A delegated child keeps both. See [Who may answer a request](#who-may-answer-a-request). A null answers `invalid`, `requests must not be null`; any other value `requests must be one of caller, any`. |
-| `origin` | string | Who started the thread, for clients to show. |
+| `origin` | string | Who started the thread, for clients to show. From an agent's thread, only `thread:<its id>` (see [Agents act as their own thread](#agents-act-as-their-own-thread)). |
 | `audience` | string | `"agent"` (default) or `"person"`: who talks with the thread (§15 Audience). |
 | `concurrency_key` | string | 1 to 200 characters, such as `pm:demo-repo`. At most one thread holds a key (see Concurrency keys below). Default: no key. A null answers `invalid`, `concurrency_key must not be null`; another type, an empty string or a longer one answers `invalid`, `concurrency_key must be a string of 1 to 200 characters`. |
 | `on_busy` | string | What a launch does while another thread holds its key: `"queue"` (default) or `"coalesce"`. Only with `concurrency_key`, else `invalid`, `on_busy needs concurrency_key`. A null answers `invalid`, `on_busy must not be null`; any other value `on_busy must be one of queue, coalesce`. |
@@ -605,8 +628,10 @@ fails, which lets the key go.
 **Errors:** `not_found` when the project does not exist; `invalid` for a missing or wrong
 parameter, such as an `audience` that is null (`audience must not be null`) or not `person` or
 `agent` (`audience must be one of person, agent`), or a bad `cause` (`cause must not be null`,
-`cause must be an event id`, `cause names no stored event`); `conflict` when the call comes from an agent
-thread that is being stopped (`thread <id> is stopping`), as
+`cause must be an event id`, `cause names no stored event`), or an agent's `origin` that is not
+its own thread (`origin must be thread:<id>, the calling thread`, see
+[Agents act as their own thread](#agents-act-as-their-own-thread)); `conflict` when the call
+comes from an agent thread that is being stopped (`thread <id> is stopping`), as
 [`threads.delegate`](#threadsdelegate) refuses a stopping parent. A schedule's launch is not
 refused this way, and a retry of a launch that already succeeded still returns its first answer.
 
@@ -656,7 +681,7 @@ Nothing is posted while the child or the parent is being stopped, or once the pa
 | Param | Type | |
 |---|---|---|
 | `id` | string, required | Command id. |
-| `parent_id` | string, required | |
+| `parent_id` | string, required | From an agent's thread, its own id (see [Agents act as their own thread](#agents-act-as-their-own-thread)). |
 | `task` | string, required | The child's first message. Not empty. |
 | `workspace` | object | Default: the parent's workspace (its root, or its worktree as `existing_worktree`). |
 | `runner` | string | Default: the parent's runner. |
@@ -685,7 +710,9 @@ the longest-idle thread or wait `queued`, and is never refused.
 failed or being stopped, or when the newest thread waiting for a coalescing delegate's key is
 under another parent (`concurrency key <key> is waiting in another project or under another
 parent`); `invalid` for a bad `concurrency_key`, `on_busy` or `settle`, with the messages under
-[`threads.launch`](#threadslaunch).
+[`threads.launch`](#threadslaunch), and when an agent's thread names another thread as
+`parent_id` (`parent_id must be the calling thread <id>`, see
+[Agents act as their own thread](#agents-act-as-their-own-thread)).
 
 ```json
 {"v": "v1", "call": "threads.delegate", "params": {"id": "c5", "parent_id": "3f2a…", "task": "Review the login test fix."}}

@@ -599,6 +599,11 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
   the four. A person's calls, the reads and `interrupt` are not checked, as in T3, since they
   widen nothing. As in `docs/api.md`, it guards an agent's own calls and is not a sandbox
   (`LOOM_THREAD` is what the process says).
+- An agent acts as its own thread: a `threads.delegate` from an agent's thread must name that
+  thread as `parent_id`, and a `threads.launch` from one may give only `thread:<its id>` as
+  `origin`; anything else is `invalid`. A person's, a schedule's and an unchecked caller's calls
+  are not checked. As in `docs/api.md`, it guards an agent's own calls and is not a sandbox
+  (`LOOM_THREAD` is what the process says).
 - Webhooks (later) get T3's checks: a per-schedule random secret compared in constant time,
   optional HMAC-SHA256 signatures, a rate limit and a cap on queued deliveries.
 

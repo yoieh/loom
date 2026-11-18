@@ -524,5 +524,86 @@ class CloseTest(ServiceTest):
             self.store.connection.execute('SELECT 1')
 
 
+class OwnThreadTest(ServiceTest):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.own = (await self.call('threads.launch', self.launch_params()))['id']
+        self.other = (await self.call('threads.launch', self.launch_params()))['id']
+        self.agent = Caller(thread_id=self.own)
+        await self.orchestrator.drain()
+
+    def delegate_params(self, parent_id: str) -> dict:
+        return {'id': self.next_id(), 'parent_id': parent_id, 'task': 'Review'}
+
+    def origin_of(self, thread_id: str) -> object:
+        return self.store.connection.execute(
+            'SELECT origin FROM threads WHERE id = ?', (thread_id,)).fetchone()[0]
+
+    async def assert_refused(self, name: str, params: dict, expected: str) -> None:
+        before = self.counts()
+        for _ in range(2):
+            self.assertEqual(await self.refused(name, params, caller=self.agent), expected)
+            self.assertEqual(self.counts(), before)
+            self.assertEqual(self.receipts(params['id']), 0)
+
+    async def test_an_agent_may_not_delegate_under_another_thread(self) -> None:
+        await self.assert_refused('threads.delegate', self.delegate_params(self.other),
+                                  f'parent_id must be the calling thread {self.own}')
+        await self.orchestrator.drain()
+        self.assertEqual(len(self.runner.starts), 2)
+
+    async def test_an_agent_may_delegate_under_its_own_thread(self) -> None:
+        params = self.delegate_params(self.own)
+        child = await self.call('threads.delegate', params, self.agent)
+        self.assertEqual(child['parent_id'], self.own)
+        self.assertEqual(self.receipts(params['id']), 1)
+
+    async def test_people_schedules_and_unknown_callers_may_delegate_under_any_thread(
+            self) -> None:
+        callers = (PERSON, UNKNOWN, Caller(schedule_id='s1'),
+                   Caller(thread_id=self.own, schedule_id='s1'))
+        for caller in callers:
+            with self.subTest(caller=caller):
+                child = await self.call('threads.delegate', self.delegate_params(self.other),
+                                        caller)
+                self.assertEqual(child['parent_id'], self.other)
+
+    async def test_an_agent_may_launch_with_its_own_origin_or_none(self) -> None:
+        own = await self.call('threads.launch',
+                              self.launch_params(origin=f'thread:{self.own}'), self.agent)
+        self.assertEqual(own['origin'], f'thread:{self.own}')
+        self.assertEqual(self.origin_of(own['id']), f'thread:{self.own}')
+        bare = await self.call('threads.launch', self.launch_params(), self.agent)
+        self.assertIsNone(bare['origin'])
+        self.assertIsNone(self.origin_of(bare['id']))
+
+    async def test_an_agent_may_not_launch_with_another_origin(self) -> None:
+        for origin in (f'thread:{self.other}', 'outside', 'outside:s1', 'schedule:s1', ''):
+            with self.subTest(origin=origin):
+                await self.assert_refused('threads.launch', self.launch_params(origin=origin),
+                                          f'origin must be thread:{self.own}, the calling thread')
+
+    async def test_people_schedules_and_unknown_callers_may_launch_with_any_origin(
+            self) -> None:
+        for caller in (PERSON, UNKNOWN, Caller(thread_id=self.own, schedule_id='s1')):
+            with self.subTest(caller=caller):
+                info = await self.call('threads.launch', self.launch_params(origin='voice'),
+                                       caller)
+                self.assertEqual(self.origin_of(info['id']), 'voice')
+
+    async def test_an_agents_bad_params_answer_as_before(self) -> None:
+        for name, params, expected in (
+            ('threads.launch', self.launch_params(origin=None), 'origin must not be null'),
+            ('threads.launch', self.launch_params(origin=5), 'origin must be a string'),
+            ('threads.launch', [], 'params must be an object'),
+            ('threads.delegate', {'id': self.next_id(), 'task': 'Review'},
+             'parent_id is required'),
+            ('threads.delegate', self.delegate_params(5), 'parent_id must be a string'),
+            ('threads.delegate', [], 'params must be an object'),
+        ):
+            with self.subTest(call=name, params=params):
+                self.assertEqual(await self.refused(name, params, caller=self.agent), expected)
+
+
 if __name__ == '__main__':
     unittest.main()
