@@ -149,9 +149,11 @@ Rules, each checked by a packaging test:
   - `worktree`: a new worktree on a new branch (`loom/<thread-id>` by default) under
     `<data_dir>/worktrees/<project-id>/<thread-id>`, from a `base` branch (default the
     project's current branch);
-  - `existing_worktree`: a path and branch already made, for example a parent's. The path must
-    be the `workspace_path` of a thread of the same project, in any state; any other path is
-    refused as `invalid`.
+  - `existing_worktree`: a path and branch already made, for example a parent's. The path and
+    branch must be the `workspace_path` and `branch` of a single thread of the same project, in
+    any state; any other pair, a recorded path with another branch included, is refused as
+    `invalid`. A `root` thread records the branch the root is on each time it starts, and none
+    before its first start.
 - A launch defaults to `worktree`. A delegated task defaults to its parent's workspace, since
   most delegations read or review the parent's work; it asks for `worktree` when it will write
   in parallel.
@@ -556,6 +558,9 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
   its own, and denies on timeout.
 - Agent-written text in events is data: clients show it as text, capped at 2,000 characters per
   entry.
+- An event trigger's filled text (§15) is capped: each event value filled into it at 2,000
+  characters, and all of one text's filled values together at 8,000, so one event adds at most
+  8,000 characters to a run's text. The schedule's own text is never cut.
 - A runner's error texts and turn failure reasons never hold the environment or the agent token.
   `loom-runner-claude` sends `claude`'s stderr to `/dev/null`, builds a start error from the
   binary and the OS error only, replaces the token with `[redacted]`, and cuts each such text to

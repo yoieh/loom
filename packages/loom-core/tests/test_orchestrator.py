@@ -77,6 +77,8 @@ class OrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.calls = 0
 
     async def asyncTearDown(self) -> None:
+        if self.runner.close_gate is not None:
+            self.runner.close_gate.set()
         await self.orchestrator.close()
         self.store.close()
         self.tmp.cleanup()
@@ -878,6 +880,27 @@ class ExistingWorktreeLaunchTest(OrchestratorTest):
         info = await self.launch(project_id='other', workspace=existing(path, branch))
         await self.orchestrator.drain()
         self.assertEqual(self.state(info['id']), 'running')
+
+    async def test_a_recorded_path_with_another_branch_is_invalid(self) -> None:
+        other_id, _ = await self.running(workspace=WORKTREE)
+        other = self.orchestrator.get(other_id)
+        path, branch = other['workspace_path'], other['branch']
+        git(Path(path), 'switch', '-q', '-c', 'side')
+        await self.assert_error('invalid', self.orchestrator.launch,
+                                self.launch_params(workspace=existing(path, 'side')), 'branch')
+        self.assertEqual(len(self.runner.starts), 1)
+        git(Path(path), 'switch', '-q', branch)
+        info = await self.launch(workspace=existing(path, branch))
+        await self.orchestrator.drain()
+        self.assertEqual(self.state(info['id']), 'running')
+        self.assertEqual(self.runner.starts[-1].workspace_path, path)
+
+    async def test_the_root_on_an_unrecorded_branch_is_invalid(self) -> None:
+        await self.running()
+        git(self.root, 'switch', '-q', '-c', 'dev')
+        await self.assert_error('invalid', self.orchestrator.launch,
+                                self.launch_params(workspace=existing(self.root, 'dev')), 'branch')
+        self.assertEqual(len(self.runner.starts), 1)
 
 
 if __name__ == '__main__':
