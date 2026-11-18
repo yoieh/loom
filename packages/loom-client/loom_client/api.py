@@ -88,6 +88,16 @@ def _is_follow_ack(result: object) -> bool:
     return type(result) is dict and len(result) == 1 and result.get('follow') is True
 
 
+def _unstored(params: dict, answer: dict) -> list[str]:
+    return [key for key in params if key != 'id' and key not in answer]
+
+
+def _unremoved(older: str, schedule_id: str, reason: str) -> LoomApiError:
+    return LoomApiError('invalid', (
+        f'{older}, and removing schedule {schedule_id} failed: {reason}. Remove it, '
+        'restart loom serve and add it again.'))
+
+
 class Client:
     def __init__(self, socket_path: str | None = None,
                  timeout: float | None = DEFAULT_TIMEOUT) -> None:
@@ -243,11 +253,34 @@ class Client:
                       runner: str | None = None, model: str | None = None,
                       workspace: dict | None = None, check: list[str] | None = None,
                       id: str | None = None) -> ScheduleInfo:
-        return self.call(CallName.SCHEDULES_ADD, _params(
+        params = _params(
             id=_command_id(id), trigger=trigger, text=text, action=action, thread_id=thread_id,
             project_id=project_id, title=title, concurrency_key=concurrency_key,
             on_busy=on_busy, settle=settle, runner=runner, model=model, workspace=workspace,
-            check=check))
+            check=check)
+        answer = self.call(CallName.SCHEDULES_ADD, params)
+        if not isinstance(answer, dict):
+            return answer
+        missing = _unstored(params, answer)
+        if not missing:
+            return answer
+        fields = ', '.join(missing)
+        older = f'Loom did not store {fields}, so it runs older code than this client'
+        schedule_id = answer.get('id')
+        if not isinstance(schedule_id, str) or not schedule_id:
+            raise LoomApiError('invalid', (
+                f'{older}, and its answer names no schedule id. Find the schedule with '
+                'loom schedules list, remove it, restart loom serve and add it again.'))
+        try:
+            self.schedules_remove(schedule_id)
+        except LoomApiError as error:
+            if error.code != 'not_found':
+                raise _unremoved(older, schedule_id,
+                                 f'{error.code}: {error.message}') from None
+        except LoomConnectionError as error:
+            raise _unremoved(older, schedule_id, error.message) from None
+        raise LoomApiError('invalid', (
+            f'{older}; the schedule was removed. Restart loom serve and add it again.'))
 
     def schedules_list(self, thread_id: str | None = None,
                        project_id: str | None = None) -> list[ScheduleInfo]:

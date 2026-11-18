@@ -265,7 +265,12 @@ class CommandTest(CliCase):
     def test_each_command_sends_its_call_and_prints_the_result_as_one_json_line(self) -> None:
         for argv, call, params in COMMANDS:
             with self.subTest(argv=argv):
-                result = [project_info()] if call.endswith('.list') else thread_info()
+                if call == 'schedules.add':
+                    result = schedule_info()
+                elif call.endswith('.list'):
+                    result = [project_info()]
+                else:
+                    result = thread_info()
                 self.answer(ok(result))
                 code, out, err = self.run_cli('--json', *argv)
                 self.assertEqual((code, err), (0, ''))
@@ -278,8 +283,12 @@ class CommandTest(CliCase):
                     self.assertTrue(sent.pop('id'))
                 self.assertEqual(sent, params)
 
+    def schedule_or_thread(self) -> None:
+        self.answer_with(lambda request: ok(
+            schedule_info() if request['call'] == 'schedules.add' else thread_info()))
+
     def test_a_given_id_is_sent(self) -> None:
-        self.answer(ok(thread_info()))
+        self.schedule_or_thread()
         for argv in (['threads', 'stop', 't1'], ['threads', 'send', 't1', 'm'],
                      ['projects', 'remove', 'demo'], ['threads', 'launch', 'd', 'T', 'm'],
                      ['schedules', 'add', 'x', '--every', '60'], ['schedules', 'pause', 's1'],
@@ -342,7 +351,7 @@ class CommandTest(CliCase):
                 self.assertEqual(self.server.requests[-1]['params']['path'], expected)
 
     def test_a_dash_message_or_task_is_read_from_stdin(self) -> None:
-        self.answer(ok(thread_info()))
+        self.schedule_or_thread()
         text = 'line one\nline two\n'
         for argv, field in ((['threads', 'launch', 'demo', 'First', '-'], 'message'),
                             (['threads', 'send', 't1', '-'], 'message'),
@@ -493,6 +502,26 @@ class ExitTest(CliCase):
         self.assertEqual(err, 'loom: invalid: everyMs must be at least 60000\n')
         self.assertEqual(self.server.requests[-1]['params']['trigger'],
                          {'type': 'interval', 'everyMs': 30000})
+
+    def test_a_schedule_add_whose_answer_lacks_a_sent_param_exits_1(self) -> None:
+        message = ('Loom did not store model, so it runs older code than this client; the '
+                   'schedule was removed. Restart loom serve and add it again.')
+        answer = {key: value for key, value in schedule_info('s9').items() if key != 'model'}
+
+        def reply(request: dict) -> list[bytes]:
+            return ok(answer if request['call'] == 'schedules.add' else schedule_info('s9'))
+
+        self.answer_with(reply)
+        argv = ['schedules', 'add', 'x', '--every', '3600', '--action', 'launch', '--project',
+                'demo', '--model', 'claude-sonnet-5-5']
+        self.assertEqual(self.run_cli(*argv), (1, '', f'loom: invalid: {message}\n'))
+        code, out, err = self.run_cli('--json', *argv)
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out), {'error': {'code': 'invalid', 'message': message}})
+        self.assertEqual(err, f'loom: invalid: {message}\n')
+        self.assertEqual([call for call, _ in self.server.calls],
+                         ['schedules.add', 'schedules.remove'] * 2)
+        self.assertEqual(self.server.calls[1][1]['schedule_id'], 's9')
 
     def test_on_busy_without_a_key_is_sent_and_the_servers_invalid_exits_1(self) -> None:
         self.answer(failed('invalid', 'on_busy needs concurrency_key'))
@@ -900,7 +929,8 @@ class ScheduleOutputTest(CliCase):
             schedule_info('s3', next_run=None),
             schedule_info('s4', trigger={'type': 'fixed_time', 'timeOfDay': '9:07',
                                          'weekdays': [1, 2, 3, 4, 5]},
-                          action='launch', project_id='demo', title='Daily'),
+                          action='launch', project_id='demo', title='Daily', runner='claude',
+                          model='claude-sonnet-5-5'),
             schedule_info('s5', trigger={'type': 'fixed_time', 'timeOfDay': '09:07'}),
             schedule_info('s6', trigger={'type': 'fixed_time', 'timeOfDay': '9:07',
                                          'weekdays': []}),
@@ -910,25 +940,25 @@ class ScheduleOutputTest(CliCase):
                           paused=True),
         ]
         self.assertEqual(self.lines('schedules', 'list', result=schedules), [
-            f's1  {AT}  notify  at 2026-10-25T09:00  -  Stand-up',
-            's2  paused  post  every 3600s  t1  Hourly',
-            's3  done  notify  at 2026-10-25T09:00  -  Stand-up',
-            f's4  {AT}  launch  9:07 on 1,2,3,4,5  demo  Daily',
-            f's5  {AT}  notify  09:07  -  Stand-up',
-            f's6  {AT}  notify  9:07  -  Stand-up',
-            f's7  {AT}  notify  every 60.5s  -  Stand-up',
-            's8  active  notify  on demo.done  -  Stand-up',
-            's9  paused  notify  on demo.done  -  Stand-up',
+            f's1  {AT}  notify  at 2026-10-25T09:00  -  -  -  Stand-up',
+            's2  paused  post  every 3600s  t1  -  -  Hourly',
+            's3  done  notify  at 2026-10-25T09:00  -  -  -  Stand-up',
+            f's4  {AT}  launch  9:07 on 1,2,3,4,5  demo  claude  claude-sonnet-5-5  Daily',
+            f's5  {AT}  notify  09:07  -  -  -  Stand-up',
+            f's6  {AT}  notify  9:07  -  -  -  Stand-up',
+            f's7  {AT}  notify  every 60.5s  -  -  -  Stand-up',
+            's8  active  notify  on demo.done  -  -  -  Stand-up',
+            's9  paused  notify  on demo.done  -  -  -  Stand-up',
         ])
 
     def test_add_pause_and_remove_print_the_schedule(self) -> None:
         for argv, result, expected in (
             (['schedules', 'add', 'Stand-up', '--at', '2026-10-25T09:00'], schedule_info(),
-             f's1  {AT}  notify  at 2026-10-25T09:00  -  Stand-up'),
+             f's1  {AT}  notify  at 2026-10-25T09:00  -  -  -  Stand-up'),
             (['schedules', 'pause', 's1'], schedule_info(paused=True),
-             's1  paused  notify  at 2026-10-25T09:00  -  Stand-up'),
+             's1  paused  notify  at 2026-10-25T09:00  -  -  -  Stand-up'),
             (['schedules', 'remove', 's1'], schedule_info(next_run=None),
-             's1  done  notify  at 2026-10-25T09:00  -  Stand-up'),
+             's1  done  notify  at 2026-10-25T09:00  -  -  -  Stand-up'),
         ):
             with self.subTest(argv=argv):
                 self.assertEqual(self.lines(*argv, result=result), [expected])
@@ -939,9 +969,16 @@ class ScheduleOutputTest(CliCase):
         lines = self.lines('schedules', 'list', result=[nasty, long])
         self.assertEqual(len(lines), 2)
         self.assertEqual(lines[0],
-                         f's1  {AT}  notify  at 2026-10-25T09:00  t\\x1b1  '
+                         f's1  {AT}  notify  at 2026-10-25T09:00  t\\x1b1  -  -  '
                          'Ti\\x1b[2Jck\\nnext\\x9b')
         self.assertTrue(lines[1].endswith('  ' + 'x' * 2000 + '…'))
+
+    def test_runner_and_model_print_escaped_on_one_line(self) -> None:
+        schedule = schedule_info(action='launch', project_id='demo', runner='claude\n',
+                                 model='claude\x1b[2J')
+        self.assertEqual(self.lines('schedules', 'list', result=[schedule]), [
+            f's1  {AT}  launch  at 2026-10-25T09:00  demo  claude\\n  claude\\x1b[2J  Stand-up',
+        ])
 
     def test_json_prints_the_result_as_one_line(self) -> None:
         result = [schedule_info(text='a\nb'), schedule_info('s2')]
@@ -952,26 +989,27 @@ class ScheduleOutputTest(CliCase):
         self.assertEqual(json.loads(out), result)
 
     def test_a_bad_field_prints_a_dash_in_its_place(self) -> None:
-        rest = '  notify  at 2026-10-25T09:00  -  Stand-up'
+        rest = '  notify  at 2026-10-25T09:00  -  -  -  Stand-up'
         cases = [
-            (schedule_info(trigger=None), f's1  {AT}  notify  -  -  Stand-up'),
+            (schedule_info(trigger=None), f's1  {AT}  notify  -  -  -  -  Stand-up'),
             ({key: value for key, value in schedule_info().items() if key != 'trigger'},
-             f's1  {AT}  notify  -  -  Stand-up'),
-            (schedule_info(trigger='at noon'), f's1  {AT}  notify  -  -  Stand-up'),
-            (schedule_info(trigger=[1]), f's1  {AT}  notify  -  -  Stand-up'),
-            (schedule_info(trigger={'type': 'at'}), f's1  {AT}  notify  -  -  Stand-up'),
+             f's1  {AT}  notify  -  -  -  -  Stand-up'),
+            (schedule_info(trigger='at noon'), f's1  {AT}  notify  -  -  -  -  Stand-up'),
+            (schedule_info(trigger=[1]), f's1  {AT}  notify  -  -  -  -  Stand-up'),
+            (schedule_info(trigger={'type': 'at'}), f's1  {AT}  notify  -  -  -  -  Stand-up'),
             (schedule_info(trigger={'type': 'interval', 'everyMs': '60000'}),
-             f's1  {AT}  notify  -  -  Stand-up'),
+             f's1  {AT}  notify  -  -  -  -  Stand-up'),
             (schedule_info(trigger={'type': 'interval', 'everyMs': True}),
-             f's1  {AT}  notify  -  -  Stand-up'),
+             f's1  {AT}  notify  -  -  -  -  Stand-up'),
             (schedule_info(trigger={'type': 'fixed_time', 'timeOfDay': '9:07',
                                     'weekdays': [1, 'x']}),
-             f's1  {AT}  notify  -  -  Stand-up'),
+             f's1  {AT}  notify  -  -  -  -  Stand-up'),
             (schedule_info(trigger={'type': 'fixed_time', 'timeOfDay': '9:07', 'weekdays': 0}),
-             f's1  {AT}  notify  -  -  Stand-up'),
-            (schedule_info(trigger={'type': 'webhook'}), f's1  {AT}  notify  -  -  Stand-up'),
+             f's1  {AT}  notify  -  -  -  -  Stand-up'),
+            (schedule_info(trigger={'type': 'webhook'}),
+             f's1  {AT}  notify  -  -  -  -  Stand-up'),
             (schedule_info(trigger={'type': 'event', 'topic': 5}, next_run=None),
-             's1  active  notify  -  -  Stand-up'),
+             's1  active  notify  -  -  -  -  Stand-up'),
             ({key: value for key, value in schedule_info().items() if key != 'next_run'},
              's1  -' + rest),
             (schedule_info(next_run=5), 's1  -' + rest),

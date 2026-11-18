@@ -45,8 +45,9 @@ def thread_info(thread_id: str = 't1', **values: object) -> dict:
 def schedule_info(schedule_id: str = 'sc1', **values: object) -> dict:
     return {'id': schedule_id, 'trigger': {'type': 'at', 'at': '2026-10-26T09:00'},
             'action': 'notify', 'text': 'Stand-up', 'thread_id': None, 'project_id': None,
-            'title': None, 'by': None, 'paused': False, 'next_run': AT, 'created_at': AT,
-            **values}
+            'title': None, 'concurrency_key': None, 'on_busy': None, 'settle': None,
+            'runner': None, 'model': None, 'workspace': None, 'check': None, 'by': None,
+            'paused': False, 'next_run': AT, 'created_at': AT, **values}
 
 
 def signal_event(event_id: int = 1, **data: object) -> dict:

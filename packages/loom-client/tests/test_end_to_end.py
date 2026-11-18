@@ -392,7 +392,7 @@ class CliTest(LiveCase):
         self.assertEqual(len(wait_for(fired, 'schedule.fired')), 1)
         self.assertTrue(fired()[0].endswith(f' - schedule.fired {ping} notify late Ping'),
                         fired())
-        done_line = f'{ping}  done  notify  at {past}  -  Ping'
+        done_line = f'{ping}  done  notify  at {past}  -  -  -  Ping'
         self.assertEqual(self.cli('schedules', 'list').stdout, done_line + '\n')
 
         done = self.cli('schedules', 'add', 'Every minute', '--every', '60', '--action', 'notify')
@@ -401,10 +401,11 @@ class CliTest(LiveCase):
         listed = self.cli('schedules', 'list').stdout.splitlines()
         self.assertEqual(listed[0], done_line)
         self.assertTrue(listed[1].startswith(f'{minute}  '), listed)
-        self.assertTrue(listed[1].endswith('  notify  every 60s  -  Every minute'), listed)
+        self.assertTrue(listed[1].endswith('  notify  every 60s  -  -  -  Every minute'),
+                        listed)
         self.assertEqual(self.cli_json('schedules', 'list'), self.client.schedules_list())
 
-        paused = f'{minute}  paused  notify  every 60s  -  Every minute\n'
+        paused = f'{minute}  paused  notify  every 60s  -  -  -  Every minute\n'
         self.assertEqual(self.cli('schedules', 'pause', minute).stdout, paused)
         self.assertEqual(self.cli('schedules', 'remove', minute).stdout, paused)
         self.assertEqual(self.cli('schedules', 'remove', ping).stdout, done_line + '\n')
@@ -414,6 +415,28 @@ class CliTest(LiveCase):
         done = self.cli('schedules', 'add', 'Too often', '--every', '30', '--action', 'notify')
         self.assertEqual((done.returncode, done.stdout), (1, ''))
         self.assertTrue(done.stderr.startswith('loom: invalid: '), done.stderr)
+
+    def test_a_scheduled_launch_keeps_its_runner_and_model(self) -> None:
+        self.client.projects_add('Repo', str(self.repo))
+        past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat(timespec='seconds')
+        schedule = self.cli_json('schedules', 'add', 'Go', '--at', past, '--action', 'launch',
+                                 '--project', 'repo', '--runner', 'claude', '--model',
+                                 'claude-sonnet-5-5')
+        self.assertEqual((schedule['runner'], schedule['model']), ('claude', 'claude-sonnet-5-5'))
+        listed = [item for item in self.cli_json('schedules', 'list')
+                  if item['id'] == schedule['id']]
+        self.assertEqual([(item['runner'], item['model']) for item in listed],
+                         [('claude', 'claude-sonnet-5-5')])
+        lines = self.cli('schedules', 'list').stdout.splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].endswith('  repo  claude  claude-sonnet-5-5  Go'), lines)
+
+        def launched() -> list[dict]:
+            return [thread for thread in self.client.threads_list()
+                    if thread['origin'] == f'schedule:{schedule["id"]}']
+
+        thread = wait_for(launched, 'the scheduled thread')[0]
+        self.assertEqual(self.client.threads_get(thread['id'])['model'], 'claude-sonnet-5-5')
 
     def test_projects_set_mode_from_an_agent_thread_is_forbidden(self) -> None:
         done = self.cli('projects', 'add', 'Repo', str(self.repo), LOOM_THREAD='anything')
