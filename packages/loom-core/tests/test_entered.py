@@ -172,6 +172,32 @@ class SessionTest(EnteredTest):
         self.assertNotIn(session, self.orchestrator._outstanding)
         self.assertEqual(self.orchestrator._outstanding, {})
 
+    async def test_a_steered_message_cut_off_by_an_exit_never_enters(self) -> None:
+        thread_id, old = await self.entered_launch()
+        await self.send_as(thread_id, 's1', 'steered')
+        await self.send_as(thread_id, 'q1', 'queued', mode='queue')
+        self.assertEqual(old.sent[-1], ('steered', STEER))
+        self.assertEqual(self.pending(thread_id), [('queued', 'queue')])
+        old.exit(1)
+        await wait_for(lambda: len(self.runner.starts) == 2
+                       and old not in self.orchestrator._pumps)
+        await self.orchestrator.drain()
+        new = self.runner.sessions[thread_id]
+        self.assertEqual(new.sent, [(CONTINUATION, QUEUE)])
+        await self.emit(thread_id, new, TurnStarted(), MessageEntered(CONTINUATION))
+        await self.finish(thread_id, new)
+        self.assertEqual(new.sent, [(CONTINUATION, QUEUE), ('queued', QUEUE)])
+        await self.emit(thread_id, new, TurnStarted(), MessageEntered('queued'))
+        self.assertEqual(self.entered_ids(thread_id),
+                         ['c1:message', f'{thread_id}:continuation:1', 'q1'])
+        results = [event['data'] for event in self.events(thread_id, EventType.TURN_RESULT)]
+        self.assertEqual(results[0], {'state': 'failed', 'reason': 'exited'})
+        idle = [event['id'] for event in self.events(thread_id, EventType.THREAD_STATE)
+                if event['data']['state'] == 'idle']
+        entered = [event['id'] for event in self.events(thread_id, EventType.MESSAGE_ENTERED)
+                   if event['data']['command_id'] == 'q1']
+        self.assertLess(idle[0], entered[0])
+
 
 if __name__ == '__main__':
     unittest.main()

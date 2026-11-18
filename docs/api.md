@@ -1969,6 +1969,41 @@ enters sends none: one cancelled by a stop or an interrupt, one whose turn faile
 started, one handed to an agent process that then exited, or one that was live when `loom serve`
 restarted.
 
+Loom keeps a message it has not handed to the agent, through an exit or a restart too, and drops it
+only for a stop or a settle (see [`threads.send`](#threadssend)). A message it has handed to the
+agent enters in the turn it went into or not at all: Loom does not send it again. So a client ends
+a post's queued state with no `message.entered`, and shows that the post did not go in, at the
+first of these events after the call that sent the post was answered:
+
+- `thread.state` with the reason `stopping`, or with the state `settled` or `failed`. A stop and a
+  settle drop every message of the thread that has not entered, and a failed thread runs no turn
+  until a person's message wakes it.
+- `turn.result`, for a post that went into the running turn: one sent with `mode` `steer` (the
+  default) while the send's result shows the thread `running` without the reason `stopping`, to a
+  runner that can steer (Claude or T3; Codex can't), or one moved there by a
+  [`threads.steer`](#threadssteer) that was answered `ok`. A message that goes into a turn enters
+  before that turn's `turn.result` or not at all, so a post with no `message.entered` by then was
+  cut off with its turn, whatever the result's `state` and `reason`.
+
+Any other post (one sent with `mode` `queue` or `interrupt`, one sent while the thread was not
+`running` or was stopping, or one sent to a Codex thread) waits in Loom for a turn of its own,
+after an exit or a restart too, and enters when that turn starts: a `turn.result` or the state
+`idle` before then does not end its queued state.
+
+When a post's `message.entered` comes after its queued state ended, the client shows the post as
+entered. That can happen for a steered message that reached the agent just as the turn ended, and
+for the messages a failed thread kept, which go in when a person's message wakes it.
+
+There are three known limits. A post that Loom handed to the agent to start a turn, when the agent
+process exited or `loom serve` restarted before it entered, is lost with no event that names it:
+its queued state ends only at the thread's next stop, settle or failure. A second
+[`threads.stop`](#threadsstop) while the thread is still stopping drops the messages sent since the
+first one with no new `thread.state`, so their queued state ends the same way. And Loom matches an
+entry to the messages it handed to the same agent process by their text, oldest first: when a
+message that never entered there, such as one cancelled by an interrupt, has the same text as a
+later one, the later one's `message.entered` carries the earlier one's `command_id`. A client then
+shows the earlier post as entered, and the later one gets no `message.entered`.
+
 A launch's message, from the launch with id `c1`:
 
 ```json
