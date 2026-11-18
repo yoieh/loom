@@ -205,8 +205,9 @@ against. It rests on Thread Voice, which already drives T3 as an outside client:
 `docs/design-stage5.md` §53 (cited here as TV §53) holds the spike that paired with T3 0.1.0
 and the client built from it. What TV §53 observed is marked *seen*. What LM-10 checked
 with scratch threads on 2026-10-25, against the T3 0.1.2 running on this machine, is marked
-*seen*, T3 0.1.2; its recordings are the replay fixtures (see Tests). A fact that comes
-only from a T3 tool description says so in its bullet.
+*seen*, T3 0.1.2; its recordings are the replay fixtures (see Tests). What LM-92 recorded on
+2026-11-18 against T3 0.1.7 is marked *seen*, T3 0.1.7. A fact that comes only from a T3
+tool description says so in its bullet.
 
 The user decided two things by voice that day: Loom pairs with full access, as Thread Voice
 does; and, since T3's API can't answer a permission prompt, a T3 thread's prompts are
@@ -354,8 +355,10 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
     `title` and `text`, with `textTruncated` and `nextTextOffset` for a text cut short. The
     types are `user_message`, `assistant_message`, `reasoning`, `dynamic_tool` (a tool call,
     whose `text` is a JSON object with `toolName`, `input` and `output`; for `Read` its
-    `title` is "Read <path>"), `checkpoint`, `run_interrupt_request`, `run_interrupt_result`
-    and `error`.
+    `title` is "Read <path>"), `checkpoint`, `run_interrupt_request`,
+    `run_interrupt_result`, `error`, `file_change` (a file the agent writes, whose `text` is
+    the file's path) and `approval_request` (a permission request, `waiting`, whose `text`
+    names the file; both *seen*, T3 0.1.7).
 
   A run that starts (a new `activeRunId`) is `turn.started`; a `user_message` item is
   `entered`; a completed `assistant_message` is `text` (T3 shows it only when complete,
@@ -369,9 +372,18 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   `t3_pending_request_respond` is described as "Answer a pending user-input request using
   the existing runtime response command. This cannot approve a permission request."
   (*schema*: only T3 0.1.2's `tools/list` says so), so a T3 thread's permission prompts and
-  questions are answered in T3, by the user, as today. While one is open
-  (`pendingRequestCount`) the thread stays `running`. No recorded case opened one:
-  `pendingRequestCount` stayed 0, even for a `Read` in an `approval-required` thread.
+  questions are answered in T3, by the user, as today. LM-10's `Read` in an
+  `approval-required` thread opened none (T3 0.1.2). Asked to write a file with its Write
+  tool ("Create the file loom-permission-probe.txt in the current directory with your Write
+  tool. It holds the single word ok."), the agent opened a permission request. While it was
+  open, `pendingRequestCount` was 1, the thread's `status` and its run's `status` stayed
+  `running`, and `activeRunId` stayed set. The request added a `file_change` item
+  (`running`, whose `text` is the file's path) and an `approval_request` item (`waiting`,
+  whose `text` is the file name). `t3_thread_interrupt` closed it: the next read showed
+  `pendingRequestCount` 0, no `activeRunId`, the run `interrupted`, and
+  `run_interrupt_request`, `run_interrupt_result` and `checkpoint` items (*seen*, T3 0.1.7).
+  The runner gives no `result` while `pendingRequestCount` > 0, as the `permission-request`
+  replay test shows.
 - **Sleep and close.** T3 owns the agent's process. `close` only stops polling and emits
   `exited`; it never stops, settles or archives the T3 thread. Stop (§4) uses `interrupt`.
   T3 has a tool that archives a thread, `t3_thread_organize {action: "archive"}`, and none
@@ -399,9 +411,10 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   pass a fake, and pairing runs against a fake `t3` CLI. LM-10's recordings of T3 0.1.2 are
   checked in with tokens and ids replaced. `packages/loom-runner-t3/tests/streams/` holds one
   `t3_thread_read` stream per case (`idle-launch`, `turn`, `tool`, `interrupt`, `steer`,
-  `failed`), and `packages/loom-runner-t3/tests/answers/` holds one HTTP exchange or `t3`
-  CLI output each. `streams/README.md` gives each case's steps and every placeholder. The
-  streams are played into a session as the other runners' replay tests are.
+  `failed`, and `permission-request`, recorded by LM-92 from T3 0.1.7), and
+  `packages/loom-runner-t3/tests/answers/` holds one HTTP exchange or `t3` CLI output each.
+  `streams/README.md` gives each case's steps and every placeholder. The streams are played
+  into a session as the other runners' replay tests are.
 
 ## §7 The scheduler
 

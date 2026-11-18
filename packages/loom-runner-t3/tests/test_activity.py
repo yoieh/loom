@@ -52,7 +52,8 @@ def play(tracker: Tracker, *answers: dict) -> list:
 
 class ParseTest(unittest.TestCase):
     def test_every_recorded_read_parses(self) -> None:
-        for case in ('idle-launch', 'turn', 'tool', 'interrupt', 'steer', 'failed'):
+        for case in ('idle-launch', 'turn', 'tool', 'interrupt', 'steer', 'failed',
+                     'permission-request'):
             for line in stream(case):
                 with self.subTest(case=case, position=line['nextPosition']):
                     parsed = parse_activity(line)
@@ -170,6 +171,25 @@ class TrackerTest(unittest.TestCase):
         self.assertTrue(tracker.busy())
         events = play(tracker, answer('completed', active=None, pending=0))
         self.assertEqual(events, [TurnResult(TurnState.COMPLETED, None, None)])
+
+    def test_the_recorded_permission_request_holds_the_result(self) -> None:
+        lines = stream('permission-request')
+        open_reads = [i for i, line in enumerate(lines)
+                      if line['thread']['pendingRequestCount'] > 0]
+        self.assertTrue(open_reads)
+        tracker = Tracker()
+        tracker.baseline(parse_activity(lines[0]))
+        tracker.expect_turn()
+        results = []
+        for i in range(1, len(lines)):
+            with self.subTest(read=i):
+                events = tracker.apply(parse_activity(lines[i]))
+                if i in open_reads:
+                    self.assertFalse(any(isinstance(event, TurnResult) for event in events))
+                    self.assertTrue(tracker.busy())
+                results.extend((i, event) for event in events if isinstance(event, TurnResult))
+        self.assertEqual(len(results), 1)
+        self.assertGreaterEqual(results[0][0], open_reads[-1] + 1)
 
     def test_the_run_states(self) -> None:
         for status, state, why in (('completed', TurnState.COMPLETED, None),
