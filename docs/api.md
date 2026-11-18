@@ -2341,12 +2341,18 @@ A failed start or turn gives one reason line, cut to 200 characters, with the to
   there.
 - A failure to start exits 2 with one line `loom: <reason>` on stderr: no socket path, a bad
   config, another server already answering on the socket, a path that exists and is not a
-  socket, or a store whose schedules can't be opened (`cannot open the schedules in <data dir>:
-  <error>`). A socket file nobody answers on is left over from an earlier run, and is replaced.
-  With no `agents_max` in the config and no way to read the available memory (`MemAvailable`
-  in `/proc/meminfo`, else `sysconf`), it exits 2 with
+  socket, a store whose threads can't be recovered (`cannot recover the threads in <data dir>:
+  <error>`), or a store whose schedules can't be opened (`cannot open the schedules in <data
+  dir>: <error>`). A store whose threads can't be recovered leaves no socket file. A socket
+  file nobody answers on is left over from an earlier run, and is replaced. With no
+  `agents_max` in the config and no way to read the available memory (`MemAvailable` in
+  `/proc/meminfo`, else `sysconf`), it exits 2 with
   `loom: cannot read the available memory; set agents_max in the config` and leaves no socket
   file.
+- An error inside the scheduler's own work, such as a store failure while it records a run,
+  goes to stderr as the line `loom: internal error in the scheduler` and its traceback, as a
+  call's internal error does (see [Error codes](#error-codes)). The scheduler goes on with its
+  next pass.
 
 ```text
 $ loom serve

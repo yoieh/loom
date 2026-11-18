@@ -79,10 +79,19 @@ async def start(socket: Path, data_dir: Path, config: Config, *,
     orchestrator = Orchestrator(store, projects, runners, host,
                                 agents_max=agents_max, idle_after=config.idle_after,
                                 request_timeout=config.request_timeout)
-    await orchestrator.recover()
+    try:
+        await orchestrator.recover()
+    except Exception as error:
+        await orchestrator.close()
+        store.close()
+        await server.close()
+        server.unlink()
+        if isinstance(error, (sqlite3.Error, OSError)):
+            raise StartError(f'cannot recover the threads in {data_dir}: {error}') from None
+        raise
     service = Service(store, projects, orchestrator)
     scheduler = Scheduler(ServiceHost(store, service, environment=host.check_environment()),
-                          clock=store.clock)
+                          clock=store.clock, log=log)
     try:
         scheduler.open()
     except sqlite3.Error as error:

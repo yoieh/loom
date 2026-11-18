@@ -3,6 +3,7 @@ import json
 import os
 import signal
 import socket
+import sqlite3
 import stat
 import sys
 import tempfile
@@ -11,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from .fake_claude import ENDLESS
+from loom_core.orchestrator import Orchestrator
 from loom_service.config import Config, StartError
 
 from .support import (
@@ -289,6 +291,40 @@ class MemoryTest(ServerCase):
         self.assertEqual(str(caught.exception),
                          'cannot read the available memory; set agents_max in the config')
         self.assertFalse(os.path.lexists(self.socket))
+
+
+class RecoverTest(ServerCase):
+    async def failed_start(self, error: Exception, raised: type[Exception]) -> BaseException:
+        await self.serving.close()
+        recover = Orchestrator.recover
+        recovered: list[tuple[Orchestrator, set[str]]] = []
+
+        async def broken(orchestrator: Orchestrator) -> None:
+            await recover(orchestrator)
+            recovered.append((orchestrator, {task.get_name() for task in asyncio.all_tasks()}))
+            raise error
+
+        socket_path = self.base / 'recover.sock'
+        with mock.patch.object(Orchestrator, 'recover', broken):
+            with self.assertRaises(raised) as caught:
+                await self.serve(socket=socket_path, data_dir=self.base / 'recover')
+        orchestrator, running = recovered[0]
+        self.assertLessEqual({'loom-idle', 'loom-requests'}, running)
+        self.assertEqual([task for task in asyncio.all_tasks() if not task.done()
+                          and task.get_name() in ('loom-idle', 'loom-requests')], [])
+        self.assertFalse(os.path.lexists(socket_path))
+        with self.assertRaises(sqlite3.ProgrammingError):
+            orchestrator.store.connection.execute('SELECT 1')
+        return caught.exception
+
+    async def test_a_store_error_in_recovery_stops_the_start_and_cleans_up(self) -> None:
+        error = await self.failed_start(sqlite3.OperationalError('disk I/O error'), StartError)
+        self.assertEqual(str(error),
+                         f'cannot recover the threads in {self.base / "recover"}: disk I/O error')
+
+    async def test_another_error_in_recovery_is_raised_as_it_is_after_the_cleanup(self) -> None:
+        boom = RuntimeError('boom')
+        self.assertIs(await self.failed_start(boom, RuntimeError), boom)
 
 
 class RestartTest(ServerCase):

@@ -1,7 +1,9 @@
 import json
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import TextIO
 
 from loom_contracts.calls import CallName
 from loom_contracts.events import EventType, SkipReason
@@ -16,6 +18,7 @@ from .table import (
     FAILED, FIRED, MAX_REASON, RETRY_AFTER, SELECT, SKIPPED_CHECK, launch_options, title,
     to_row,
 )
+from .tick import log_error
 from .timing import iso
 
 PAGE = 1_000
@@ -96,10 +99,11 @@ class Seen:
 
 class EventSource:
     def __init__(self, host: SchedulerHost, clock: Callable[[], datetime],
-                 wake: Callable[[], None]) -> None:
+                 wake: Callable[[], None], *, log: TextIO | None = None) -> None:
         self.host = host
         self.clock = clock
         self.wake = wake
+        self.log = sys.stderr if log is None else log
         self._pending = False
         self._watching = False
         self._retry: datetime | None = None
@@ -140,6 +144,7 @@ class EventSource:
         try:
             await self._pass(now)
         except Exception:
+            log_error(self.log)
             self._retry = now + RETRY_AFTER
 
     def _load(self) -> list[Watch]:
@@ -190,6 +195,7 @@ class EventSource:
             try:
                 await self._handle(watch, seen)
             except Exception:
+                log_error(self.log)
                 watch.halted = True
 
     async def _handle(self, watch: Watch, seen: Seen) -> None:
