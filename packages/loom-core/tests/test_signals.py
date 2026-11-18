@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest import mock
 
@@ -14,6 +15,7 @@ TOPIC_SHAPE = ('topic must start with a letter or digit and hold only letters, d
 LOOM_TYPE = 'topic must not be a Loom event type'
 PAYLOAD_OBJECT = 'payload must be a JSON object'
 PAYLOAD_SIZE = 'payload must be at most 16384 bytes as JSON'
+PAYLOAD_TEXT = 'payload text must be valid UTF-8'
 KEY_LENGTH = 'key must be a string of 1 to 200 characters'
 ID_SHAPE = 'id must be a string of 1 to 200 characters'
 
@@ -151,6 +153,27 @@ class RefusalTest(SignalTest):
             with self.subTest(size=len(payload['a'])):
                 event = await self.emit(payload=payload)
                 self.assertEqual(event['data']['payload'], payload)
+
+    async def test_payload_text_that_is_not_utf8_is_refused(self) -> None:
+        await self.assert_refused([
+            ({'payload': json.loads('{"title": "\\ud800"}')}, 'invalid', PAYLOAD_TEXT),
+            ({'payload': {'\udc00': 1}}, 'invalid', PAYLOAD_TEXT),
+            ({'payload': {'a': {'b': ['ok', '\udfff']}}}, 'invalid', PAYLOAD_TEXT),
+            ({'payload': {'a': chr(0xD83D) + chr(0xDE00)}}, 'invalid', PAYLOAD_TEXT),
+            ({'payload': {'a': '\ud800' + 'x' * 16_400}}, 'invalid', PAYLOAD_TEXT),
+        ])
+
+    async def test_non_ascii_payload_text_is_accepted(self) -> None:
+        payloads = [
+            json.loads('{"title": "\\ud83d\\ude00"}'),
+            {'title': 'Grüße', 'städer': ['日本', '😀']},
+            {'a': {'b': ['ö', {'ü': 'é'}]}},
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                event = await self.emit(payload=payload)
+                self.assertEqual(event['data']['payload'], payload)
+                self.assertEqual(self.signals()[-1]['data']['payload'], payload)
 
     async def test_a_bad_project_id_or_key_is_refused(self) -> None:
         await self.assert_refused([
