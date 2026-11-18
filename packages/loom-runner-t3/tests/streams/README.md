@@ -13,6 +13,13 @@ These are the replay fixtures for `loom-runner-t3`. `docs/design.md` §6.1 cites
   the script archived the threads with `t3_thread_organize {action: "archive"}`, revoked
   the session with `t3 auth session revoke`, and removed the scratch git worktree and its
   branch. The six cases used six turns.
+- **Recorded again:** 2026-11-18, against T3 Code 0.1.7 (`serverInfo.version` in its
+  `initialize` answer, which is not kept), for LM-92, at the same origin. The same kind of
+  script paired as "Loom t3-record" with T3's `approval-required` access, which gives
+  `orchestration:read` and `orchestration:operate`, not full access. It launched one
+  thread, recorded the `permission-request` case in one turn, archived the thread, revoked
+  the session, and removed its scratch worktree and branch. §6.1 cites this case as
+  *seen*, T3 0.1.7.
 
 ## The files
 
@@ -38,7 +45,8 @@ was form-encoded, and the fixture keeps it as that form text.
 ## The cases
 
 Thread 1 is "Loom t3-record A (idle launch)", thread 2 "Loom t3-record B (existing
-worktree)" and thread 3 "Loom t3-record C (unknown model)".
+worktree)" and thread 3 "Loom t3-record C (unknown model)". Thread 5 is "Loom t3-record D
+(permission request)".
 
 - `idle-launch`: thread 1 is launched with `workspaceStrategy {type: "root"}` and no
   message (`launch-idle`). Then come three reads with no `afterPosition`, a second apart.
@@ -65,6 +73,19 @@ worktree)" and thread 3 "Loom t3-record C (unknown model)".
   model: "loom-t3-record-no-such-model"}` (`launch-unknown-model`), and T3 accepts it. One
   read, then a send of "Reply with the single word ok." (`queue`, request id 7). Then reads.
   The provider answers 400, and T3 ends the run `failed`.
+- `permission-request`: thread 5 is launched idle with `runtimeMode` `approval-required` and
+  `{type: "existing_worktree", worktreePath, branch}` (`launch-permission`), in a worktree
+  made as for `tool`, on branch `loom/t3-record-2`. One read, then a send of "Create the
+  file loom-permission-probe.txt in the current directory with your Write tool. It holds
+  the single word ok." (`queue`, request id 8; its answer is not kept). The third read
+  after the send shows `pendingRequestCount` 1 and two new items: a `file_change`
+  (`running`, its `text` the file's path) and an `approval_request` (`waiting`, its `text`
+  the file name). Six reads show the request open; in each, the thread and its run stay
+  `running` and `activeRunId` stays set. Then `t3_thread_interrupt {threadId,
+  clientRequestId}` with request id 9 (`interrupt-permission`). The next read shows
+  `pendingRequestCount` 0, no `activeRunId`, the thread and its run `interrupted`, and
+  `run_interrupt_request`, `run_interrupt_result` and `checkpoint` items. Two more reads
+  follow. Nobody answered the request, and the file was not written.
 
 ## The other answers
 
@@ -83,6 +104,9 @@ worktree)" and thread 3 "Loom t3-record C (unknown model)".
   port, `http://127.0.0.1/loom/callback`.
 - `pairing-create`: step 3, `t3 auth pairing create`.
 - `session-list`: `t3 auth session list --json` right after the token exchange.
+- `launch-permission` and `interrupt-permission`: thread 5's launch, and its interrupt with
+  request id 9, in `permission-request`. In T3 0.1.7 the launch answer and the thread also
+  hold `link`, a T3 app URL with T3's environment id and the thread id.
 
 ## What was left out
 
@@ -101,14 +125,15 @@ A user message's id ends in the `clientRequestId` of the send that made it.
 
 | Placeholder | Replaces |
 |---|---|
-| `mcp:00000000-0000-4000-8000-00000000000<n>` | T3 thread ids: `n` 1 to 3 are threads 1 to 3, and 4 is the made-up id in `read-unknown-thread`. The same uuid sits inside run ids (`run:thread:mcp%3A<uuid>:ordinal:<n>`) and checkpoint item ids. |
+| `mcp:00000000-0000-4000-8000-00000000000<n>` | T3 thread ids: `n` 1 to 3 are threads 1 to 3, 4 is the made-up id in `read-unknown-thread`, and 5 is thread 5. The same uuid sits inside run ids (`run:thread:mcp%3A<uuid>:ordinal:<n>`) and checkpoint item ids. |
 | `mcp:00000000-0000-4000-8001-000000000001` | the Loom T3 project's `id` |
-| `00000000-0000-4000-8002-000000000001` | the scratch client's session id: `sessionId` in `session-list`, and `client%3A<id>` inside message ids |
+| `00000000-0000-4000-8002-00000000000<n>` | the scratch client's session id: `n` 1 in the 0.1.2 recordings and 3 in `permission-request`; `sessionId` in `session-list`, and `client%3A<id>` inside message ids |
 | `00000000-0000-4000-8003-000000000001` | the `Mcp-Session-Id` |
-| `00000000-0000-4000-8004-00000000000<n>` | the `clientRequestId`s, request ids 1 to 7 above, also inside message ids (`thread-send:<id>`) |
+| `00000000-0000-4000-8004-00000000000<n>` | the `clientRequestId`s, request ids 1 to 9 above, also inside message ids (`thread-send:<id>`) |
 | `00000000-0000-4000-8005-00000000000<n>` | the provider's item ids (`native-item:<id>`) |
 | `00000000-0000-4000-8006-000000000001` | the pairing code's `id` in `pairing-create` |
-| `toolu_replay01` | the provider's id of the tool call in `tool` |
+| `00000000-0000-4000-8007-00000000000<n>` | ids the 0.1.2 recordings did not have: `n` 1 is T3's environment id inside `link`, and 2 the runtime request's id at the end of the `approval_request` item id |
+| `toolu_replay0<n>` | the provider's tool-call ids: `n` 1 is the tool call in `tool`, and 2 the file change in `permission-request`, also inside its `approval_request` item id |
 | `replay-access-token` | the access token |
 | `replay-client-id` | the registered `client_id` |
 | `replay-code-verifier` | the PKCE code verifier |

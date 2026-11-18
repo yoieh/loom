@@ -68,10 +68,13 @@ from .test_credential import WRONG_TYPES
 SETUP_ENV = {**os.environ, 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}
 
 RUN_1 = 'run:thread:mcp%3A00000000-0000-4000-8000-000000000001:ordinal:1'
+T3_THREAD_5 = 'mcp:00000000-0000-4000-8000-000000000005'
 
 OK = 'Reply with the single word ok.'
 COUNT_200 = 'Count slowly from 1 to 200, one number per line.'
 README = 'Read README.md with your read tool and reply with its first line.'
+WRITE_PROBE = ('Create the file loom-permission-probe.txt in the current directory with your '
+               'Write tool. It holds the single word ok.')
 FIRST_LINE = 'The first line of `README.md` is:\n\n```\n# Loom\n```'
 PROVIDER_ERROR = 'API Error: 400 unknown provider for model loom-t3-record-no-such-model'
 
@@ -654,6 +657,14 @@ class ReplayTest(Base):
             TurnResult(TurnState.FAILED, PROVIDER_ERROR, f't3: failed: {PROVIDER_ERROR}'),
         ])
 
+    async def test_permission_request(self) -> None:
+        write_record(str(self.data_dir), THREAD_ID, T3_THREAD_5)
+        self.http.on('t3_thread_interrupt', from_recording('interrupt-permission'))
+        events = await self.play('permission-request', [(WRITE_PROBE, 'queue')], resume=True,
+                                 interrupt=True, settle=10)
+        self.assertEqual(events, [TurnStarted(), MessageEntered(WRITE_PROBE),
+                                  TurnResult(TurnState.STOPPED, None, 'interrupted')])
+
     async def test_reads_follow_the_position(self) -> None:
         await self.play('turn', [(OK, 'queue')], settle=8)
         positions = [call.arguments['afterPosition']
@@ -666,7 +677,8 @@ class ReplayTest(Base):
 
     async def test_the_streams_cover_every_case(self) -> None:
         names = sorted(path.stem for path in (Path(__file__).parent / 'streams').glob('*.jsonl'))
-        self.assertEqual(names, ['failed', 'idle-launch', 'interrupt', 'steer', 'tool', 'turn'])
+        self.assertEqual(names, ['failed', 'idle-launch', 'interrupt', 'permission-request',
+                                 'steer', 'tool', 'turn'])
 
 
 class PollTest(Base):
