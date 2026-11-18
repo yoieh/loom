@@ -1372,7 +1372,7 @@ Adds a schedule (§7). See [How schedules run](#how-schedules-run) for the trigg
 | `runner` | string | Only with `launch`: `"claude"`, `"codex"` or `"t3"`, passed to `threads.launch`. Default: `claude`. |
 | `model` | string | Only with `launch`. Not empty; passed to `threads.launch`. Default: the agent's own model. |
 | `workspace` | object | Only with `launch`: `{"strategy": "root"}`, the project's main checkout, or `{"strategy": "worktree", "base": "..."}`, a new worktree on a new branch for each run, with an optional `base` (see [Workspaces](#workspaces)); passed to `threads.launch`. `branch` is refused, because a fixed branch exists after the first run and every later run would fail; so are `path` and `existing_worktree`. Default: a new worktree. |
-| `check` | array of strings | Only with `launch`, and only from a person: the program and its arguments, 1 to 64 strings, the first not empty and none with a NUL character, at most 4,096 bytes as compact UTF-8 JSON. It runs in the project's root before each run (see Checks under [How schedules run](#how-schedules-run)). Default: no check. |
+| `check` | array of strings | Only with `launch`, and only from a person: the program and its arguments, 1 to 64 strings, each valid text with no lone UTF-16 surrogate, the first not empty and none with a NUL character, at most 4,096 bytes as compact UTF-8 JSON. It runs in the project's root before each run (see Checks under [How schedules run](#how-schedules-run)). Default: no check. |
 
 A param given as null is refused. The thread and the project must exist when the schedule is
 added.
@@ -1431,6 +1431,7 @@ fields.
 | An empty `workspace.base`, one that is not a string, starts with `-` or holds a NUL character | `invalid` | `workspace.base must be a non-empty string that does not start with - and has no NUL` |
 | `check` is null | `invalid` | `check must not be null` |
 | `check` is not a list of 1 to 64 strings, its first is empty, or one holds a NUL character | `invalid` | `check must be a list of 1 to 64 strings, the first not empty, with no NUL` |
+| A string in `check` is not valid text, such as one with a lone UTF-16 surrogate (`"\ud800"` in the JSON) | `invalid` | `check arguments must be valid text` |
 | `check` is over 4,096 bytes as compact UTF-8 JSON | `invalid` | `check must be at most 4096 bytes as JSON` |
 | `check` from an agent thread, or from a caller the server can't tell (see [Callers](#agents-may-not-change-a-projects-mode)) | `forbidden` | `agent threads may not add a schedule with a check` |
 | `project_id` is not the thread's | `invalid` | `project_id is not the thread's project` |
