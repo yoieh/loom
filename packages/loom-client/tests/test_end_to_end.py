@@ -23,6 +23,12 @@ EVENT_KEYS = {'id', 'type', 'at', 'thread_id', 'data'}
 ASK = 'Ask for permission.'
 GIT_ENV = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'GIT_CONFIG_GLOBAL': '/dev/null',
            'GIT_CONFIG_NOSYSTEM': '1', 'HOME': '/nonexistent'}
+PERSON_CALL = '''
+import json, sys
+from loom_client import Client
+method = getattr(Client(sys.argv[1], timeout=float(sys.argv[2])), sys.argv[3])
+print(json.dumps(method(*json.loads(sys.argv[4]))))
+'''
 
 
 def wait_for(predicate: Callable[[], object], what: str, timeout: float = TIMEOUT) -> object:
@@ -117,6 +123,15 @@ class LiveCase(unittest.TestCase):
         wait_for(lambda: serving in (self.base / f'{module}.log').read_text(), serving.strip())
         self.assertEqual(self.client.projects_list(), [])
         return process
+
+    def as_person(self, method: str, *args: object) -> object:
+        done = subprocess.run(
+            [sys.executable, '-c', PERSON_CALL, str(self.socket), str(TIMEOUT), method,
+             json.dumps(args)],
+            env=self.env, cwd=self.base, stdin=subprocess.DEVNULL, capture_output=True,
+            text=True, timeout=TIMEOUT)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
 
     def cli(self, *argv: str, stdin: str | None = None, cwd: Path | None = None,
             socket: bool = True, **env: str) -> subprocess.CompletedProcess:
@@ -260,7 +275,7 @@ class ApiTest(LiveCase):
         self.assertEqual(client.threads_stop(child['id'])['id'], child['id'])
         self.assertEqual(client.threads_settle(child['id'])['state'], 'settled')
 
-        changed = client.projects_set_mode('repo', 'approval-required')
+        changed = self.as_person('projects_set_mode', 'repo', 'approval-required')
         self.assertEqual(changed['permission_mode'], 'approval-required')
         other = client.projects_add('Other', str(make_repo(self.base / 'other')))
         self.assertEqual(client.projects_remove('other'), other)
