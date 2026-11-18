@@ -748,6 +748,7 @@ class RepeatTest(Base):
         self.assertEqual([await self.next_event(session) for _ in range(3)],
                          [TurnStarted(), MessageEntered(OK),
                           TurnResult(TurnState.COMPLETED, None, None)])
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
         self.sleep.open()
         await until(lambda: self.http.count('t3_thread_read') >= len(reads('turn')) + 1)
         self.assertEqual(await self.rest(session), [Exited(None)])
@@ -780,6 +781,34 @@ class RepeatTest(Base):
                          [TurnStarted(), MessageEntered(OK)])
         self.http.on('t3_thread_send', send_answer(status='completed'))
         await session.send('more', DispatchMode.STEER, 'c2')
+        self.assertEqual(await self.rest(session), [Exited(None)])
+
+    async def test_a_repeat_of_a_run_ended_before_the_resume_is_reported(self) -> None:
+        write_record(str(self.data_dir), THREAD_ID, T3_THREAD)
+        self.http.on('t3_thread_read', tool(running_read(status='completed', active=None)))
+        self.http.on('t3_thread_send', send_answer(status='completed'))
+        session = await self.start(resume=True)
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
+        self.assertEqual([await self.next_event(session) for _ in range(3)],
+                         [TurnStarted(), MessageEntered(OK),
+                          TurnResult(TurnState.COMPLETED, None, None)])
+        self.assertEqual(self.http.count('t3_thread_read'), 1)
+        self.assertEqual(await self.rest(session), [Exited(None)])
+
+    async def test_an_ended_answer_for_a_run_the_session_reported_starts_no_turn(self) -> None:
+        write_record(str(self.data_dir), THREAD_ID, T3_THREAD)
+        self.http.on('t3_thread_read', tool(running_read()),
+                     tool(running_read(0, [user_item(0)])),
+                     tool(running_read(status='completed', active=None)))
+        session = await self.start(resume=True)
+        self.sleep.open()
+        self.assertEqual(await self.turn(session),
+                         [TurnStarted(), MessageEntered(OK),
+                          TurnResult(TurnState.COMPLETED, None, None)])
+        naps = len(self.sleep.calls)
+        self.http.on('t3_thread_send', send_answer(status='completed'))
+        await session.send(OK, DispatchMode.QUEUE, 'c1')
+        await until(lambda: 1.0 in self.sleep.calls[naps:])
         self.assertEqual(await self.rest(session), [Exited(None)])
 
 

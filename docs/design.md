@@ -338,7 +338,7 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   acted. So a message Loom sends again after its own crash, between the send and deleting
   the message row, enters once; in Claude and Codex threads it may still enter twice. The
   answer to a send may name a run that has ended (`status` `completed`, `failed` or
-  `interrupted`) and is not the session's current turn. Then the send was a repeat whose run
+  `interrupted`) and that the session has not reported. Then the send was a repeat whose run
   is already behind the session's position, so the runner reports that turn at once:
   `turn.started`, `entered` and a `result` with no text (T3's answer to a repeat after its
   run ended is not *seen*). A second send with the same `clientRequestId` answers the same
@@ -352,9 +352,11 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   0.1.2).
 - **Events.** T3's MCP sends no stream, so a session polls `t3_thread_read {view: "activity",
   afterPosition}`: every second while the thread is `running` or `waiting` or has a queued
-  run, and for up to 30 reads after a `send` until its run shows, and every 15 s otherwise,
-  so a turn the user starts in T3's own app is seen too. The answer is `{thread,
-  recentRuns, items, nextPosition, hasMore}` (*seen*, T3 0.1.2):
+  run, and for up to 30 reads after a `send` until its run shows (none when the send's
+  answer names an ended run the session has not reported: that run is reported at once, see
+  Send and interrupt), and every 15 s otherwise, so a turn the user starts in T3's own app
+  is seen too. The answer is `{thread, recentRuns, items, nextPosition, hasMore}` (*seen*,
+  T3 0.1.2):
   - **Position.** `afterPosition` is exclusive. `nextPosition` is the last item's
     `position`, and `null` when no item is new, so the session keeps its last position.
   - **The thread.** `thread` holds `status`, `activeRunId`, `latestRunId`, `runCount`,

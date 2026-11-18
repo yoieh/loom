@@ -125,6 +125,7 @@ class Tracker:
         self.text: str | None = None
         self.error: str | None = None
         self.known: set[str] = set()
+        self.reported: set[str] = set()
         self.status: str | None = None
         self.active: str | None = None
         self.expect = 0
@@ -147,9 +148,10 @@ class Tracker:
             return []
         run = _text(answer.get('runId'))
         state = ENDED.get(_text(answer.get('status')) or '')
-        if run is None or state is None or run == self.turn:
+        if run is None or state is None or run in self.reported:
             return []
         self.known.add(run)
+        self.reported.add(run)
         return [TurnStarted(), MessageEntered(message), self._outcome(state, None, None)]
 
     def in_turn(self) -> bool:
@@ -216,6 +218,7 @@ class Tracker:
             events.append(self._result(state))
         self.turn = run
         self.known.add(run)
+        self.reported.add(run)
         self.text = None
         self.error = None
         events.append(TurnStarted())
