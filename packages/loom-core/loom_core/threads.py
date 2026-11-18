@@ -164,10 +164,10 @@ def has_live(tx: sqlite3.Connection, project_id: str) -> bool:
     ).fetchone() is not None
 
 
-def uses_workspace(tx: sqlite3.Connection, project_id: str, path: str) -> bool:
+def uses_workspace(tx: sqlite3.Connection, project_id: str, path: str, branch: str) -> bool:
     return tx.execute(
-        'SELECT 1 FROM threads WHERE project_id = ? AND workspace_path = ? LIMIT 1',
-        (project_id, path),
+        'SELECT 1 FROM threads WHERE project_id = ? AND workspace_path = ? AND branch = ? LIMIT 1',
+        (project_id, path, branch),
     ).fetchone() is not None
 
 

@@ -149,9 +149,11 @@ Rules, each checked by a packaging test:
   - `worktree`: a new worktree on a new branch (`loom/<thread-id>` by default) under
     `<data_dir>/worktrees/<project-id>/<thread-id>`, from a `base` branch (default the
     project's current branch);
-  - `existing_worktree`: a path and branch already made, for example a parent's. The path must
-    be the `workspace_path` of a thread of the same project, in any state; any other path is
-    refused as `invalid`.
+  - `existing_worktree`: a path and branch already made, for example a parent's. The path and
+    branch must be the `workspace_path` and `branch` of a single thread of the same project, in
+    any state; any other pair, a recorded path with another branch included, is refused as
+    `invalid`. A `root` thread records the branch the root is on each time it starts, and none
+    before its first start.
 - A launch defaults to `worktree`. A delegated task defaults to its parent's workspace, since
   most delegations read or review the parent's work; it asks for `worktree` when it will write
   in parallel.

@@ -77,8 +77,10 @@ def _plan(tx: sqlite3.Connection, workspace: object, project: ProjectInfo, proje
           thread_id: str, data_dir: Path) -> WorkspacePlan:
     plan = plan_workspace(workspace, project, thread_id, data_dir)
     if (plan.strategy is WorkspaceStrategy.EXISTING_WORKTREE
-            and not threads.uses_workspace(tx, project_id, plan.path)):
-        raise LoomError('invalid', 'path is not the workspace of a thread of this project')
+            and not threads.uses_workspace(tx, project_id, plan.path, plan.branch)):
+        raise LoomError(
+            'invalid', 'path and branch are not the workspace of a thread of this project',
+        )
     return plan
 
 
