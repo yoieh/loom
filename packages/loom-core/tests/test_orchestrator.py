@@ -77,6 +77,8 @@ class OrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.calls = 0
 
     async def asyncTearDown(self) -> None:
+        if self.runner.close_gate is not None:
+            self.runner.close_gate.set()
         await self.orchestrator.close()
         self.store.close()
         self.tmp.cleanup()
