@@ -31,6 +31,13 @@ print(json.dumps(method(*json.loads(sys.argv[4]))))
 '''
 
 
+def path_without_agents(path: str) -> str:
+    entries = [entry for entry in path.split(os.pathsep)
+               if entry and not any(os.path.lexists(os.path.join(entry, name))
+                                    for name in ('claude', 'codex'))]
+    return os.pathsep.join(entries)
+
+
 def wait_for(predicate: Callable[[], object], what: str, timeout: float = TIMEOUT) -> object:
     deadline = time.monotonic() + timeout
     while True:
@@ -93,8 +100,9 @@ class LiveCase(unittest.TestCase):
         claude.chmod(0o700)
         self.config.write_text(f'claude_bin = "{claude}"\n')
         self.env = {
-            'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'C.UTF-8',
-            'HOME': str(self.base / 'home'), 'XDG_RUNTIME_DIR': str(self.base / 'run'),
+            'PATH': path_without_agents(os.environ.get('PATH', '/usr/bin:/bin')),
+            'LANG': 'C.UTF-8', 'HOME': str(self.base / 'home'),
+            'XDG_RUNTIME_DIR': str(self.base / 'run'),
             'XDG_DATA_HOME': str(self.base / 'xdg-data'),
             'XDG_CONFIG_HOME': str(self.base / 'xdg-config'),
         }

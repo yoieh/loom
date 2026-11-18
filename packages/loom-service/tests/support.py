@@ -66,8 +66,16 @@ def make_codex_bin(directory: Path) -> Path:
     return path
 
 
+def path_without_agents(path: str) -> str:
+    entries = [entry for entry in path.split(os.pathsep)
+               if entry and not any(os.path.lexists(os.path.join(entry, name))
+                                    for name in ('claude', 'codex'))]
+    return os.pathsep.join(entries)
+
+
 def clean_env(**extra: str) -> dict[str, str]:
-    env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'C.UTF-8'}
+    env = {'PATH': path_without_agents(os.environ.get('PATH', '/usr/bin:/bin')),
+           'LANG': 'C.UTF-8'}
     env.update(extra)
     return env
 
@@ -179,7 +187,8 @@ class ServerCase(unittest.IsolatedAsyncioTestCase):
         self.claude_bin = make_claude_bin(self.base)
         self.log = io.StringIO()
         self.environ = {
-            'HOME': str(self.home), 'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+            'HOME': str(self.home),
+            'PATH': path_without_agents(os.environ.get('PATH', '/usr/bin:/bin')),
             'LANG': 'C.UTF-8', 'OUTSIDE': 'leak', 'LOOM_THREAD': 'inherited',
             'LOOM_SOCKET': str(self.base / 'elsewhere.sock'),
         }
