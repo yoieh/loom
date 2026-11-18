@@ -166,7 +166,11 @@ def _check(params: dict) -> list[str] | None:
         raise _invalid(f'check must be a list of 1 to {MAX_CHECK_ARGS} strings, the first not '
                        'empty, with no NUL')
     stored = json.dumps(value, separators=(',', ':'), ensure_ascii=False)
-    if len(stored.encode('utf-8', 'surrogatepass')) > MAX_CHECK_BYTES:
+    try:
+        encoded = stored.encode('utf-8')
+    except UnicodeEncodeError:
+        raise _invalid('check arguments must be valid text') from None
+    if len(encoded) > MAX_CHECK_BYTES:
         raise _invalid(f'check must be at most {MAX_CHECK_BYTES} bytes as JSON')
     return value
 
