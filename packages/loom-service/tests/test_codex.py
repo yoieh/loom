@@ -1,13 +1,17 @@
 import asyncio
 import json
 import os
+import shutil
 import stat
+import tempfile
 import unittest
 from pathlib import Path
 
 from loom_service.config import Config
 
-from .support import TIMEOUT, Connection, ServerCase, make_codex_bin, wait_until
+from .support import (
+    TIMEOUT, Connection, ServerCase, make_codex_bin, path_without_agents, wait_until,
+)
 
 SHELL_KEYS = {'PWD', 'OLDPWD', 'SHLVL', '_', 'LC_CTYPE'}
 AGENT_ENV_KEYS = {'HOME', 'LANG', 'PATH', 'LOOM_SOCKET', 'LOOM_THREAD', 'CODEX_HOME',
@@ -19,17 +23,10 @@ def mode_of(path: Path) -> int:
     return stat.S_IMODE(os.lstat(path).st_mode)
 
 
-def path_without_codex(path: str) -> str:
-    entries = [entry for entry in path.split(os.pathsep)
-               if entry and not os.path.lexists(os.path.join(entry, 'codex'))]
-    return os.pathsep.join(entries)
-
-
 class CodexCase(ServerCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.environ.update({'ANTHROPIC_AUTH_TOKEN': 'outer', 'ANTHROPIC_API_KEY': 'outer',
-                             'PATH': path_without_codex(self.environ['PATH'])})
+        self.environ.update({'ANTHROPIC_AUTH_TOKEN': 'outer', 'ANTHROPIC_API_KEY': 'outer'})
         token = self.data_dir / 'agent-token'
         token.write_text(f'{TOKEN}\n')
         token.chmod(0o600)
@@ -194,6 +191,39 @@ class CodexEnvironmentTest(CodexCase):
         second = (await self.codex_turn(1))['argv']
         self.assertEqual(second[second.index('-s') + 1], 'read-only')
         self.assertLess(second.index('-s'), second.index('exec'))
+
+
+
+class PathWithoutAgentsTest(unittest.TestCase):
+    def test_it_drops_every_entry_holding_claude_or_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            with_claude, with_codex, tools = (base / 'with-claude', base / 'with-codex',
+                                              base / 'tools')
+            for directory in (with_claude, with_codex, tools):
+                directory.mkdir()
+            (with_claude / 'claude').write_text('')
+            os.symlink(base / 'missing', with_codex / 'codex')
+            (tools / 'git').write_text('')
+            path = os.pathsep.join([str(with_claude), str(with_codex), '', str(tools)])
+            self.assertEqual(path_without_agents(path), str(tools))
+
+
+class NoAgentBinTest(CodexCase):
+    async def test_a_config_with_no_agent_bins_makes_a_launch_fail_to_spawn(self) -> None:
+        for name in ('claude', 'codex'):
+            self.assertIsNone(shutil.which(name, path=self.environ['PATH']), name)
+        await self.restart(Config(codex_home=str(self.base / 'codex-home')))
+        conn = await self.connect()
+        await self.add_project(conn)
+        claude = await self.launch(conn, 'hello')
+        [failed] = await self.wait_events(conn, 'thread.failed', claude['id'])
+        self.assertEqual(failed['data'],
+                         {'reason': 'could not start claude: No such file or directory'})
+        codex = await self.launch_codex(conn, 'hello', title='Codex')
+        [failed] = await self.wait_events(conn, 'thread.failed', codex['id'])
+        self.assertEqual(failed['data'],
+                         {'reason': 'could not start codex: No such file or directory'})
 
 
 if __name__ == '__main__':
