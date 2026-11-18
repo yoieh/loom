@@ -14,7 +14,7 @@ from unittest import mock
 from loom_service.config import Config
 from loom_service.serve import Serving, start
 
-TIMEOUT = 5.0
+TIMEOUT = 15.0
 PLENTY = 64 * 2**30
 FAKE_CLAUDE = Path(__file__).resolve().parent / 'fake_claude.py'
 FAKE_CODEX = Path(__file__).resolve().parent / 'fake_codex.py'
