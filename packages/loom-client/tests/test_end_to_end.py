@@ -352,6 +352,19 @@ class CliTest(LiveCase):
         self.assertEqual(self.cli_json('projects', 'remove', 'other'), other)
         self.assertEqual(self.cli_json('projects', 'list'), [changed])
 
+    def test_a_delegated_child_settles_on_its_result_and_the_parent_gets_it(self) -> None:
+        parent = self.started()
+        child = self.cli_json('threads', 'delegate', parent['id'], 'check it',
+                              '--settle', 'on_result')
+        self.assertEqual(child['settle'], 'on_result')
+        wait_for(lambda: self.client.threads_get(child['id'])['state'] == 'settled',
+                 f'{child["id"]} settled')
+        settled = [event for event in self.all_events(child['id'])
+                   if event['type'] == 'thread.settled']
+        self.assertEqual(len(settled), 1)
+        result = self.results(parent['id'], 2)[1]
+        self.assertIn(f'Task {child["id"]} (check it) completed.', result['data']['text'])
+
     def test_audience_filters_lists_and_events_and_update_changes_it(self) -> None:
         self.cli_json('projects', 'add', 'Repo', str(self.repo), '--mode', 'auto')
         person = self.cli_json('threads', 'launch', 'repo', 'Person', 'hi', '--workspace', 'root',

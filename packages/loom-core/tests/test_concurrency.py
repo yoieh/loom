@@ -332,6 +332,15 @@ class CoalesceTest(KeyTest):
         self.assertEqual(joined['id'], waiting['id'])
         self.assertEqual(self.first_message(waiting['id']), 'first\n\nsecond')
 
+    async def test_a_coalescing_delegate_with_settle_leaves_the_siblings(self) -> None:
+        await self.holder()
+        parent_id, _ = await self.running()
+        waiting = await self.delegate(parent_id, 'first', concurrency_key='k')
+        joined = await self.delegate(parent_id, 'second', concurrency_key='k',
+                                     on_busy='coalesce', settle='on_result')
+        self.assertEqual(joined['id'], waiting['id'])
+        self.assertIsNone(self.orchestrator.get(waiting['id'])['settle'])
+
     async def assert_conflict(self, call, params: dict) -> None:
         tables = self.snapshot()
         with self.assertRaises(LoomError) as raised:
@@ -451,7 +460,7 @@ class ParamsTest(KeyTest):
 
     async def test_each_bad_key_or_on_busy_is_invalid_on_delegate(self) -> None:
         parent_id, _ = await self.running()
-        for extra, message in KEY_ROWS:
+        for extra, message in KEY_ROWS + SETTLE_ROWS:
             with self.subTest(extra=extra):
                 await self.assert_invalid(self.orchestrator.delegate,
                                           self.delegate_params(parent_id, **extra), message)

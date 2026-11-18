@@ -657,6 +657,7 @@ Nothing is posted while the child or the parent is being stopped, or once the pa
 | `model` | string | Default: the parent's model. |
 | `concurrency_key` | string | As under [`threads.launch`](#threadslaunch). Default: no key. |
 | `on_busy` | string | `"queue"` (default) or `"coalesce"`, as under [`threads.launch`](#threadslaunch). |
+| `settle` | string | `"on_result"`: the child settles after its first `completed` or `failed` result instead of going `idle`, as under Settle on result in [`threads.launch`](#threadslaunch), and that result is posted to the parent as above. Default: it goes `idle`. A null answers `invalid`, `settle must not be null`; any other value `settle must be one of on_result`. |
 
 The child's title is the first line of `task`, cut at 80 characters. It runs in the parent's
 project with the project's mode, and it inherits the parent's `requests` and keeps the top-level
@@ -668,8 +669,7 @@ hops are more (see [Cause chains](#cause-chains)); a delegate takes no `cause`.
 A key works as under Concurrency keys in [`threads.launch`](#threadslaunch): a child holds it,
 or waits for it.
 A coalescing delegate joins only a waiting child of the same parent, and its `task` is added to
-that child's first message; its `workspace`, `runner` and `model` are not used. A delegate takes
-no `settle`.
+that child's first message; its `workspace`, `runner`, `model` and `settle` are not used.
 
 **Result:** the child thread, in state `queued`, or the waiting child a coalescing delegate
 joined. It starts as under [`threads.launch`](#threadslaunch), as an agent's start: it may sleep
@@ -678,7 +678,7 @@ the longest-idle thread or wait `queued`, and is never refused.
 **Errors:** `not_found` when the parent does not exist; `conflict` when the parent is settled,
 failed or being stopped, or when the newest thread waiting for a coalescing delegate's key is
 under another parent (`concurrency key <key> is waiting in another project or under another
-parent`); `invalid` for a bad `concurrency_key` or `on_busy`, with the messages under
+parent`); `invalid` for a bad `concurrency_key`, `on_busy` or `settle`, with the messages under
 [`threads.launch`](#threadslaunch).
 
 ```json
@@ -2334,7 +2334,7 @@ They go before the command.
 | `loom install` | registers `loom-mcp` with Claude Code and Codex, see [`loom install`](#loom-install) |
 | `loom t3 pair\|unpair\|status [--data-dir DIR] [--config FILE]` | pairs Loom with T3, removes the pairing or shows it, see [`loom t3`](#loom-t3) |
 | `loom threads launch <project_id> <title> <message> [--workspace root\|worktree\|existing_worktree] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--requests caller\|any] [--origin O] [--audience person\|agent] [--concurrency-key K] [--on-busy queue\|coalesce] [--settle on_result] [--cause EVENT_ID] [--id ID]` | `threads.launch` |
-| `loom threads delegate <parent_id> <task> [--workspace ...] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--concurrency-key K] [--on-busy queue\|coalesce] [--id ID]` | `threads.delegate` |
+| `loom threads delegate <parent_id> <task> [--workspace ...] [--branch B] [--base B] [--path P] [--runner R] [--model M] [--concurrency-key K] [--on-busy queue\|coalesce] [--settle on_result] [--id ID]` | `threads.delegate` |
 | `loom threads send <thread_id> <message> [--mode steer\|queue\|interrupt] [--cause EVENT_ID] [--id ID]` | `threads.send` |
 | `loom threads steer <thread_id> <message_id> [--id ID]` | `threads.steer` |
 | `loom threads list [--project P] [--audience person\|agent]` | `threads.list` |
@@ -2409,15 +2409,13 @@ They go before the command.
   `--payload` of `-` is read from stdin. Text that is not JSON, or JSON that is not an object, is
   a usage error. `--project`, `--key` and `--cause` send `project_id`, `key` and `cause`.
 - `--concurrency-key K`, `--on-busy queue|coalesce` and `--settle on_result` on
-  `threads launch` and `schedules add` send `concurrency_key`, `on_busy` and `settle`;
-  `threads delegate` takes `--concurrency-key` and `--on-busy` only, so `--settle` there is a
-  usage error. A flag not given sends nothing, and another `--on-busy` or `--settle` value is a
-  usage error. The server checks the rest, such as `--on-busy` without `--concurrency-key` or
-  the three on a schedule that does not launch, and answers `invalid`, exit 1 (see Concurrency
-  keys and Settle on result under [`threads.launch`](#threadslaunch), and
-  [`schedules.add`](#schedulesadd)). `schedules add` takes `--workspace`, `--base`, `--runner`
-  and `--model` as `threads launch` does, and the server refuses `--branch`, `--path` and
-  `existing_worktree` on a schedule.
+  `threads launch`, `threads delegate` and `schedules add` send `concurrency_key`, `on_busy` and
+  `settle`. A flag not given sends nothing, and another `--on-busy` or `--settle` value is a
+  usage error. The server checks the rest, such as `--on-busy` without `--concurrency-key` or the
+  three on a schedule that does not launch, and answers `invalid`, exit 1 (see Concurrency keys and
+  Settle on result under [`threads.launch`](#threadslaunch), and [`schedules.add`](#schedulesadd)).
+  `schedules add` takes `--workspace`, `--base`, `--runner` and `--model` as `threads launch` does,
+  and the server refuses `--branch`, `--path` and `existing_worktree` on a schedule.
 - `--cause EVENT_ID` on `threads launch`, `threads send` and `signals emit` sends `cause` as an
   integer; without it no `cause` is sent. Text that is not an integer is a usage error; the
   server checks the rest (see [Cause chains](#cause-chains)).
@@ -2949,7 +2947,7 @@ objects, `statuses`, an array of strings, and `cause`, `limit`, `cursor`, `after
 | Tool | Arguments | Call | Result |
 |---|---|---|---|
 | `launch_thread` | `title`, `message`, `project_id?`, `workspace?`, `runner?`, `model?`, `audience?`, `concurrency_key?`, `on_busy?`, `settle?` | [`threads.launch`](#threadslaunch), with `origin` as above | the new thread |
-| `delegate` | `task`, `workspace?`, `runner?`, `model?`, `concurrency_key?`, `on_busy?` | [`threads.delegate`](#threadsdelegate) with `parent_id` the caller's thread | `{"task_id": <the child's id>, "thread": <the child>}` |
+| `delegate` | `task`, `workspace?`, `runner?`, `model?`, `concurrency_key?`, `on_busy?`, `settle?` | [`threads.delegate`](#threadsdelegate) with `parent_id` the caller's thread | `{"task_id": <the child's id>, "thread": <the child>}` |
 | `task_status` | `task_id` | [`threads.get`](#threadsget) | the task's thread |
 | `task_cancel` | `task_id` | [`threads.get`](#threadsget), then [`threads.stop`](#threadsstop) | the thread `threads.stop` answers |
 | `thread_send` | `thread_id`, `message`, `mode?` | [`threads.send`](#threadssend) | the thread |
@@ -3120,7 +3118,7 @@ not_found no thread with id 'nope'
 - One method per `v1` call, named after it with `_` for `.`. Required params are positional; the
   rest are keywords, and a keyword left `None` is not sent:
   - `threads_launch(project_id, title, message, *, workspace=None, runner=None, model=None, requests=None, origin=None, audience=None, concurrency_key=None, on_busy=None, settle=None, cause=None, id=None)`
-  - `threads_delegate(parent_id, task, *, workspace=None, runner=None, model=None, concurrency_key=None, on_busy=None, id=None)`
+  - `threads_delegate(parent_id, task, *, workspace=None, runner=None, model=None, concurrency_key=None, on_busy=None, settle=None, id=None)`
   - `threads_send(thread_id, message, *, mode=None, cause=None, id=None)`
   - `threads_steer(thread_id, message_id, *, id=None)`
   - `threads_list(project_id=None, *, audience=None)`, `threads_get(thread_id)`

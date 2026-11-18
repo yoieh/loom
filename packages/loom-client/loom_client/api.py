@@ -190,10 +190,11 @@ class Client:
     def threads_delegate(self, parent_id: str, task: str, *, workspace: dict | None = None,
                          runner: str | None = None, model: str | None = None,
                          concurrency_key: str | None = None, on_busy: str | None = None,
-                         id: str | None = None) -> ThreadInfo:
+                         settle: str | None = None, id: str | None = None) -> ThreadInfo:
         return self.call(CallName.THREADS_DELEGATE, _params(
             id=_command_id(id), parent_id=parent_id, task=task, workspace=workspace,
-            runner=runner, model=model, concurrency_key=concurrency_key, on_busy=on_busy))
+            runner=runner, model=model, concurrency_key=concurrency_key, on_busy=on_busy,
+            settle=settle))
 
     def threads_send(self, thread_id: str, message: str, *, mode: str | None = None,
                      cause: int | None = None, id: str | None = None) -> ThreadInfo:

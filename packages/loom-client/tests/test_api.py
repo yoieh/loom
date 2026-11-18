@@ -43,6 +43,8 @@ CALLS = [
     ('threads_delegate', ('t1', 'check it'), {'concurrency_key': 'k', 'on_busy': 'queue'},
      'threads.delegate',
      {'parent_id': 't1', 'task': 'check it', 'concurrency_key': 'k', 'on_busy': 'queue'}),
+    ('threads_delegate', ('t1', 'check it'), {'settle': 'on_result'}, 'threads.delegate',
+     {'parent_id': 't1', 'task': 'check it', 'settle': 'on_result'}),
     ('threads_send', ('t1', 'again'), {}, 'threads.send', {'thread_id': 't1', 'message': 'again'}),
     ('threads_send', ('t1', 'again'), {'mode': 'queue'}, 'threads.send',
      {'thread_id': 't1', 'message': 'again', 'mode': 'queue'}),
@@ -241,11 +243,10 @@ class RequestTest(FakeServerCase):
                 getattr(client, method)(*args, **kwargs)
                 self.assertNotIn('id', self.server.requests[-1]['params'])
 
-    def test_threads_delegate_takes_no_settle(self) -> None:
-        client = Client(str(self.socket))
-        with self.assertRaises(TypeError):
-            client.threads_delegate('t1', 'check it', settle='on_result')
-        self.assertEqual(self.server.requests, [])
+    def test_threads_delegate_sends_settle(self) -> None:
+        self.answer(ok({'id': 'c1'}))
+        Client(str(self.socket)).threads_delegate('t1', 'check it', settle='on_result')
+        self.assertEqual(self.server.requests[-1]['params']['settle'], 'on_result')
 
     def test_events_returns_the_page(self) -> None:
         page = [event(1), event(2)]

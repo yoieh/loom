@@ -81,6 +81,7 @@ class ThreadsDelegateParams(TypedDict):
     model: NotRequired[str]
     concurrency_key: NotRequired[str]
     on_busy: NotRequired[OnBusy]
+    settle: NotRequired[Settle]
 
 
 class ThreadsSendParams(TypedDict):
