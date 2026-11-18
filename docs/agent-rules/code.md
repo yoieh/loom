@@ -18,7 +18,9 @@ gate file's `## Must fix`; a "note" goes under `## Notes` and never blocks.
   the tests with `PYTHONDONTWRITEBYTECODE=1`, then restore it with `git checkout HEAD -- <file>`.
   Never use `git stash`, because other sessions share it. In `output.md`, give per acceptance
   criterion the test that verifies it and whether it fails on the base (`fails`, or
-  `passes (guard)`).
+  `passes (guard)`). When a reverted file wires an agent binary (claude_bin, codex_bin, a runner
+  map), first check that the test's agent PATH holds no real claude or codex. A test on the base
+  must fail to spawn, never start a real agent.
 - A new import between packages must match `docs/design.md` §3's table; the packaging test checks
   it.
 - A runner change comes with a replay test: a recorded stream in, the events out.
