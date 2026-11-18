@@ -123,6 +123,21 @@ class ContinuationTest(CrashTest):
         self.assertEqual(types, [EventType.THREAD_STATE, EventType.THREAD_FAILED])
         self.assertEqual(self.states(thread_id)[-1], 'failed')
 
+    async def test_a_person_wakes_a_thread_failed_past_continuations(self) -> None:
+        thread_id, _ = await self.running()
+        await self.crash_three_times(thread_id)
+        await self.crash(thread_id)
+        self.assert_failed_past_continuations(thread_id)
+        await self.send(thread_id, 'Try again')
+        await self.orchestrator.drain()
+        info = self.orchestrator.get(thread_id)
+        self.assertEqual((info['state'], info.get('reason')), ('running', None))
+        self.assertEqual(self.runner.sessions[thread_id].sent, [('Try again', QUEUE)])
+        self.assertTrue(self.runner.starts[-1].resume)
+        self.assertEqual(self.continuations(thread_id), [])
+        self.assertEqual(self.states(thread_id)[-4:], ['failed', 'sleeping', 'starting',
+                                                       'running'])
+
     async def crash_three_times(self, thread_id: str) -> None:
         for _ in range(3):
             await self.crash(thread_id)

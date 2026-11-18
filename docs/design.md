@@ -76,9 +76,14 @@ Rules, each checked by a packaging test:
 
 - **States.** `queued` (waiting for a slot) → `starting` → `running` (a turn is on) → `idle`
   (process alive, no turn) → `sleeping` (process ended, resumable) → `settled`. Any state can
-  go to `failed`, with the reason. A `failed` thread can only be settled (`threads.settle`),
-  which keeps the reason; it is never resumed or restarted. `waiting` (a request is open, §8)
+  go to `failed`, with the reason. A `failed` thread can be settled (`threads.settle`), which
+  keeps the reason; Loom itself never resumes or restarts it. `waiting` (a request is open, §8)
   is a sub-state of `running`. A T3 thread maps T3's states onto the same names.
+- **Woken by a person.** A person's `threads.send` (from outside Loom, not a thread nor a
+  schedule, §8 Requests) to a `settled` or `failed` thread wakes it: it goes back to
+  `sleeping`, its reason and count of continuations are cleared, and the message resumes its
+  session as any sleeping thread's does. It does not take a concurrency key back. An agent's or a schedule's
+  send to such a thread is still `conflict`, so nothing wakes a finished thread on its own.
 - **No limit on threads.** Any number of threads and tasks can exist, at any depth. The only
   thing rationed is memory: each live local process takes about 275 MiB (§73.13 item 7).
   `agents_max` defaults to the machine's available memory at start, less 2 GiB, divided by

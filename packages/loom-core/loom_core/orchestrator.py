@@ -307,7 +307,9 @@ class Orchestrator:
             nonlocal seq
             row = fetch(tx, thread_id)
             if row['state'] in ENDED:
-                raise LoomError('conflict', f'thread {thread_id} is {row["state"]}')
+                if source is not StartSource.PERSON:
+                    raise LoomError('conflict', f'thread {thread_id} is {row["state"]}')
+                threads.reopen(self.store, tx, thread_id)
             chain = causes.of_call(tx, cause, caller_thread)
             seq = self._add_message(tx, thread_id, command_id, message, mode, source=source,
                                     chain=chain)
