@@ -176,10 +176,11 @@ string of 1 to 200 characters`. The CLI and the Python API make one for you.
 ### Only the same user
 
 When a client connects, the server reads the peer's process id and user id from the socket
-(`SO_PEERCRED`). A peer that runs as another user gets one `forbidden` line, `the peer runs as
-another user`, and the connection is closed. When the server cannot read the peer's credentials
-at all, it answers `forbidden`, `cannot tell who the peer is`, and closes the connection the same
-way. The client sees either one as the answer to its first request.
+(`SO_PEERCRED`), and where the kernel has `SO_PEERPIDFD` it takes a pidfd of the peer as well.
+A peer that runs as another user gets one `forbidden` line, `the peer runs as another user`, and
+the connection is closed. When the server cannot read the peer's credentials at all, it answers
+`forbidden`, `cannot tell who the peer is`, and closes the connection the same way. The client
+sees either one as the answer to its first request.
 
 ### Agents may not change a project's mode
 
@@ -210,6 +211,11 @@ the peer's process id and walks up its parent chain in `/proc`, at most 64 proce
   non-empty `LOOM_THREAD`. A `loom` CLI run with `LOOM_THREAD` set counts too.
 - When the peer's `/proc` entries can't be read, the server can't tell, and refuses these two
   calls.
+- Where the kernel has `SO_PEERPIDFD` (Linux 6.5 and later), the server takes a pidfd of the
+  peer when it connects, and once it has read `/proc` it checks through the pidfd that the peer
+  still runs. When the peer has exited, its process id may already name another process, so the
+  server can't tell, as above. The processes above the peer on the chain are not checked this
+  way. Without `SO_PEERPIDFD` the server reads `/proc` by the process id alone.
 
 **Limits.** This guards against an agent's own requests. It is not a sandbox.
 

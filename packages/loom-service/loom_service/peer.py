@@ -1,6 +1,9 @@
+import errno
 import os
+import signal
 import socket
 import struct
+from collections.abc import Callable
 from pathlib import Path
 
 from loom_core.errors import LoomError
@@ -9,6 +12,7 @@ from loom_core.service import Caller
 MAX_CHAIN = 64
 PROC = '/proc'
 THREAD_ENTRY = b'LOOM_THREAD='
+SO_PEERPIDFD = getattr(socket, 'SO_PEERPIDFD', 77)
 
 _CREDENTIALS = struct.Struct('3i')
 
@@ -16,6 +20,23 @@ _CREDENTIALS = struct.Struct('3i')
 def peer_credentials(sock: socket.socket) -> tuple[int, int, int]:
     data = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, _CREDENTIALS.size)
     return _CREDENTIALS.unpack(data)
+
+
+def peer_pidfd(sock: socket.socket) -> int | None:
+    try:
+        return sock.getsockopt(socket.SOL_SOCKET, SO_PEERPIDFD)
+    except OSError as error:
+        if error.errno == errno.ENOPROTOOPT:
+            return None
+        raise
+
+
+def pidfd_alive(pidfd: int) -> bool:
+    try:
+        signal.pidfd_send_signal(pidfd, 0)
+    except OSError:
+        return False
+    return True
 
 
 def _parent(proc: Path, pid: int) -> int | None:
@@ -63,7 +84,10 @@ def caller_of(pid: int, proc: str | Path = PROC, server_pid: int | None = None) 
 
 
 def identify(pid: int, uid: int, *, own_uid: int | None = None, proc: str | Path = PROC,
-             server_pid: int | None = None) -> Caller:
+             server_pid: int | None = None, alive: Callable[[], bool] | None = None) -> Caller:
     if uid != (os.geteuid() if own_uid is None else own_uid):
         raise LoomError('forbidden', 'the peer runs as another user')
-    return caller_of(pid, proc, server_pid)
+    caller = caller_of(pid, proc, server_pid)
+    if alive is not None and not alive():
+        return Caller(verified=False)
+    return caller

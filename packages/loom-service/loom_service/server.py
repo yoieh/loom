@@ -13,7 +13,7 @@ from loom_core.errors import LoomError
 from loom_core.service import Caller, Service
 
 from .config import StartError
-from .peer import PROC, identify, peer_credentials
+from .peer import PROC, identify, peer_credentials, peer_pidfd, pidfd_alive
 
 MAX_LINE = 1_048_576
 VERSION = 'v1'
@@ -173,11 +173,21 @@ class Server:
             writer.close()
 
     def _caller(self, writer: asyncio.StreamWriter) -> Caller:
+        sock = writer.get_extra_info('socket')
         try:
-            pid, uid, _ = peer_credentials(writer.get_extra_info('socket'))
+            pid, uid, _ = peer_credentials(sock)
         except OSError:
             raise LoomError('forbidden', 'cannot tell who the peer is') from None
-        return identify(pid, uid, proc=self.proc)
+        try:
+            pidfd = peer_pidfd(sock)
+        except OSError:
+            return identify(pid, uid, proc=self.proc, alive=lambda: False)
+        if pidfd is None:
+            return identify(pid, uid, proc=self.proc)
+        try:
+            return identify(pid, uid, proc=self.proc, alive=lambda: pidfd_alive(pidfd))
+        finally:
+            os.close(pidfd)
 
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
