@@ -566,7 +566,8 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
 - Loom starts a thread only from a client's call or a stored schedule; always in a registered
   project's root or a worktree Loom made for it.
 - The socket and every store and secret file are mode 0600, under the user's runtime and data
-  dirs. Nothing binds to a network port.
+  dirs. Nothing binds to a network port. `loom serve` refuses a socket directory that is not the
+  user's own or that group or others can write, and serves at most 256 connections at once.
 - A thread an agent starts, and a schedule it makes, gets the target project's permission mode,
   never the caller's if that is wider (T3's `DispatchModeLimit.ts`). So an agent can't start a
   `full-access` thread from an `approval-required` one.

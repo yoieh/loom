@@ -16,9 +16,16 @@ from .config import StartError
 from .peer import PROC, identify, peer_credentials, peer_pidfd, pidfd_alive
 
 MAX_LINE = 1_048_576
+MAX_CONNECTIONS = 256
 VERSION = 'v1'
 FOLLOW_CALL = 'threads.events'
 PROBE_TIMEOUT = 1.0
+COMMAND_CALLS = (
+    'threads.launch', 'threads.delegate', 'threads.send', 'threads.steer', 'threads.stop',
+    'threads.settle', 'threads.update', 'projects.add', 'projects.set_mode', 'projects.remove',
+    'requests.respond', 'signals.emit', 'schedules.add', 'schedules.pause', 'schedules.remove',
+    't3_threads.send', 't3_threads.interrupt',
+)
 
 _DISCARD = 65_536
 
@@ -62,6 +69,19 @@ def _make_dirs(path: Path) -> None:
         os.chmod(directory, 0o700)
 
 
+def _check_dir(path: Path) -> None:
+    try:
+        info = os.stat(path)
+    except OSError as error:
+        raise StartError(f'cannot check {path}: {error.strerror or error}') from None
+    if not stat.S_ISDIR(info.st_mode):
+        raise StartError(f'{path} is not a directory')
+    if info.st_uid != os.geteuid():
+        raise StartError(f'the socket directory {path} is not owned by you')
+    if info.st_mode & 0o022:
+        raise StartError(f'the socket directory {path} can be written by group or others')
+
+
 def _answers(path: Path) -> bool:
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     probe.settimeout(PROBE_TIMEOUT)
@@ -92,10 +112,12 @@ def _clear_stale(path: Path) -> None:
 
 
 class Server:
-    def __init__(self, path: Path, *, max_line: int = MAX_LINE, log: TextIO | None = None,
+    def __init__(self, path: Path, *, max_line: int = MAX_LINE,
+                 max_connections: int = MAX_CONNECTIONS, log: TextIO | None = None,
                  proc: str | Path = PROC) -> None:
         self.path = Path(path)
         self.max_line = max_line
+        self.max_connections = max_connections
         self.log = sys.stderr if log is None else log
         self.proc = proc
         self.service: Service | None = None
@@ -107,6 +129,7 @@ class Server:
 
     def bind(self) -> None:
         _make_dirs(self.path.parent)
+        _check_dir(self.path.parent)
         _clear_stale(self.path)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
@@ -160,6 +183,10 @@ class Server:
     async def _connected(self, reader: asyncio.StreamReader,
                          writer: asyncio.StreamWriter) -> None:
         if self._closing:
+            writer.close()
+            return
+        if len(self._connections) >= self.max_connections:
+            writer.write(error_line('failed', 'too many connections'))
             writer.close()
             return
         task = asyncio.current_task()
@@ -222,6 +249,11 @@ class Server:
             params = request.get('params', {})
             if not isinstance(params, dict):
                 raise LoomError('invalid', 'params must be an object')
+            command_id = params.get('id')
+            if (call in COMMAND_CALLS and isinstance(command_id, str)
+                    and command_id.startswith('schedule:')):
+                raise LoomError('invalid',
+                                "ids that begin with schedule: are reserved for Loom's scheduler")
             if call == FOLLOW_CALL and params.get('follow') is True:
                 events = self.service.follow(params, caller)
                 return encode({'ok': True, 'result': {'follow': True}}), events

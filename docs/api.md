@@ -51,6 +51,10 @@ their tests, whose T3 answers were recorded from T3 0.1.2.
 - A client finds the socket in `LOOM_SOCKET` when it is set and not empty, else at
   `$XDG_RUNTIME_DIR/loom/api.sock`. Every agent Loom starts has `LOOM_SOCKET` set.
 - The socket file has mode 0600. Loom makes a missing socket directory with mode 0700.
+  `loom serve` refuses to start (exit 2) when the socket's directory is not a directory, is not
+  the user's own, or group or others can write it, so a socket directly in `/tmp` is refused. The
+  messages are `cannot check <dir>: <reason>`, `<dir> is not a directory`, `the socket directory
+  <dir> is not owned by you` and `the socket directory <dir> can be written by group or others`.
 - A local client needs no token. Nothing listens on a network port.
 - Only processes of the user who runs Loom may talk to it (see [Callers](#callers)).
 
@@ -99,7 +103,7 @@ breaking change will be `v2`, served next to `v1`.
 | `not_found` | The thread, project, schedule or request the request names does not exist, or, for a `t3_threads.*` call, the T3 thread or the T3 project. |
 | `conflict` | The request clashes with the current state: the thread has ended or is being stopped, the request is closed, the project still has a live thread, the path is already a project's root, or the command id was used for another call. |
 | `forbidden` | The caller may not make this call (see [Callers](#callers)), or the T3 send guard refuses it (see [Agents may not send to a wider T3 thread](#agents-may-not-send-to-a-wider-t3-thread)). |
-| `failed` | Something broke inside Loom. The message is `internal error`; the traceback goes only to the server's stderr. For a `t3_threads.*` call it also means T3 could not be reached or refused the call, and the message is the one-line `t3: ...` reason instead (see [T3 threads](#t3-threads)). |
+| `failed` | Something broke inside Loom. The message is `internal error`; the traceback goes only to the server's stderr. For a `t3_threads.*` call it also means T3 could not be reached or refused the call, and the message is the one-line `t3: ...` reason instead (see [T3 threads](#t3-threads)). Before any request is read, a connection over the cap gets `failed` with the message `too many connections` (see [Connection cap](#connection-cap)). |
 
 ### Bad requests
 
@@ -140,6 +144,18 @@ this line and closes the connection without reading further:
 {"ok":false,"error":{"code":"invalid","message":"request line is over 1048576 bytes"}}
 ```
 
+### Connection cap
+
+The server holds at most 256 connections at once, follow streams included. A connection over
+that gets one line and is closed without its request being read, so the client sees this line as
+the answer to its first request:
+
+```json
+{"ok":false,"error":{"code":"failed","message":"too many connections"}}
+```
+
+A refused client can try again once another connection closes.
+
 ### Command ids and safe retries
 
 Every call that changes something takes an `id`: a string of 1 to 200 characters that you make
@@ -154,7 +170,7 @@ string of 1 to 200 characters`. The CLI and the Python API make one for you.
 - Using an `id` again for a different call is a `conflict`, `id was already used for <call>`.
 - The calls that take an `id` are `threads.launch`, `threads.delegate`, `threads.send`,
   `threads.steer`, `threads.stop`, `threads.settle`, `threads.update`, `projects.add`,
-  `projects.set_mode`, `projects.remove`, `requests.respond`, `schedules.add`,
+  `projects.set_mode`, `projects.remove`, `requests.respond`, `signals.emit`, `schedules.add`,
   `schedules.pause`, `schedules.remove`, `t3_threads.send` and `t3_threads.interrupt`.
 - `t3_threads.send` and `t3_threads.interrupt` are retried by T3, not by Loom. Loom stores no
   receipt for them. It makes T3's `clientRequestId` from the call, the `thread_id` and the `id`,
@@ -163,8 +179,11 @@ string of 1 to 200 characters`. The CLI and the Python API make one for you.
   the same `messageId`). The answer is T3's answer to the retry, not a stored first answer. An
   `id` used before for another call is not refused, and these two calls make no other call refuse
   theirs.
-- Loom's scheduler uses ids of the form `schedule:<schedule id>:<due>` for the calls its runs make
-  (see [How schedules run](#how-schedules-run)), so don't choose ids that begin with `schedule:`.
+- Loom's scheduler uses ids of the form `schedule:<schedule id>:<due>` for the calls its clock
+  runs make, and `schedule:<schedule id>:event:<event id>` for an event trigger's (see [How
+  schedules run](#how-schedules-run)). Ids that begin with `schedule:` are reserved: a client's
+  call with one answers `invalid`,
+  `ids that begin with schedule: are reserved for Loom's scheduler`, and changes nothing.
 
 ```json
 {"v": "v1", "call": "threads.stop", "params": {"id": "c3", "thread_id": "3f2a…"}}
