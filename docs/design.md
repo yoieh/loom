@@ -543,6 +543,9 @@ Loom thread's is `thread:<id>`). An outside thread has no tasks, so it can't `de
   its own, and denies on timeout.
 - Agent-written text in events is data: clients show it as text, capped at 2,000 characters per
   entry.
+- An event trigger's filled text (§15) is capped: each event value filled into it at 2,000
+  characters, and all of one text's filled values together at 8,000, so one event adds at most
+  8,000 characters to a run's text. The schedule's own text is never cut.
 - A runner's error texts and turn failure reasons never hold the environment or the agent token.
   `loom-runner-claude` sends `claude`'s stderr to `/dev/null`, builds a start error from the
   binary and the OS error only, replaces the token with `[redacted]`, and cuts each such text to

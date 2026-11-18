@@ -1358,9 +1358,11 @@ matches it (§15 Event triggers):
 - **Filling.** A matching event's text has `{{event.id}}` replaced with the event's id, and
   `{{payload.<field>}}` (a field of letters, digits, `_` and `-`) with that payload field: a
   string as it is, a number, bool, list or object as its compact JSON, and a missing or null
-  field as nothing. Each value is cut to its first 2,000 characters (§11). A filled value is not
-  read again, so `{{event.id}}` inside a payload stays as it is, and so does any other `{{…}}`.
-  Clock runs fill nothing.
+  field as nothing. Each value is cut to its first 2,000 characters, and the values of one text
+  together to 8,000 (§11): values fill in the text's order, and once 8,000 characters are filled,
+  a value is cut to what is left and later placeholders fill nothing. The schedule's own text is
+  never cut. A filled value is not read again, so `{{event.id}}` inside a payload stays as it is,
+  and so does any other `{{…}}`. Clock runs fill nothing.
 - **Skips.** A matching event is skipped, checked in this order, and each skip is logged with a
   [`trigger.skipped`](#triggerskipped) event:
   - `own`: its thread was launched by this schedule (its `origin` is `schedule:<schedule id>`), or

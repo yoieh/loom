@@ -3,6 +3,7 @@ import re
 from collections.abc import Mapping
 
 MAX_FILL = 2_000
+MAX_FILL_TOTAL = 8_000
 
 _PLACE = re.compile(r'\{\{(?:event\.id|payload\.([A-Za-z0-9_-]+))\}\}')
 
@@ -20,9 +21,14 @@ def _text(value: object) -> str:
 
 
 def fill(text: str, event_id: int, payload: Mapping[str, object]) -> str:
+    left = MAX_FILL_TOTAL
+
     def value(found: re.Match[str]) -> str:
+        nonlocal left
         field = found.group(1)
         filled = str(event_id) if field is None else _text(payload.get(field))
-        return filled[:MAX_FILL]
+        filled = filled[:MAX_FILL][:left]
+        left -= len(filled)
+        return filled
 
     return _PLACE.sub(value, text)
