@@ -545,6 +545,18 @@ class ErrorMappingTest(ToolsCase):
         [(call, params)] = self.loom.calls
         self.assertEqual((call, params['concurrency_key']), ('schedules.add', 'pm:demo'))
 
+    def test_a_schedule_whose_answer_lacks_a_sent_model_is_removed_and_refused(self) -> None:
+        self.loom.on('schedules.add', ok({key: value for key, value in schedule_info().items()
+                                          if key != 'model'}))
+        mcp = self.start_thread()
+        self.assertEqual(mcp.tool('schedule', {
+            'trigger': AT_TRIGGER, 'text': 'Engage', 'action': 'launch', 'project_id': 'demo',
+            'model': 'claude-sonnet-5-5'}), (
+            'invalid: Loom did not store model, so it runs older code than this client; the '
+            'schedule was removed. Restart loom serve and add it again.', True))
+        self.assertEqual(self.loom.names(), ['schedules.add', 'schedules.remove'])
+        self.assertEqual(self.loom.calls[1][1]['schedule_id'], 'sc1')
+
     def test_a_stopping_caller_gets_the_conflict_word_for_word(self) -> None:
         self.loom.on('threads.launch', failed('conflict', 'thread t1 is stopping'))
         mcp = self.start_thread()

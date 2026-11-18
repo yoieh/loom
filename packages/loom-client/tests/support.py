@@ -53,8 +53,8 @@ def project_info(project_id: str = 'demo', **values: object) -> dict:
 def schedule_info(schedule_id: str = 's1', **values: object) -> dict:
     return {'id': schedule_id, 'trigger': {'type': 'at', 'at': '2026-10-25T09:00'},
             'action': 'notify', 'text': 'Stand-up', 'thread_id': None, 'project_id': None,
-            'title': None, 'runner': None, 'model': None, 'workspace': None, 'check': None,
-            'by': None,
+            'title': None, 'concurrency_key': None, 'on_busy': None, 'settle': None,
+            'runner': None, 'model': None, 'workspace': None, 'check': None, 'by': None,
             'paused': False, 'next_run': AT, 'created_at': AT,
             **values}
 

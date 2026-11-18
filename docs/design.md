@@ -417,8 +417,9 @@ Utan vi kommer använda mer av vår egna lösning". Loom's own runners are the m
   timeout and at most 64 KiB of stdout; the timeout and the cap kill its process group. Exit 0
   launches, with the `text` of a JSON object it printed as the first message, or else the
   schedule's text; any exit above 0 is a `skipped_check` run; anything else fails the run. The
-  overlap rule and an event trigger's skips come first. Checks run one at a time. The process
-  runner is `loom-service`'s, behind the scheduler host's `run_check`.
+  overlap rule and an event trigger's skips come first. An event trigger counts every run of a
+  schedule with a check toward `rate_max`, also a `skipped_check` or failed one (§15). Checks run
+  one at a time. The process runner is `loom-service`'s, behind the scheduler host's `run_check`.
 - **The loop.** A generic tick (T3's `Scheduler.ts`) that sources register on; the schedules
   source keeps a heap by next run and wakes at the first one due, but at least every 30 s, so
   a clock jump (WSL after sleep, a laptop lid) is noticed. The schedules are rows in a
@@ -618,8 +619,10 @@ factory's prompts and rules, not Loom's; Loom gives only the parts below.
 - **Cause chains.** Every launch, send and signal records `cause` (the event behind it) and
   `hops` (its cause's hops + 1). A trigger skips an event at `hops_max` (default 8) and an event
   from a thread it launched itself, or its own `schedule.fired`, and fires at most `rate_max`
-  times an hour (default 30), so agents that start agents can't loop. Each skip is a
-  `trigger.skipped` event, and the first rate skip in an hour also sends one `notify`. The rules:
+  times an hour (default 30), so agents that start agents can't loop. For a schedule with a check,
+  its `skipped_check` and failed runs count toward `rate_max` too, so signals can't run a person's
+  check without limit. Each skip is a `trigger.skipped` event, and the first rate skip in an hour
+  also sends one `notify`. The rules:
   - An event's hops are its `data.hops` when that is an integer (a `signal`, a `schedule.fired`
     of an event run), else its thread's hops at the time they are read, else 0.
   - A call with `cause: E` gets `hops(E) + 1`; from an agent thread, at least that thread's hops,
